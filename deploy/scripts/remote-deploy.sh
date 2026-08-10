@@ -31,7 +31,7 @@ REMOTE_DIR="${BASE_REMOTE_DIR:-/opt/base}"
 # bind source and the container's BASE_VERIFY_WORK_ROOT byte-for-byte.
 STATE_ROOT="${BASE_STATE_DIR:-/var/lib/base}"
 GHCR_PREFIX="${BASE_GHCR_PREFIX:-ghcr.io/baseintelligence/base}"
-PIN_SERVICES=(validator gateway updater prism-challenge design-challenge)
+PIN_SERVICES=(validator gateway updater prism-challenge design-challenge bounty-challenge)
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 if [[ -n "${BASE_SSH_IDENTITY:-}" ]]; then
   SSH_OPTS+=(-i "$BASE_SSH_IDENTITY")
@@ -160,8 +160,8 @@ fi
 
 echo "remote-deploy: rsync tree"
 if [[ "$BUILD_FROM" == "prebuilt" ]]; then
-  for b in validator gateway updater prism-challenge design-challenge design-egress-proxy challenge-review; do
-    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run: cargo build --release --features validator-bin/dcap -p validator-bin -p gateway-bin -p updater-bin -p prism-challenge-bin -p design-challenge-bin -p design-egress-proxy-bin && cargo build --release -p challenge-review-bin"
+  for b in validator gateway updater prism-challenge design-challenge design-egress-proxy bounty-challenge challenge-review; do
+    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run: cargo build --release --features validator-bin/dcap -p validator-bin -p gateway-bin -p updater-bin -p prism-challenge-bin -p design-challenge-bin -p design-egress-proxy-bin -p bounty-challenge-bin && cargo build --release -p challenge-review-bin"
   done
 fi
 
@@ -185,12 +185,13 @@ rsync -az --delete \
 # deploy/secrets/lium is bind-mounted by prism-challenge, so it must be a real
 # directory with real files: compose would otherwise create directories where
 # the container expects files.
-# Same footgun for file mounts: if prism_sk / design_sk are missing, Docker
-# creates *directories* at those paths and the challenge bins fail with
+# Same footgun for file mounts: if prism_sk / design_sk / bounty_sk are missing,
+# Docker creates *directories* at those paths and the challenge bins fail with
 # "Is a directory" / "secret file missing". Materialize empty files when
 # absent; if a directory already poisoned the path, replace it with a file.
 ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
   '$REMOTE_DIR/deploy/secrets/openrouter' '$REMOTE_DIR/deploy/secrets/design' \
+  '$REMOTE_DIR/deploy/secrets/bounty' \
   '$REMOTE_DIR/deploy/secrets/wallets' \
   && chmod 700 '$REMOTE_DIR/deploy/secrets' '$REMOTE_DIR/deploy/secrets/lium' \
   && for f in api_key ssh_ed25519 ssh_ed25519.pub; do \
@@ -198,7 +199,8 @@ ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
      done \
   && [ -e '$REMOTE_DIR/deploy/secrets/openrouter/api_key' ] || : > '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
   && [ -e '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' ] || : > '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
-  && for sk in prism_sk design_sk; do \
+  && [ -e '$REMOTE_DIR/deploy/secrets/bounty/admin_tokens' ] || : > '$REMOTE_DIR/deploy/secrets/bounty/admin_tokens' \
+  && for sk in prism_sk design_sk bounty_sk; do \
        p='$REMOTE_DIR/deploy/secrets/'\$sk; \
        if [ -d \"\$p\" ]; then rm -rf \"\$p\"; fi; \
        [ -e \"\$p\" ] || : > \"\$p\"; \
@@ -207,9 +209,11 @@ ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
   && chmod 400 '$REMOTE_DIR/deploy/secrets/lium/'* \
        '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
        '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
+       '$REMOTE_DIR/deploy/secrets/bounty/admin_tokens' \
   && chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/lium' \
        '$REMOTE_DIR/deploy/secrets/openrouter' \
        '$REMOTE_DIR/deploy/secrets/design' \
+       '$REMOTE_DIR/deploy/secrets/bounty' \
   && chmod -R a-w '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; \
   chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; true"
 
@@ -270,6 +274,7 @@ if [[ "$BUILD_FROM" == "prebuilt" ]]; then
     "$ROOT/target/release/prism-challenge" \
     "$ROOT/target/release/design-challenge" \
     "$ROOT/target/release/design-egress-proxy" \
+    "$ROOT/target/release/bounty-challenge" \
     "$HOST:$REMOTE_DIR/target/release/"
 fi
 
@@ -332,6 +337,7 @@ optional = {
     "prism-challenge",
     "design-challenge",
     "design-egress-proxy",
+    "bounty-challenge",
     "design-runtime",
     "design-review",
     "base-attest-helper",
@@ -419,7 +425,7 @@ docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE "\${UP_ARGS[@
 # surfaces so smoke health does not see stale unhealthy containers.
 if [[ '$ROLE' == 'validator' ]]; then
   docker compose ${COMPOSE_FILES[*]} rm -sf \
-    prism-challenge design-challenge design-egress-proxy socket-proxy \
+    prism-challenge design-challenge design-egress-proxy bounty-challenge socket-proxy \
     >/dev/null 2>&1 || true
 fi
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE ps
@@ -450,6 +456,7 @@ import json, sys, urllib.request, urllib.error
 backends = [
     ("prism", "http://prism-challenge:8092"),
     ("design", "http://design-challenge:8093"),
+    ("bounty", "http://bounty-challenge:8095"),
 ]
 failed = False
 for cid, url in backends:
@@ -491,15 +498,16 @@ PY
   for attempt in \$(seq 1 15); do
     prism_code=\$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/challenge/prism/health 2>/dev/null || echo 000)
     design_code=\$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/challenge/design/health 2>/dev/null || echo 000)
-    echo "remote-deploy: challenge routing probe prism=\$prism_code design=\$design_code (attempt \$attempt)"
-    if [[ "\$prism_code" == "200" && "\$design_code" == "200" ]]; then
+    bounty_code=\$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/challenge/bounty/health 2>/dev/null || echo 000)
+    echo "remote-deploy: challenge routing probe prism=\$prism_code design=\$design_code bounty=\$bounty_code (attempt \$attempt)"
+    if [[ "\$prism_code" == "200" && "\$design_code" == "200" && "\$bounty_code" == "200" ]]; then
       route_ok=1
       break
     fi
     sleep 5
   done
   if [[ "\$route_ok" != 1 ]]; then
-    echo "remote-deploy: ERROR: challenge routing smoke failed (want 200/200; 503 = backends not registered)" >&2
+    echo "remote-deploy: ERROR: challenge routing smoke failed (want 200/200/200; 503 = backends not registered)" >&2
     exit 1
   fi
   echo "challenge proxy health: ok"

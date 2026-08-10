@@ -57,6 +57,9 @@ jobs:
           - target: design-challenge
             image_suffix: design-challenge
             dockerfile: deploy/Dockerfile
+          - target: bounty-challenge
+            image_suffix: bounty-challenge
+            dockerfile: deploy/Dockerfile
           - target: design-egress-proxy
             image_suffix: design-egress-proxy
             dockerfile: deploy/Dockerfile
@@ -169,6 +172,7 @@ jobs:
               "updater",
               "prism-challenge",
               "design-challenge",
+              "bounty-challenge",
               "design-egress-proxy",
               "design-runtime",
               "design-review",
@@ -239,10 +243,10 @@ jobs:
           cp "$SRC" "deploy/digests/${SHA}.json"
           echo "Recorded digest manifest: deploy/digests/${SHA}.json"
           chmod +x deploy/scripts/promote.sh
-          # Pin services only (validator/gateway/updater/prism-challenge/design-challenge).
+          # Pin services only (validator/gateway/updater/prism/design/bounty).
           # --skip-backup: this job records CI digests; Spaces/PG backup runs at
           # prod promote (deploy-prod.yml, fail-closed).
-          for svc in validator gateway updater prism-challenge design-challenge; do
+          for svc in validator gateway updater prism-challenge design-challenge bounty-challenge; do
             IMAGE=$(python3 -c '
           import json, sys
           d = json.load(open(sys.argv[1]))
@@ -261,7 +265,7 @@ jobs:
           import json, sys
           p = json.load(open("deploy/pins/staging.json"))
           assert p["commit_sha"] == sys.argv[1], (p["commit_sha"], sys.argv[1])
-          for s in ("validator", "gateway", "updater", "prism-challenge", "design-challenge"):
+          for s in ("validator", "gateway", "updater", "prism-challenge", "design-challenge", "bounty-challenge"):
               assert s in p["services"], s
               assert p["services"][s]["digest"].startswith("sha256:")
           print("staging pins ok", p["commit_sha"])
@@ -310,6 +314,7 @@ jobs:
             "base/updater"
             "base/prism-challenge"
             "base/design-challenge"
+            "base/bounty-challenge"
             "base/design-egress-proxy"
             "base/design-runtime"
             "base/design-review"

@@ -15,6 +15,7 @@ over HTTP to the live challenges:
 |-----------|----------------|---------|-------|-------------------|
 | Design | `design` | `challenge_scoring_version` **2** (daily share ≥2 wins + agentic) | [design.md](./design.md) | [BaseIntelligence/design-challenge](https://github.com/BaseIntelligence/design-challenge) |
 | Prism | `prism` | `challenge_scoring_version` **2** (bpb-only) | [prism.md](./prism.md) | [BaseIntelligence/prism](https://github.com/BaseIntelligence/prism) (miner docs forthcoming) |
+| Bounty | `bounty` | `challenge_scoring_version` **1** (TARGET_BUGS=50 + UID-0 burn) | [bounty.md](./bounty.md) | *(public repo follow-up; monorepo mirror only for now)* |
 
 Do **not** conflate version axes:
 
@@ -23,18 +24,21 @@ Do **not** conflate version axes:
 | Bundle `protocol_version` | **1** | Leaf / merkle / weight bytes ([`BUNDLE_SPEC.md`](../BUNDLE_SPEC.md)) |
 | Design scoring | **1** | Agentic anti-cheat + admin winners 1\|2 ([`DESIGN_CHALLENGE.md`](../DESIGN_CHALLENGE.md)) |
 | Prism scoring | **2** | Pure bpb + agentic/AST/metrics anti-cheat ([`PRISM.md`](../PRISM.md)) |
+| Bounty scoring | **1** | Approved bug points + TARGET_BUGS burn sink ([`BOUNTY_CHALLENGE.md`](../BOUNTY_CHALLENGE.md)) |
 
 | Page | Topic |
 |------|-------|
 | [design.md](./design.md) | Design harness (`agent.py` + `pyproject.toml`) HTTP submit |
 | [examples/design-baseline/](./examples/design-baseline/) | Reference design miner (`llm.chat` → required HTML pages) |
 | [prism.md](./prism.md) | Prism recipe scripts HTTP submit |
+| [bounty.md](./bounty.md) | Bounty video bug-report HTTP submit |
 | [troubleshoot.md](./troubleshoot.md) | Common HTTP / quota / scoring failures |
 
 Normative contracts:
 
 - Design freeze: [`../DESIGN_CHALLENGE.md`](../DESIGN_CHALLENGE.md)
 - Prism: [`../PRISM.md`](../PRISM.md) + [`../PRISM_RECIPE.md`](../PRISM_RECIPE.md)
+- Bounty: [`../BOUNTY_CHALLENGE.md`](../BOUNTY_CHALLENGE.md)
 - Bundle bytes: [`../BUNDLE_SPEC.md`](../BUNDLE_SPEC.md)
 - Threat claim (D19): [`../THREAT_MODEL.md`](../THREAT_MODEL.md) §1
 
@@ -45,6 +49,7 @@ Production/staging miners call the **gateway** reverse proxy:
 ```text
 https://<gateway>/challenge/design/...
 https://<gateway>/challenge/prism/...
+https://<gateway>/challenge/bounty/...
 ```
 
 Local smoke (host ports from `env-local.yml`):
@@ -52,6 +57,7 @@ Local smoke (host ports from `env-local.yml`):
 ```bash
 curl -sS http://127.0.0.1:28093/health   # design-challenge
 curl -sS http://127.0.0.1:28092/health   # prism-challenge
+curl -sS http://127.0.0.1:28095/health   # bounty-challenge
 ```
 
 Never paste mnemonics or challenge signing keys into miner clients. Hotkeys are

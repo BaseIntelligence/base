@@ -28,7 +28,7 @@ Working branch: **`main`**. Prod ships from annotated tags `v*.*.*` cut on `main
 | Key | Who | Needed for |
 |-----|-----|------------|
 | `gateway_sk` | Gateway | Bundle **seal** signatures (`POST /v1/admin/seal`) |
-| `prism_sk` / `design_sk` | Challenge / smoke | Signed leaves (`POST /v1/weights/raw`); pubs must match trust root |
+| `prism_sk` / `design_sk` / `bounty_sk` | Challenge / smoke | Signed leaves (`POST /v1/weights/raw`); pubs must match trust root |
 | Gateway owner wallet + `BASE_GATEWAY_REQUIRE_OWNER` | Gateway | Master-only **identity** check (live/prod). **Not** required to seal or serve `/v1/weights/latest` |
 | Validator wallet | Validator | On-chain weight **submit** only — validators *fetch* sealed weights; they do not need a gateway wallet |
 
@@ -42,8 +42,9 @@ Each live challenge has a **separate public GitHub repo** for miners. Those repo
 |-----------|-------------|------|
 | Design | [`BaseIntelligence/design-challenge`](https://github.com/BaseIntelligence/design-challenge) | Miner docs + baseline harness |
 | Prism | [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) | Miner docs + recipe examples (publish / keep in sync; no control-plane code) |
+| Bounty | *(public repo follow-up)* | Miner docs mirror in [`docs/external-miner/bounty.md`](docs/external-miner/bounty.md) until published |
 
-Monorepo mirror for CI and operators: [`docs/external-miner/`](docs/external-miner/). Frozen contracts stay in this repo (`docs/DESIGN_CHALLENGE.md`, `docs/PRISM.md`, …).
+Monorepo mirror for CI and operators: [`docs/external-miner/`](docs/external-miner/). Frozen contracts stay in this repo (`docs/DESIGN_CHALLENGE.md`, `docs/PRISM.md`, `docs/BOUNTY_CHALLENGE.md`, …).
 
 **When a challenge product or public API changes**, agents **must** update:
 
@@ -90,7 +91,7 @@ Match CI (`.github/workflows/ci.yml`):
 | Doc authority vs evidence | [`docs/AGENTS.md`](docs/AGENTS.md) |
 | Component status | [`docs/COMPLETENESS.md`](docs/COMPLETENESS.md) |
 | Frozen contracts | [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md), [`docs/DESIGN_CHALLENGE.md`](docs/DESIGN_CHALLENGE.md), [`docs/PRISM.md`](docs/PRISM.md) |
-| Miner HTTP submit | [`docs/external-miner/`](docs/external-miner/) · public: [design-challenge](https://github.com/BaseIntelligence/design-challenge), [prism](https://github.com/BaseIntelligence/prism) |
+| Miner HTTP submit | [`docs/external-miner/`](docs/external-miner/) · public: [design-challenge](https://github.com/BaseIntelligence/design-challenge), [prism](https://github.com/BaseIntelligence/prism) · bounty mirror: [`bounty.md`](docs/external-miner/bounty.md) |
 | Threat / operator checklist | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), [`docs/OPERATOR_SECURITY.md`](docs/OPERATOR_SECURITY.md) |
 
 ## Do not commit

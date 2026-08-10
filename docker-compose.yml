@@ -1,7 +1,7 @@
 # base control-plane stack
 #
 # Default: postgres + validator + updater + socket-proxy + prism-challenge
-# + design-challenge + design-egress-proxy.
+# + design-challenge + design-egress-proxy + bounty-challenge.
 # Master/owner host only:
 #   docker compose --profile master up -d
 # brings gateway as an additional service (D3).
@@ -345,6 +345,56 @@ services:
     networks:
       - base
 
+  # ---------------------------------------------------------------------------
+  # bounty-challenge — miner video bug reports + agentic similar-24h + admin
+  # approve (:8095). Master-only; OpenRouter key for DeepSeek V4 Flash similarity.
+  # Admin bearers are master-local only (gateway blocks /v1/admin/*).
+  # ---------------------------------------------------------------------------
+  bounty-challenge:
+    image: bounty-challenge:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: bounty-challenge
+      args:
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BASE_CHALLENGE_BIND: 0.0.0.0:8095
+      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
+      BOUNTY_FORCE_SIM: "${BOUNTY_FORCE_SIM:-false}"
+      BOUNTY_ADMIN_TOKENS_FILE: /run/base/bounty/admin_tokens
+      OPENROUTER_API_KEY_FILE: /run/base/openrouter/api_key
+      BOUNTY_ARTIFACTS_ROOT: /var/lib/bounty
+      BASE_CHALLENGE_GATEWAY_ENDPOINT: ${BASE_CHALLENGE_GATEWAY_ENDPOINT:-http://gateway:8080}
+    env_file:
+      # Required: BASE_DATABASE_URL (+ BASE_NETUID). Missing file → compose
+      # fails closed (binaries would otherwise fall back to in-memory store).
+      - path: ./deploy/env/bounty-challenge.env
+        required: true
+    volumes:
+      - ./deploy/secrets/bounty_sk:/run/base/challenge_sk:ro
+      - ./deploy/secrets/bounty:/run/base/bounty:ro
+      - ./deploy/secrets/openrouter:/run/base/openrouter:ro
+      - bounty-artifacts:/var/lib/bounty
+    expose:
+      - "8095"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -m 5 http://127.0.0.1:8095/health || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    networks:
+      - base
+
   socket-proxy:
     image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     restart: unless-stopped
@@ -389,6 +439,7 @@ volumes:
   base-pgdata:
   base-updater-state:
   design-artifacts:
+  bounty-artifacts:
 
 networks:
   base:

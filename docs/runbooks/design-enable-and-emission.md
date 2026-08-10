@@ -1,8 +1,8 @@
 # Design challenge — enable real backends + emission unlock
 
 Design emission is owner-controlled via the trust root. Current committed
-shares are **design = 5000 bps**, **prism = 5000 bps** (50/50). See
-[`config/challenges.toml`](../../config/challenges.toml) and
+shares are **design = 3000 bps**, **prism = 4500 bps**, **bounty = 2500 bps**.
+See [`config/challenges.toml`](../../config/challenges.toml) and
 [`DESIGN_CHALLENGE.md`](../DESIGN_CHALLENGE.md).
 
 ## A. Bring up design without emission (staging / local)
@@ -23,7 +23,8 @@ shares are **design = 5000 bps**, **prism = 5000 bps** (50/50). See
    { "challenge_id": "design", "base_url": "http://design-challenge:8093", "weight": 1 }
    ```
 6. Emission share is independent of bringing the service up: leaves still emit
-   (D24 exact-E) even at `0` bps. Current prod/staging shares are 5000/5000.
+   (D24 exact-E) even at `0` bps. Current prod/staging shares are
+   3000/4500/2500 (design/prism/bounty).
 
 ## B. Keygen (`design_sk`)
 
@@ -37,9 +38,10 @@ must **not** mount `design_sk`.
 
 ## C. Emission ceremony (owner)
 
-Goal: move weight from prism → design (sum must remain exactly **10000** bps).
+Goal: rebalance among design / prism / bounty (sum must remain exactly
+**10000** bps).
 
-1. Choose new shares, e.g. `design = N`, `prism = 10000 - N` (both ≥ 0).
+1. Choose new shares for all three challenges (each ≥ 0, sum **10000**).
 2. Edit `config/challenges.toml` emission lines only (plus pubkey if rotating).
 3. Re-sign: follow [`../../config/CEREMONY.md`](../../config/CEREMONY.md) and
    [`trust-root-rotation.md`](./trust-root-rotation.md) (dual-accept if rotating).
@@ -48,7 +50,8 @@ Goal: move weight from prism → design (sum must remain exactly **10000** bps).
 5. Do **not** change design `challenge_scoring_version` or freeze pins in the
    same ceremony unless intentionally bumping the scoring contract.
 
-Current committed default: **design = 5000 bps**, **prism = 5000 bps**.
+Current committed default: **design = 3000**, **prism = 4500**,
+**bounty = 2500**.
 
 ## D. Admin winners tokens + OpenRouter
 

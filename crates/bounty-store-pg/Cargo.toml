@@ -1,0 +1,23 @@
+[package]
+name = "bounty-store-pg"
+description = "Postgres BountyStore adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+bounty-store = { path = "../bounty-store" }
+db = { path = "../db" }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+    "json",
+] }
+
+[lints]
+workspace = true

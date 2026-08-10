@@ -29,6 +29,7 @@ jobs:
             "base/updater"
             "base/prism-challenge"
             "base/design-challenge"
+            "base/bounty-challenge"
             "base/design-egress-proxy"
             "base/design-runtime"
           )

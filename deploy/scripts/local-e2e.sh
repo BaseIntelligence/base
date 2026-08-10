@@ -40,6 +40,7 @@ GATEWAY_HOST_PORT="${LOCAL_GATEWAY_HOST_PORT:-8080}"
 VALIDATOR_HOST_PORT="${LOCAL_VALIDATOR_HOST_PORT:-28080}"
 PRISM_HOST_PORT="${LOCAL_PRISM_HOST_PORT:-28092}"
 DESIGN_HOST_PORT="${LOCAL_DESIGN_HOST_PORT:-28093}"
+BOUNTY_HOST_PORT="${LOCAL_BOUNTY_HOST_PORT:-28095}"
 BASE_SECRETS_DIR="${BASE_SECRETS_DIR:-${HOME}/.base-secrets}"
 
 # Default public-only hotkey for smoke (same placeholder as gateway.env.example usage).
@@ -221,7 +222,8 @@ ensure_env_files() {
   # Challenge env files are required by compose (BASE_DATABASE_URL → Postgres).
   if [[ ! -f deploy/env/postgres.env || ! -f deploy/env/gateway.env \
     || ! -f deploy/env/validator.env || ! -f deploy/env/design-challenge.env \
-    || ! -f deploy/env/prism-challenge.env ]]; then
+    || ! -f deploy/env/prism-challenge.env \
+    || ! -f deploy/env/bounty-challenge.env ]]; then
     log "materializing deploy/env/*.env from examples"
     ./deploy/scripts/materialize-env.sh
   fi
@@ -230,7 +232,8 @@ ensure_env_files() {
   local url
   url="$(database_url_from_postgres_env)"
   for f in deploy/env/gateway.env deploy/env/validator.env \
-    deploy/env/design-challenge.env deploy/env/prism-challenge.env; do
+    deploy/env/design-challenge.env deploy/env/prism-challenge.env \
+    deploy/env/bounty-challenge.env; do
     if grep -q '^BASE_DATABASE_URL=' "$f" 2>/dev/null; then
       sed -i "s|^BASE_DATABASE_URL=.*|BASE_DATABASE_URL=${url}|" "$f"
     else
@@ -586,6 +589,8 @@ wait_all_health() {
     log "warning: prism not healthy (continuing; try BASE_DOCKER_BUILD_FROM=source)"
   wait_health design-challenge "http://127.0.0.1:${DESIGN_HOST_PORT}/health" || \
     log "warning: design not healthy (continuing; try BASE_DOCKER_BUILD_FROM=source)"
+  wait_health bounty-challenge "http://127.0.0.1:${BOUNTY_HOST_PORT}/health" || \
+    log "warning: bounty not healthy (continuing; try BASE_DOCKER_BUILD_FROM=source)"
   WAIT_SECS="$saved"
 }
 

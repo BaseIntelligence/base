@@ -1,0 +1,30 @@
+[package]
+name = "bounty-http"
+description = "Bounty challenge HTTP API (miner/admin/public)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query", "multipart"] }
+bounty-challenge-task = { path = "../bounty-challenge-task" }
+bounty-store = { path = "../bounty-store" }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+submission-gating = { path = "../submission-gating" }
+tokio = { version = "1", features = ["fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

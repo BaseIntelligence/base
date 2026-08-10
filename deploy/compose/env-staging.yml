@@ -42,8 +42,9 @@ services:
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
       # The sealer must sign with the same staging trust root the validator
-      # verifies against (design/prism 5000/5000), or /v1/weights/latest never
-      # shows design weight and the validator flags emission share mismatch (D23).
+      # verifies against (design/prism/bounty 3000/4500/2500), or
+      # /v1/weights/latest never shows challenge weight and the validator flags
+      # emission share mismatch (D23).
       - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
       - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro
   prism-challenge:
@@ -75,3 +76,9 @@ services:
     environment:
       # Real OpenRouter when deploy/secrets/openrouter/api_key is non-empty.
       DESIGN_EGRESS_SIM: "false"
+  bounty-challenge:
+    environment:
+      BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"
+      BASE_CHAIN_ENDPOINTS: "wss://test.chain.opentensor.ai:443,wss://test.finney.opentensor.ai:443"
+      # Real OpenRouter similarity when key is mounted; never host Sim on droplets.
+      BOUNTY_FORCE_SIM: "false"

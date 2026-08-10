@@ -1,5 +1,5 @@
 # STAGING-ONLY trust root override (testnet 541): mirrors prod emission shares
-# so the staging e2e can prove design + prism weights end-to-end.
+# so the staging e2e can prove design + prism + bounty weights end-to-end.
 #
 # Mounted over /etc/base/config/challenges.toml by deploy/compose/env-staging.yml
 # only. Signed with the same throwaway owner key as config/challenges.toml
@@ -10,11 +10,17 @@ introduced_epoch = 0
 [[challenges]]
 id = "design"
 public_key = "3e27f87d8330006a73174001120c3455f16b95fee098bb8c2bab9d5053840418"
-emission_share_bps = 5000
+emission_share_bps = 3000
 policy = "all_metagraph_hotkeys"
 
 [[challenges]]
 id = "prism"
 public_key = "bcd50bb830e050ed4b011dd8f1d2f126fdb42dc55b45ece30a7d5c8ceb3c5219"
-emission_share_bps = 5000
+emission_share_bps = 4500
+policy = "all_metagraph_hotkeys"
+
+[[challenges]]
+id = "bounty"
+public_key = "bc1cbf7eab63e8c526b841ba02ce555dc73ea4175a51b09f91e79ffb359e5127"
+emission_share_bps = 2500
 policy = "all_metagraph_hotkeys"

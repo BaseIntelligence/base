@@ -106,6 +106,7 @@ staging SSH tunnels on `18080`/`18090`. Override with `LOCAL_*_HOST_PORT`.
 | validator | `http://127.0.0.1:28080/healthz` |
 | prism | `http://127.0.0.1:28092/health` |
 | design | `http://127.0.0.1:28093/health` |
+| bounty | `http://127.0.0.1:28095/health` |
 
 Look for validator coordination (`Match epoch=`) and, when a signing key is loaded,
 `Match → submit_intent` / `submit_timelocked ok` (or `set_weights ok` if CR is off):

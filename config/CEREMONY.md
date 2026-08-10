@@ -12,18 +12,22 @@ Offline, operator-only. Never commit secrets. Prefer `/root/.base-secrets/` (mod
 | `config/measurements.toml` | Measurement allowlist; empty = fail-closed (base-agent CVM path removed). |
 | `config/measurements.toml.sig` | Detached owner signature. |
 
-### Design challenge enablement (post agent/hypertraining removal)
+### Challenge enablement (post agent/hypertraining removal)
 
-Current committed `challenges.toml` has **two** rows: `design` @ 5000 bps and
-`prism` @ 5000 bps (50/50; sum = 10000). The `design` public key was generated
-with the **dev throwaway** `challenge-design.age` under `~/.base-secrets/`.
+Current committed `challenges.toml` has **three** rows: `design` @ 3000 bps,
+`prism` @ 4500 bps, and `bounty` @ 2500 bps (sum = 10000). Challenge public
+keys were generated with **dev throwaway** age files under `~/.base-secrets/`
+(`challenge-design.age`, `challenge-prism.age`, `challenge-bounty.age`).
 A future production owner/key ceremony may still:
 
-1. Keygen a production `design_sk` (keep off-git; materialize as `deploy/secrets/design_sk`).
-2. Replace the `design` `public_key` row in `config/challenges.toml`.
-3. Optionally move bps between `prism` and `design` (sum must remain 10000).
+1. Keygen production challenge mini-secrets (keep off-git; materialize under
+   `deploy/secrets/{design,prism,bounty}_sk`).
+2. Replace the matching `public_key` rows in `config/challenges.toml`.
+3. Optionally move bps among `design` / `prism` / `bounty` (sum must remain 10000).
 4. Re-sign with the **production** owner key (`sign --kind challenges`).
 5. Verify under `config/owner.pubkey` (or the production owner pubkey after rotation).
+6. Mirror the same body + `.sig` into `config/challenges.staging.toml` (+ `.sig`)
+   when staging should track prod shares.
 
 ## Secret layout (never git)
 

@@ -9,7 +9,7 @@ Usage: age-encrypt-env.sh --recipient AGE1... --src-dir DIR [--out-dir DIR] [--s
 
 Encrypts <svc>.env (or falls back to <svc>.env.example) to <out>/<svc>.env.age
 for postgres,validator,gateway,updater,design-challenge,prism-challenge,
-design-egress-proxy by default.
+design-egress-proxy,bounty-challenge by default.
 
 Does not read or write age private keys.
 EOF
@@ -18,7 +18,7 @@ EOF
 RECIPIENT=""
 SRC_DIR=""
 OUT_DIR=""
-SERVICES="postgres validator gateway updater design-challenge prism-challenge design-egress-proxy"
+SERVICES="postgres validator gateway updater design-challenge prism-challenge design-egress-proxy bounty-challenge"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

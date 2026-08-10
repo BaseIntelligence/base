@@ -97,3 +97,14 @@ services:
     environment:
       # No OpenRouter spend locally unless a real key is mounted.
       DESIGN_EGRESS_SIM: "${LOCAL_DESIGN_EGRESS_SIM:-true}"
+
+  bounty-challenge:
+    ports:
+      - "127.0.0.1:${LOCAL_BOUNTY_HOST_PORT:-28095}:8095"
+    environment:
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL:-postgres://base:base_dev_only_change_me@postgres:5432/base}
+      # Deterministic agentic similarity on a laptop unless operator opts in.
+      BOUNTY_FORCE_SIM: "${LOCAL_BOUNTY_FORCE_SIM:-true}"
+      # Local miners are usually not registered on testnet 541: gating off by
+      # default here (staging/prod never set this). 1 = enforce 1-max+metagraph.
+      BASE_SUBMISSION_GATING: "${LOCAL_SUBMISSION_GATING:-0}"

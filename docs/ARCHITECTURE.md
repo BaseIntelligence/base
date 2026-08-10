@@ -7,6 +7,7 @@ Operator-facing map of the control plane. Normative byte contracts live in the f
 | [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) | **FROZEN** | Epoch bundle SCALE layout, merkle, aggregation, on-chain payload bounds |
 | [`DESIGN_CHALLENGE.md`](./DESIGN_CHALLENGE.md) | **FROZEN** | `design` challenge: harness sandbox, agentic review, admin winners, D24 leaves |
 | [`PRISM.md`](./PRISM.md) | live | `prism` Lium GPU recipe challenge (HTTP submit) |
+| [`BOUNTY_CHALLENGE.md`](./BOUNTY_CHALLENGE.md) | live | `bounty` video bug-report challenge (HTTP multipart + admin approve) |
 
 Do not restate those contracts here. Link them.
 
@@ -23,7 +24,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 - Gateway runs **only** as subnet owner (master). Startup asserts hotkey == on-chain `SubnetOwnerHotkey` or exits `2` before bind.
 - Validators **recompute** the weight vector from a signed, merkle-rooted epoch bundle. Challenge keys and measurements come from **owner-signed local files**, never from gateway HTTP.
 - CRV4 timelock commit-reveal on Bittensor testnet/mainnet as configured. Reveal is automatic on-chain.
-- Challenges accept miner work over **HTTP** (design Python harness sandbox; prism Lium GPU eval). No miner Phala/CVM path.
+- Challenges accept miner work over **HTTP** (design Python harness sandbox; prism Lium GPU eval; bounty video bug reports). No miner Phala/CVM path.
 
 ---
 
@@ -35,7 +36,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
                     │  postgres · gateway · validator ·     │
                     │  updater · socket-proxy ·             │
                     │  prism-challenge · design-challenge · │
-                    │  design-egress-proxy                  │
+                    │  design-egress-proxy · bounty-challenge│
                     └───────────────┬─────────────────────┘
                                     │ TLS terminates in gateway (D20)
                                     │ /challenge/{id}/*  /v1/bundle/*
@@ -48,7 +49,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
                                     │ HTTP submit
                     ┌───────────────▼─────────────────────┐
                     │  Miner clients (no TEE required)     │
-                    │  design harness / prism scripts       │
+                    │  design / prism / bounty              │
                     └─────────────────────────────────────┘
 ```
 
@@ -59,6 +60,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 | `design-challenge` | **Master-only:** sandbox harness runs, sanitize/viewer, scoring, sign leaves |
 | `design-egress-proxy` | **Master-only:** open sandbox egress (internal-target blocklist) + budgeted LLM path |
 | `prism-challenge` | **Master-only:** Lium (or sim) recipe eval, review gate, sign leaves |
+| `bounty-challenge` | **Master-only:** video bug intake, ffmpeg compress, similar-24h, admin approve, sign leaves |
 | `updater` | Digest-pinned rollouts via `docker-socket-proxy` (master) |
 | `trustroot` | Offline keygen / sign / verify for owner-signed TOML |
 | `bundle` | SCALE types, seal, verify (`PROTOCOL_VERSION`) |
@@ -95,13 +97,15 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 | `config/measurements.toml` + `.sig` | yes | every validator from **disk** |
 | Challenge / owner mini-secrets | **never** | challenge service / offline ceremony only |
 
-Current emission posture: `design = 5000` bps, `prism = 5000` bps (50/50; sum = 10000).
+Current emission posture: `design = 3000` bps, `prism = 4500` bps,
+`bounty = 2500` bps (sum = 10000).
 
 Gateway DB is **routing only**. It is never a source of challenge keys, emission shares, or measurements (D18, D23).
 
 Ceremony: [`config/CEREMONY.md`](../config/CEREMONY.md).  
 Rotation: [`runbooks/trust-root-rotation.md`](./runbooks/trust-root-rotation.md) (D21).  
-Design emission unlock: [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md).
+Design emission unlock: [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md).  
+Bounty emission unlock: [`runbooks/bounty-enable-and-emission.md`](./runbooks/bounty-enable-and-emission.md).
 
 ---
 
@@ -139,5 +143,6 @@ See D19 in [`THREAT_MODEL.md`](./THREAT_MODEL.md). Short form:
 | [`runbooks/promote-rollback-restore.md`](./runbooks/promote-rollback-restore.md) | Digest promote, rollback, `pg_dump` |
 | [`runbooks/gateway-failover.md`](./runbooks/gateway-failover.md) | Manual failover (R9) |
 | [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md) | Design keygen + emission |
+| [`runbooks/bounty-enable-and-emission.md`](./runbooks/bounty-enable-and-emission.md) | Bounty keygen + emission |
 | [`external-miner/README.md`](./external-miner/README.md) | Miner HTTP path + `protocol_version` badge |
 | [`../README.md`](../README.md) | Repo bootstrap |

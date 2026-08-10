@@ -214,52 +214,22 @@ fn static_source_cheat_verdict(
 
 /// Brand clusters for scrape-style famous-site clones (≥2 hits in one cluster).
 const FAMOUS_SITE_CLUSTERS: &[&[&str]] = &[
+    // x.com survives sanitize when og:/data-testid markers are stripped.
     &[
-        "twitter.com",
-        // Survives sanitize when og:/data-testid markers are stripped.
-        "x.com",
-        "property=\"og:site_name\" content=\"twitter\"",
-        "property=\"og:site_name\" content=\"x\"",
-        "data-testid=\"tweet\"",
+        "twitter.com", "x.com", "property=\"og:site_name\" content=\"twitter\"",
+        "property=\"og:site_name\" content=\"x\"", "data-testid=\"tweet\"",
         "aria-label=\"twitter\"",
     ],
     &[
-        "facebook.com",
-        "property=\"og:site_name\" content=\"facebook\"",
-        "fbcdn.net",
+        "facebook.com", "property=\"og:site_name\" content=\"facebook\"", "fbcdn.net",
         "data-testid=\"facebook",
     ],
-    &[
-        "instagram.com",
-        "property=\"og:site_name\" content=\"instagram\"",
-        "cdninstagram.com",
-    ],
-    &[
-        "youtube.com",
-        "property=\"og:site_name\" content=\"youtube\"",
-        "ytimg.com",
-        "ytd-app",
-    ],
-    &[
-        "linkedin.com",
-        "property=\"og:site_name\" content=\"linkedin\"",
-        "licdn.com",
-    ],
-    &[
-        "netflix.com",
-        "property=\"og:site_name\" content=\"netflix\"",
-        "nflxext.com",
-    ],
-    &[
-        "amazon.com",
-        "property=\"og:site_name\" content=\"amazon\"",
-        "amazon-adsystem.com",
-    ],
-    &[
-        "github.com",
-        "property=\"og:site_name\" content=\"github\"",
-        "github.githubassets.com",
-    ],
+    &["instagram.com", "property=\"og:site_name\" content=\"instagram\"", "cdninstagram.com"],
+    &["youtube.com", "property=\"og:site_name\" content=\"youtube\"", "ytimg.com", "ytd-app"],
+    &["linkedin.com", "property=\"og:site_name\" content=\"linkedin\"", "licdn.com"],
+    &["netflix.com", "property=\"og:site_name\" content=\"netflix\"", "nflxext.com"],
+    &["amazon.com", "property=\"og:site_name\" content=\"amazon\"", "amazon-adsystem.com"],
+    &["github.com", "property=\"og:site_name\" content=\"github\"", "github.githubassets.com"],
 ];
 
 /// Ultra-strong single markers (`og:site_name` of a famous property).

@@ -1,6 +1,6 @@
 //! Fail if external miner docs drift from `bundle` `PROTOCOL_VERSION`,
-//! if design/prism HTTP miner paths are missing, or if `docs/THREAT_MODEL.md`
-//! D19 claim is not word-for-word vs plan pin.
+//! if design/prism/bounty HTTP miner paths are missing, or if
+//! `docs/THREAT_MODEL.md` D19 claim is not word-for-word vs plan pin.
 
 use std::fs;
 use std::path::Path;
@@ -11,13 +11,15 @@ const D19_VERBATIM: &str = "base guarantees *no equivocation between validators*
 /// Marker comment required in external miner docs.
 const BADGE_COMMENT_PREFIX: &str = "<!-- protocol_version:";
 
-/// Content pins required across `docs/external-miner/` (design + prism HTTP).
+/// Content pins required across `docs/external-miner/` (design + prism + bounty HTTP).
 const EXTERNAL_MINER_PINS: &[(&str, &str)] = &[
     ("design_challenge", "design"),
     ("prism_challenge", "prism"),
+    ("bounty_challenge", "bounty"),
     ("http_submit", "HTTP"),
     ("design_spec_link", "DESIGN_CHALLENGE.md"),
     ("prism_spec_link", "PRISM.md"),
+    ("bounty_spec_link", "BOUNTY_CHALLENGE.md"),
     ("no_phala_cvm", "no Phala/CVM"),
     ("bundle_spec_link", "BUNDLE_SPEC.md"),
 ];
@@ -46,7 +48,7 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
 
     if failures.is_empty() {
         println!(
-            "external-docs-check OK (protocol_version={protocol_version}, design/prism HTTP, D19 verbatim match)"
+            "external-docs-check OK (protocol_version={protocol_version}, design/prism/bounty HTTP, D19 verbatim match)"
         );
         Ok(())
     } else {
@@ -118,8 +120,8 @@ fn check_external_miner_docs(
         }
     }
 
-    // Required pages for design/prism HTTP submit.
-    for required in ["design.md", "prism.md", "troubleshoot.md"] {
+    // Required pages for design/prism/bounty HTTP submit.
+    for required in ["design.md", "prism.md", "bounty.md", "troubleshoot.md"] {
         let path = dir.join(required);
         if !path.is_file() {
             failures.push(format!(

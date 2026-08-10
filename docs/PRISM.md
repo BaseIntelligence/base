@@ -4,7 +4,7 @@
 **scoring_version:** `2` (bpb-only; v1 blended a 0.3 LLM quality vote; the architecture competition below reallocates credits *inside* this same lattice — no chain-facing version change)  
 **recipe_version:** `1.2.0` (telemetry hooks 1.1.0 + architecture registry / training-only submissions 1.2.0)  
 **port:** `8092`  
-**emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
+**emission_share_bps:** `4500` (with design `3000` / bounty `2500`; sum `10000`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
 
 ## What it is

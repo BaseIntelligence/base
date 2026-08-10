@@ -48,6 +48,7 @@ RUN cargo build --release \
       -p prism-challenge-bin \
       -p design-challenge-bin \
       -p design-egress-proxy-bin \
+      -p bounty-challenge-bin \
  && cargo build --release -p challenge-review-bin \
  && strip target/release/validator \
            target/release/gateway \
@@ -55,6 +56,7 @@ RUN cargo build --release \
            target/release/prism-challenge \
            target/release/design-challenge \
            target/release/design-egress-proxy \
+           target/release/bounty-challenge \
            target/release/challenge-review \
  && mkdir -p /out \
  && cp target/release/validator \
@@ -63,6 +65,7 @@ RUN cargo build --release \
        target/release/prism-challenge \
        target/release/design-challenge \
        target/release/design-egress-proxy \
+       target/release/bounty-challenge \
        target/release/challenge-review /out/
 
 # -----------------------------------------------------------------------------
@@ -79,6 +82,7 @@ COPY target/release/validator \
      target/release/prism-challenge \
      target/release/design-challenge \
      target/release/design-egress-proxy \
+     target/release/bounty-challenge \
      target/release/challenge-review \
      /out/
 
@@ -141,6 +145,18 @@ ENV DESIGN_CHROME_BIN=/usr/bin/chromium
 USER base
 COPY --from=artifacts --chown=base:base /out/design-challenge /usr/local/bin/design-challenge
 ENTRYPOINT ["/usr/local/bin/design-challenge"]
+
+FROM runtime-base AS bounty-challenge
+USER root
+# ffmpeg for miner video compress (720p CRF~28); keep off other runtime targets.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/bounty/artifacts \
+    && chown -R base:base /var/lib/bounty
+USER base
+COPY --from=artifacts --chown=base:base /out/bounty-challenge /usr/local/bin/bounty-challenge
+ENTRYPOINT ["/usr/local/bin/bounty-challenge"]
 
 FROM runtime-base AS design-egress-proxy
 COPY --from=artifacts --chown=base:base /out/design-egress-proxy /usr/local/bin/design-egress-proxy

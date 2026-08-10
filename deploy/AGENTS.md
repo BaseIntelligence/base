@@ -37,14 +37,16 @@ Compose always runs a digest-pinned `postgres` service (`base-pgdata` volume, he
 |------|--------|
 | Design harnesses / runs / stages / artifacts metadata / admin rounds | **Postgres** (`design_*`) |
 | Prism submissions / stage events | **Postgres** (`prism_*`) |
+| Bounty bugs / stage events / epoch scores | **Postgres** (`bounty_*`) |
 | Gateway raw weight leaves + sealed bundles | **Postgres** (`raw_weight_snapshot`, `epoch_bundle`, …) |
 | Validator attestations (when DB configured) | **Postgres** |
 | Design sandbox staging files | volume `${BASE_STATE_DIR}/design/staging` + `design-artifacts` |
+| Bounty compressed videos | volume `bounty-artifacts` |
 | Gateway challenge **backend registry** | **in-memory** — re-seed after gateway restart (`remote-deploy.sh` does this on master) |
 | site-api (`GET /v1/site/*`) | no DB — proxies challenge upstreams via gateway |
 | Unit/integration tests | may construct `Memory*Store` directly; omit `BASE_DATABASE_URL` only there |
 
-Migrations (`crates/db/migrations`) run on boot in gateway / design-challenge / prism-challenge when `BASE_DATABASE_URL` is set. Compose requires `deploy/env/{design,prism}-challenge.env` so challenges cannot silently boot on memory.
+Migrations (`crates/db/migrations`) run on boot in gateway / design-challenge / prism-challenge / bounty-challenge when `BASE_DATABASE_URL` is set. Compose requires `deploy/env/{design,prism,bounty}-challenge.env` so challenges cannot silently boot on memory.
 
 Verify rows (local master stack):
 
@@ -71,7 +73,7 @@ Full procedure: [`docs/runbooks/local-testnet-e2e.md`](../docs/runbooks/local-te
 | Docker, Compose v2 | yes | yes |
 | `cloudflared` (or `--no-tunnel`) | yes | yes |
 | `deploy/env/*.env` (examples OK) | yes | yes |
-| `gateway_sk` (seal) + `prism_sk` / `design_sk` (leaf sigs; pubs ↔ trust root) | yes (prefer `~/.base-secrets/challenge-*.sk`) | real preferred |
+| `gateway_sk` (seal) + `prism_sk` / `design_sk` / `bounty_sk` (leaf sigs; pubs ↔ trust root) | yes (prefer `~/.base-secrets/challenge-*.sk` / age decrypt) | real preferred |
 | `deploy/secrets/wallets/base-owner` | **no** (not needed for `/v1/weights/latest`) | **yes** (netuid 541 owner) |
 | `base-validator` wallet | **no** (fetch-only) | for on-chain weight submit |
 | Fresh `target/release/{gateway,validator,…}` (or `BASE_DOCKER_BUILD_FROM=source`) | recommended | **required** for real chain |

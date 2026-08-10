@@ -61,3 +61,8 @@ services:
   design-egress-proxy:
     environment:
       DESIGN_EGRESS_SIM: "false"
+  bounty-challenge:
+    environment:
+      # Docker + keyed OpenRouter only. Never set BOUNTY_FORCE_SIM here.
+      BOUNTY_FORCE_SIM: "false"
+      BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"

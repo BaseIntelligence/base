@@ -1,0 +1,35 @@
+[package]
+name = "bounty-challenge-bin"
+description = "bounty-challenge operator binary (port 8095)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "bounty-challenge"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "multipart"] }
+bounty-challenge = { path = "../../crates/bounty-challenge" }
+chain = { path = "../../crates/chain" }
+chain-live = { path = "../../crates/chain-live" }
+challenge-agentic = { path = "../../crates/challenge-agentic" }
+challenge-common = { path = "../../crates/challenge-common" }
+challenge-keys = { path = "../../crates/challenge-keys" }
+clap = { version = "4", features = ["derive", "env"] }
+crypto = { path = "../../crates/crypto" }
+db = { path = "../../crates/db" }
+hex = "0.4"
+sha2 = "0.10"
+submission-gating = { path = "../../crates/submission-gating" }
+telemetry = { path = "../../crates/telemetry" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tracing = "0.1"
+trustroot = { path = "../../crates/trustroot" }
+
+[lints]
+workspace = true

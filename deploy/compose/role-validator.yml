@@ -26,5 +26,7 @@ services:
     profiles: ["never"]
   design-egress-proxy:
     profiles: ["never"]
+  bounty-challenge:
+    profiles: ["never"]
   socket-proxy:
     profiles: ["never"]

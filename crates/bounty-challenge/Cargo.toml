@@ -1,0 +1,35 @@
+[package]
+name = "bounty-challenge"
+description = "Bounty challenge orchestrator, compress, similarity, leaf emit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+bounty-challenge-task = { path = "../bounty-challenge-task" }
+bounty-http = { path = "../bounty-http" }
+bounty-store = { path = "../bounty-store" }
+bounty-store-pg = { path = "../bounty-store-pg" }
+bundle = { path = "../bundle" }
+challenge-agentic = { path = "../challenge-agentic" }
+challenge-common = { path = "../challenge-common" }
+crypto = { path = "../crypto" }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "process", "fs", "io-util"] }
+tracing = "0.1"
+trustroot = { path = "../trustroot" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

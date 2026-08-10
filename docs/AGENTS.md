@@ -23,6 +23,7 @@ When a spike or evidence report conflicts with a frozen spec or runbook, the nor
 | [`runbooks/measurement-repin-socket-proxy.md`](runbooks/measurement-repin-socket-proxy.md) | Socket-proxy measurement re-pin |
 | [`runbooks/design-enable-and-emission.md`](runbooks/design-enable-and-emission.md) | Design keygen + emission unlock |
 | [`runbooks/prism-enable-lium-and-emission.md`](runbooks/prism-enable-lium-and-emission.md) | Prism Lium + emission |
+| [`runbooks/bounty-enable-and-emission.md`](runbooks/bounty-enable-and-emission.md) | Bounty keygen + emission unlock |
 
 Deploy topology and CI lanes: [`../deploy/README.md`](../deploy/README.md) and [`../deploy/AGENTS.md`](../deploy/AGENTS.md).  
 Repo-wide agent contract: [`../AGENTS.md`](../AGENTS.md).
@@ -35,6 +36,7 @@ Public miner docs live **outside** this monorepo (examples + human guides only �
 |-----------|------|
 | Design | [`BaseIntelligence/design-challenge`](https://github.com/BaseIntelligence/design-challenge) |
 | Prism | [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) |
+| Bounty | *(public repo follow-up; use [`external-miner/bounty.md`](external-miner/bounty.md))* |
 
 `docs/external-miner/` remains the in-repo mirror for CI (`external-docs-check`) and operators. When challenge APIs or rules change, update **both** the public repo and `external-miner/` (see root [`../AGENTS.md`](../AGENTS.md) § Challenge public docs).
 
@@ -42,7 +44,7 @@ Public miner docs live **outside** this monorepo (examples + human guides only �
 
 When updating challenge or local-subnet docs/runbooks, keep these invariants:
 
-- **Master-only eval** — design/prism challenge services run on master; validator has **no challenge exec** (fetch sealed weights only).
+- **Master-only eval** — design/prism/bounty challenge services run on master; validator has **no challenge exec** (fetch sealed weights only).
 - **Simulate submissions** — submit baseline **and** a cheat fixture through the challenge service; poll `/events` + `/logs`; do not treat `/health` alone as proof.
 - **Design admin winners** — after clean `awaiting_admin`, operator bearer awards 1|2 winners; then leaf → seal path.
 - **No host Sim in staging/prod** — Docker only; `SimSandbox` / `BASE_ALLOW_HOST_SIM` are CI/local opt-in.
