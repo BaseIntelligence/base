@@ -79,17 +79,19 @@ quota — trust `/v1/recipe`, not the chart meta line.
   → `403 hotkey_not_in_metagraph`; a fresh registration may lag the snapshot
   (`503 metagraph_unavailable` → retry shortly).
 - **One accepted architecture submission per hotkey.** While yours is
-  `registered` / `blocked` / `rejected`, a *different* architecture submission
-  gets `409 submission_gated`. Re-POSTing the **identical** sources is always
-  safe (idempotent `200 already-queued`).
+  `registered` / `rejected`, or `blocked` **outside** the infra window, a
+  *different* architecture submission gets `409 submission_gated`. Re-POSTing
+  the **identical** sources is always safe (idempotent `200 already-queued`).
 - **Training-only entries are separate**: one accepted entry per
   `(hotkey, arch_id)`, same retry rules — you may train on many published
   archs, one script per arch.
 - If your hotkey **leaves the metagraph**, the watcher reopens your slot(s)
   automatically — resubmit under your new uid.
 - Infra failures (Lium pod, review/similarity/LLM infra) **auto-retry up to 3
-  times**; cheat / rejected verdicts are terminal. Manual retry:
-  `POST /v1/submissions/{id}/retry`.
+  times**; cheat / rejected verdicts are terminal. After an infra failure
+  (`ChallengeInternal`), you may **resubmit within 30 minutes** (new POST or
+  `POST /v1/submissions/{id}/retry`). After 30 minutes the slot stays blocked
+  until your hotkey leaves the metagraph.
 
 ## Anti-copy rule (architecture-only)
 
