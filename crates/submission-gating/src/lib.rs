@@ -8,11 +8,14 @@
 //! ```text
 //! open ──intake accept──▶ registered ──terminal retry-exhausted──▶ blocked
 //!                        └─cheat / copy gate─────────────────────▶ rejected
+//! blocked (infra) ──miner resubmit ≤30m──▶ registered (new intake)
 //! blocked|rejected ──watcher: hotkey gone from metagraph──▶ open
 //! ```
 //!
-//! Non-`open` rows make intake fail with an explicit 409; only the watcher
-//! (or an out-of-band operator) returns a row to `open`.
+//! Non-`open` rows make intake fail with an explicit 409, except infra
+//! `blocked` within [`INFRA_RESUBMIT_WINDOW_MS`] (install / AST / LLM).
+//! Cheat `rejected` never soft-reopens; the watcher (or an operator)
+//! returns other rows to `open`.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -60,6 +63,24 @@ impl GatingState {
             _ => None,
         }
     }
+}
+
+/// Miner may POST a new submission after infra `blocked` for this long.
+pub const INFRA_RESUBMIT_WINDOW_MS: u64 = 30 * 60 * 1000;
+
+/// Infra auto-retry / `ChallengeInternal` classes (not cheat).
+#[must_use]
+pub fn is_infra_error_class(class: Option<&str>) -> bool {
+    matches!(class, Some("install" | "ast_infra" | "llm_infra"))
+}
+
+/// `blocked` + infra class + still inside the post-install resubmit window.
+#[must_use]
+pub fn infra_resubmit_allowed(row: &GatingRow, now_ms: u64) -> bool {
+    row.state == GatingState::Blocked
+        && is_infra_error_class(row.last_error_class.as_deref())
+        && row.updated_at_ms > 0
+        && now_ms.saturating_sub(row.updated_at_ms) <= INFRA_RESUBMIT_WINDOW_MS
 }
 
 /// One `submission_gating` row.
@@ -141,6 +162,18 @@ impl MemoryGatingStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Test helper: backdate / set `updated_at_ms` for window checks.
+    pub fn set_updated_at_ms(&self, challenge: &str, hotkey: &str, updated_at_ms: u64) -> bool {
+        let Ok(mut m) = self.rows.lock() else {
+            return false;
+        };
+        let Some(row) = m.get_mut(&(challenge.to_owned(), hotkey.to_owned())) else {
+            return false;
+        };
+        row.updated_at_ms = updated_at_ms;
+        true
     }
 }
 
@@ -650,6 +683,32 @@ mod tests {
             s.get("design", &hk(0xAA)).await.unwrap().unwrap().state,
             GatingState::Registered
         );
+    }
+
+    #[test]
+    fn infra_resubmit_window_helpers() {
+        let now = 10_000_000u64;
+        let mut row = GatingRow {
+            challenge: "prism".into(),
+            hotkey: hk(1),
+            uid: Some(0),
+            state: GatingState::Blocked,
+            attempt_count: 3,
+            last_error_class: Some("install".into()),
+            created_at_ms: now,
+            updated_at_ms: now - 60_000,
+        };
+        assert!(infra_resubmit_allowed(&row, now));
+        row.updated_at_ms = now.saturating_sub(INFRA_RESUBMIT_WINDOW_MS + 1);
+        assert!(!infra_resubmit_allowed(&row, now));
+        row.updated_at_ms = now;
+        row.last_error_class = Some("miner".into());
+        assert!(!infra_resubmit_allowed(&row, now));
+        row.last_error_class = Some("install".into());
+        row.state = GatingState::Rejected;
+        assert!(!infra_resubmit_allowed(&row, now));
+        assert!(is_infra_error_class(Some("ast_infra")));
+        assert!(!is_infra_error_class(Some("cheat")));
     }
 
     #[tokio::test]

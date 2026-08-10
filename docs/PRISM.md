@@ -79,9 +79,11 @@ enforces **one accepted submission per `(prism, hotkey)`**
 unknown hotkey → `403 hotkey_not_in_metagraph`. Infra-class failures
 (`install` = Lium/pod, `ast_infra` = similarity, `llm_infra` = review/agentic)
 **auto-retry up to 3 times** before a terminal `blocked`; cheat / suspicious
-verdicts are terminal `rejected` (no retry). A metagraph **watcher** reopens
-eligibility when the hotkey leaves the metagraph (uid deregistered or hotkey
-replaced). Manual `POST /v1/submissions/{id}/retry` is unchanged.
+verdicts are terminal `rejected` (no retry). After an infra `blocked`, the
+miner may **resubmit for up to 30 minutes** (new `POST /v1/submissions` or
+`POST /v1/submissions/{id}/retry` for `ChallengeInternal`); after the window
+the slot stays blocked until the metagraph watcher reopens it (hotkey left /
+replaced).
 
 **Training-only entries** gate separately under the composite challenge key
 `prism:train:<arch_id>`: one accepted entry per `(hotkey, arch_id)`, with

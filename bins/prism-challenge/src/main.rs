@@ -34,7 +34,8 @@ use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
 use submission_gating::{
     watch_once, GatingStore, MemoryGatingStore, MetagraphCache, PgGatingStore,
 };
-const MAX_ATTEMPTS: u32 = 2;
+/// Manual `/retry` ceiling; keep ≥ `PRISM_AUTO_RETRY_MAX` so infra retries work.
+const MAX_ATTEMPTS: u32 = 3;
 
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
