@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# Prod real-epoch sealer: seal the CURRENT chain epoch on the master gateway
-# as soon as both >0-bps challenges (design + prism) have posted their leaf
-# sets for it. This replaces the interim block-scale burn-seal as the source
-# of served weights once real scores flow.
+# Prod real-epoch sealer: seal the newest chain epoch on the master gateway
+# that has a complete D24 participant set from every >0-bps challenge.
 #
-# Why a blind retry loop: the seal endpoint is fail-safe — it 409s with
-# `IncompleteParticipantSet` until both same-epoch sets exist, and re-sealing
-# an already-sealed epoch is a no-op conflict. So we simply attempt the
-# current epoch every 10 min and log the outcome.
+# Why a walk-back: design historically emitted only in a tight late-tempo
+# window and could skip alternate epochs (end-of-epoch relabel race). Waiting
+# solely on *current* epoch then 409s forever while `/v1/weights/latest` stays
+# pinned on an older real seal (burn seals cannot outrank it). Trying current,
+# then current-1 … recovers the newest sealable epoch.
 #
-# block_b pins the bundle metagraph. Both challenges pin their expected set
-# at the epoch's start block (`last_epoch_block`), so block_b = the current
-# LastEpochBlock gives an exact D24 participant match by construction —
-# metagraph churn *inside* the epoch can no longer break the seal.
+# block_b pins the bundle metagraph to that epoch's start block
+# (LastEpochBlock − k×tempo) so D24 participant matching holds.
 #
 # Chain reads use plain HTTPS JSON-RPC state_getStorage with baked Substrate
 # storage keys (twox128("SubtensorModule") ++ twox128(item) ++ netuid LE;
@@ -24,12 +21,16 @@ GATEWAY="${BASE_GATEWAY_ENDPOINT:-http://127.0.0.1:8080}"
 NETUID="${BASE_NETUID:-100}"
 LOG="${REAL_SEAL_LOG:-/var/log/base-real-seal.log}"
 LOCK="${REAL_SEAL_LOCK:-/run/base-real-seal.lock}"
+# How many prior epochs to try when current is incomplete (≈12h at tempo 360).
+WALK_BACK="${REAL_SEAL_WALK_BACK:-16}"
 # Ordered failover; first reachable endpoint wins per call.
 CHAIN_ENDPOINTS="${BASE_CHAIN_ENDPOINTS:-https://bittensor-finney.api.onfinality.io/public-ws,https://entrypoint-finney.opentensor.ai:443}"
 
 # twox128("SubtensorModule") ++ twox128(item) prefixes (verified on finney).
 K_SUBNET_EPOCH_INDEX="658faa385070e074c85bf6b568cf05554f101d7a30ae31c7ab3099206c5ae12b"
 K_LAST_EPOCH_BLOCK="658faa385070e074c85bf6b568cf055590010c37124c14146041452f9ffba0df"
+# twox128(SubtensorModule) ++ twox128(Tempo)
+K_TEMPO="658faa385070e074c85bf6b568cf05557641384bb339f3758acddfd7053d3317"
 
 # Substrate Identity hasher on u16 netuid = little-endian bytes (not printf %04x).
 netuid_le_hex() {
@@ -54,6 +55,53 @@ rpc_storage() {
   return 1
 }
 
+# Tempo is Option<u16> on chain (0x01 + LE u16) or bare u16 depending on codec;
+# accept both shapes.
+rpc_tempo() {
+  local key="$1" ep out raw
+  local -a eps
+  IFS=',' read -r -a eps <<<"${CHAIN_ENDPOINTS}"
+  for ep in "${eps[@]}"; do
+    out="$(curl -fsS -m 15 -H 'content-type: application/json' \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"state_getStorage\",\"params\":[\"${key}\"]}" \
+      "${ep}" 2>/dev/null)" || continue
+    raw="$(printf '%s' "${out}" | jq -r '.result // empty')"
+    if [[ -n "${raw}" && "${raw}" != "null" ]]; then
+      python3 -c '
+import sys
+b=bytes.fromhex(sys.argv[1][2:])
+# Plain u16 (ValueQuery) or Option<u16> (0x01 + LE).
+if len(b)==3 and b[0]==1:
+    print(int.from_bytes(b[1:], "little"))
+elif len(b)>=2:
+    print(int.from_bytes(b[:2], "little"))
+else:
+    sys.exit(1)
+' "${raw}" && return 0
+    fi
+  done
+  return 1
+}
+
+attempt_seal() {
+  local epoch="$1" block_b="$2"
+  local resp rc=0
+  resp="$(curl -sS -m 60 -X POST -H 'content-type: application/json' \
+    -w '\n%{http_code}' \
+    ${auth_args[@]+"${auth_args[@]}"} \
+    -d "{\"epoch\":${epoch},\"netuid\":${NETUID},\"block_b\":${block_b}}" \
+    "${GATEWAY}/v1/admin/seal" 2>&1)" || rc=$?
+  local http body
+  http="$(printf '%s' "${resp}" | tail -1)"
+  body="$(printf '%s' "${resp}" | sed '$d')"
+  if [[ ${rc} -eq 0 && "${http}" == "200" ]]; then
+    echo "$(date -Is) seal ok epoch=${epoch} block_b=${block_b}: ${body}"
+    return 0
+  fi
+  echo "$(date -Is) seal pending/failed epoch=${epoch} block_b=${block_b} http=${http:-?} rc=${rc}: ${body}"
+  return 1
+}
+
 exec 9>"${LOCK}"
 if ! flock -n 9; then
   echo "$(date -Is) skip: another run holds ${LOCK}" >>"${LOG}"
@@ -70,6 +118,12 @@ fi
     echo "$(date -Is) chain read failed (last_epoch_block) key=0x${K_LAST_EPOCH_BLOCK}${netuid_hex}"
     exit 1
   }
+  # Tempo storage key: twox128(SubtensorModule)++twox128(Tempo)++netuid LE.
+  # Fallback 360 (finney default) if the read fails.
+  tempo="$(rpc_tempo "0x${K_TEMPO}${netuid_hex}" 2>/dev/null || true)"
+  if [[ -z "${tempo}" || "${tempo}" -le 0 ]]; then
+    tempo=360
+  fi
   auth_args=()
   if [[ -n "${BASE_GATEWAY_ADMIN_TOKEN:-}" ]]; then
     auth_args=(-H "Authorization: Bearer ${BASE_GATEWAY_ADMIN_TOKEN}")
@@ -78,15 +132,27 @@ fi
   elif [[ -f "${BASE_HOME}/deploy/secrets/gateway_admin_token" ]]; then
     auth_args=(-H "Authorization: Bearer $(tr -d '[:space:]' <"${BASE_HOME}/deploy/secrets/gateway_admin_token")")
   fi
-  resp="$(curl -fsS -m 60 -X POST -H 'content-type: application/json' \
-    ${auth_args[@]+"${auth_args[@]}"} \
-    -d "{\"epoch\":${epoch},\"netuid\":${NETUID},\"block_b\":${leb}}" \
-    "${GATEWAY}/v1/admin/seal" 2>&1)" && rc=0 || rc=$?
-  if [[ ${rc} -eq 0 ]]; then
-    echo "$(date -Is) seal ok epoch=${epoch} block_b=${leb}: ${resp}"
-  else
-    # 409 (sets incomplete / already sealed) is the expected steady state
-    # while waiting on a challenge emission; anything else needs a look.
-    echo "$(date -Is) seal pending/failed rc=${rc} epoch=${epoch} block_b=${leb}: ${resp}"
+
+  echo "$(date -Is) seal walk start chain_epoch=${epoch} last_epoch_block=${leb} tempo=${tempo} walk_back=${WALK_BACK}"
+
+  sealed=0
+  for ((k=0; k<=WALK_BACK; k++)); do
+    try_epoch=$((epoch - k))
+    if (( try_epoch <= 0 )); then
+      break
+    fi
+    try_block=$((leb - k * tempo))
+    if (( try_block < 0 )); then
+      break
+    fi
+    if attempt_seal "${try_epoch}" "${try_block}"; then
+      sealed=1
+      break
+    fi
+  done
+
+  if [[ "${sealed}" -ne 1 ]]; then
+    echo "$(date -Is) seal walk exhausted: no complete D24 set in last ${WALK_BACK} epochs (latest remains stale until design+prism emit)"
+    exit 1
   fi
 } >>"${LOG}" 2>&1
