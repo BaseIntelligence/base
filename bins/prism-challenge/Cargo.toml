@@ -18,8 +18,10 @@ challenge-keys = { path = "../../crates/challenge-keys" }
 chain = { path = "../../crates/chain" }
 chain-live = { path = "../../crates/chain-live" }
 clap = { version = "4", features = ["derive", "env"] }
+lium-rent-pool = { path = "../../crates/lium-rent-pool" }
 prism-challenge = { path = "../../crates/prism-challenge" }
 prism-lium = { path = "../../crates/prism-lium" }
+prism-pipeline = { path = "../../crates/prism-pipeline" }
 prism-recipe = { path = "../../crates/prism-recipe" }
 prism-registry = { path = "../../crates/prism-registry" }
 prism-review = { path = "../../crates/prism-review" }

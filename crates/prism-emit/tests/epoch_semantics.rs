@@ -403,7 +403,7 @@ async fn retry_reenters_outbox() {
         }
     ));
 
-    store.reset_for_retry("sub-a").await.unwrap();
+    store.reset_for_retry("sub-a", true).await.unwrap();
     let row = store.get("sub-a").await.unwrap().expect("row");
     assert!(row.final_score.is_none());
     // Re-score via apply (mirrors the orchestrator's finalize write).

@@ -451,7 +451,7 @@ async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
             let _ = g.mark_registered(&gate_key, &row.miner_hotkey, None).await;
         }
     }
-    match st.store.reset_for_retry(&id).await {
+    match st.store.reset_for_retry(&id, true).await {
         Ok(_) => (
             StatusCode::ACCEPTED,
             Json(json!({"submission_id": id, "status": "queued"})),

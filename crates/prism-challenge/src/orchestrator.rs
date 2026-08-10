@@ -1,18 +1,5 @@
-//! Lium job orchestrator: DB-backed state machine, recovery, epoch emitter.
-//!
-//! Workers claim `queued` rows, run cheap source screens (copy gate, static
-//! cheat patterns, AST similarity) **before** renting a Lium pod, then run
-//! the recipe + master-side LLM review + agentic anti-cheat, and compute the
-//! chain-facing score. Leaf emission is decoupled from finalizes: the
-//! epoch-close emitter ([`prism_emit::EpochEmitter`], driven by
-//! [`Orchestrator::run_emitter`]) assigns every newly-finalized row to the
-//! next chain-epoch boundary's D24 set via the emission outbox
-//! (`emitted_epoch` watermark + emit cursor), so independent same-epoch
-//! scorers all land and each scoring run is assigned exactly once. Positive
-//! scores then carry into later epochs' competition sets until superseded;
-//! leaf emission applies WTA so only the single best hotkey gets Prism's
-//! share. All state lives in the store, so the API is a pure projection and
-//! restarts sweep orphans.
+//! Lium job orchestrator: claim→screen→pod→review→score; epoch emitter via
+//! [`Orchestrator::run_emitter`]. State in store; API is a projection.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -242,21 +229,23 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Ok(true)
     }
 
-    /// Requeue on infra-class failures while the auto-retry budget lasts
-    /// (`false` → caller finalizes terminal). Records the gating attempt.
+    /// Requeue on infra failures while auto-retry budget lasts (`false` →
+    /// terminal). Lium **429** requeues without burning `retry_count` / gating.
     async fn maybe_auto_retry(&self, row: &SubmissionState, class: &str, msg: &str) -> bool {
-        if row.retry_count >= self.cfg.auto_retry_max {
+        let rate = lium_rent_pool::is_rate_limited(msg);
+        if !rate && row.retry_count >= self.cfg.auto_retry_max {
             return false;
         }
         warn!(
             submission_id = %row.id,
             class,
+            rate_limited = rate,
             attempt = row.retry_count + 1,
             max = self.cfg.auto_retry_max,
             error = %msg,
             "auto-retrying submission after infra failure"
         );
-        let _ = self.store.reset_for_retry(&row.id).await;
+        let _ = self.store.reset_for_retry(&row.id, !rate).await;
         let _ = self
             .store
             .apply(
@@ -267,6 +256,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                     detail: Some(serde_json::json!({
                         "auto_retry": true,
                         "class": class,
+                        "rate_limited": rate,
                         "attempt": row.retry_count + 1,
                         "error": msg,
                     })),
@@ -274,14 +264,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 }),
             )
             .await;
-        if let Some(g) = &self.gating {
-            let _ = g
-                .bump_attempt(
-                    &gating_key(row.arch_id.as_deref()),
-                    &row.miner_hotkey,
-                    class,
-                )
-                .await;
+        if !rate {
+            if let Some(g) = &self.gating {
+                let _ = g
+                    .bump_attempt(
+                        &gating_key(row.arch_id.as_deref()),
+                        &row.miner_hotkey,
+                        class,
+                    )
+                    .await;
+            }
         }
         true
     }
