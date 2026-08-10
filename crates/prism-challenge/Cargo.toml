@@ -19,6 +19,7 @@ challenge-common = { path = "../challenge-common" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
 hex = "0.4"
+lium-rent-pool = { path = "../lium-rent-pool" }
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-emit = { path = "../prism-emit" }
 prism-lium = { path = "../prism-lium" }

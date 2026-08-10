@@ -79,7 +79,11 @@ enforces **one accepted submission per `(prism, hotkey)`**
 unknown hotkey → `403 hotkey_not_in_metagraph`. Infra-class failures
 (`install` = Lium/pod, `ast_infra` = similarity, `llm_infra` = review/agentic)
 **auto-retry up to 3 times** before a terminal `blocked`; cheat / suspicious
-verdicts are terminal `rejected` (no retry). After an infra `blocked`, the
+verdicts are terminal `rejected` (no retry). Lium **HTTP 429** on rent is
+special: `lium-rent-pool` serializes rents (≤**3 / 5s**, ≤**60 / hour**),
+waits on `Retry-After` / body hints, and the orchestrator **requeues without
+burning** `retry_count` / gating attempts. A background tick re-queues
+failed 429 rows from the last **6 hours**. After an infra `blocked`, the
 miner may **resubmit for up to 30 minutes** (new `POST /v1/submissions` or
 `POST /v1/submissions/{id}/retry` for `ChallengeInternal`); after the window
 the slot stays blocked until the metagraph watcher reopens it (hotkey left /

@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+lium-rent-pool = { path = "../lium-rent-pool" }
 prism-recipe = { path = "../prism-recipe" }
 async-trait = "0.1"
 hex = "0.4"

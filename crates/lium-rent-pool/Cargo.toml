@@ -1,0 +1,19 @@
+[package]
+name = "lium-rent-pool"
+description = "Autonomous Lium rent rate-limit pool (3/5s + 60/h) with 429-aware backoff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

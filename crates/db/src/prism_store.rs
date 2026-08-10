@@ -221,20 +221,31 @@ pub async fn update_prism_submission(
     Ok(row)
 }
 
-/// Reset a failed row for a retry: clears all execution/score fields and
-/// re-queues it. `retry_count` is bumped (policy enforced by the caller).
+/// Reset a row for retry: clears exec/score fields and re-queues.
+/// When `bump_retry`, increments `retry_count` (manual/auto infra). When
+/// false, keeps attempts (Lium 429 autonomous requeue — do not burn budget).
 ///
 /// # Errors
 /// SQL error / 0 rows for id.
 pub async fn reset_prism_submission_for_retry(
     pool: &PgPool,
     id: &str,
+    bump_retry: bool,
 ) -> Result<PrismSubmissionRow, DbError> {
     let q = format!(
-        "UPDATE prism_submission SET            status = 'queued', pod_id = NULL, pod_provider = NULL,            receipt_json = NULL, metrics_json = NULL, bpb = NULL,            review_json = NULL, similarity_json = NULL,            kind = NULL, score = NULL, absence_reason = NULL, emitted_epoch = NULL,            error_detail = NULL, retry_count = retry_count + 1, updated_at = now()          WHERE id = $1 RETURNING {COLS}"
+        "UPDATE prism_submission SET \
+            status = 'queued', pod_id = NULL, pod_provider = NULL, \
+            receipt_json = NULL, metrics_json = NULL, bpb = NULL, \
+            review_json = NULL, similarity_json = NULL, \
+            kind = NULL, score = NULL, absence_reason = NULL, emitted_epoch = NULL, \
+            error_detail = NULL, \
+            retry_count = CASE WHEN $2 THEN retry_count + 1 ELSE retry_count END, \
+            updated_at = now() \
+          WHERE id = $1 RETURNING {COLS}"
     );
     let row = sqlx::query_as::<_, PrismSubmissionRow>(&q)
         .bind(id)
+        .bind(bump_retry)
         .fetch_one(pool)
         .await?;
     Ok(row)

@@ -279,10 +279,14 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
         event: Option<&StageEvent>,
     ) -> Result<SubmissionState, StoreError>;
 
-    /// Retry reset: clears exec/score fields and re-queues a failed row.
-    /// Implementations MUST actually null the pod/receipt/score columns
-    /// (SQL) or reset the in-memory row mirror-equivalently.
-    async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError>;
+    /// Retry reset: clears exec/score fields and re-queues.
+    /// `bump_retry` increments `retry_count` (manual/auto infra). Pass
+    /// `false` for Lium 429 autonomous requeue (do not burn attempt budget).
+    async fn reset_for_retry(
+        &self,
+        id: &str,
+        bump_retry: bool,
+    ) -> Result<SubmissionState, StoreError>;
 
     /// Newsfeed listing for the API (`status` / `miner` optional filters).
     async fn list(
@@ -528,7 +532,11 @@ impl PrismStore for MemoryPrismStore {
         Ok(out)
     }
 
-    async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError> {
+    async fn reset_for_retry(
+        &self,
+        id: &str,
+        bump_retry: bool,
+    ) -> Result<SubmissionState, StoreError> {
         let mut rows = self
             .rows
             .lock()
@@ -547,7 +555,9 @@ impl PrismStore for MemoryPrismStore {
         row.similarity = None;
         row.final_score = None;
         row.error_detail = None;
-        row.retry_count = row.retry_count.saturating_add(1);
+        if bump_retry {
+            row.retry_count = row.retry_count.saturating_add(1);
+        }
         row.updated_at_ms = now_ms();
         let out = row.clone();
         drop(rows);
@@ -1023,7 +1033,7 @@ mod tests {
         )
         .await
         .unwrap();
-        s.reset_for_retry("a").await.unwrap();
+        s.reset_for_retry("a", true).await.unwrap();
         assert!(s.telemetry("a").await.unwrap().is_empty());
         assert!(s.get("a").await.unwrap().unwrap().metrics_json.is_none());
     }

@@ -1,13 +1,20 @@
 //! Real Lium HTTPS client + SSH-backed live eval.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use lium_rent_pool::RentPool;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
+
+fn rent_pool() -> &'static RentPool {
+    static POOL: OnceLock<RentPool> = OnceLock::new();
+    POOL.get_or_init(RentPool::new)
+}
 
 use crate::error::{CostGuardrailError, LiumError};
 use crate::ssh::{
@@ -157,15 +164,22 @@ impl LiumClient {
                 .text()
                 .await
                 .map_err(|e| LiumError::Transport(sanitize_err(&e.to_string(), &self.api_key)))?;
-            if status.as_u16() == 429 && attempt < RATE_LIMIT_RETRIES {
-                attempt = attempt.saturating_add(1);
-                let wait_ms = retry_after.map_or(
-                    RATE_LIMIT_BASE_MS << (attempt - 1).min(3),
-                    |s| s.saturating_mul(1000).max(50),
-                );
-                warn!(%path, attempt, wait_ms, "lium 429; backing off");
-                sleep(Duration::from_millis(wait_ms)).await;
-                continue;
+            // Rent POSTs are gated by `RentPool` — do not multi-retry (each
+            // attempt burns Lium's 60/h budget). Other endpoints keep backoff.
+            let is_rent = path.contains("/rent");
+            if status.as_u16() == 429 {
+                let secs = retry_after.or_else(|| lium_rent_pool::parse_retry_secs(&text));
+                if is_rent {
+                    rent_pool().note_429(secs.unwrap_or(5));
+                } else if attempt < RATE_LIMIT_RETRIES {
+                    attempt = attempt.saturating_add(1);
+                    let wait_ms = secs.map_or(RATE_LIMIT_BASE_MS << (attempt - 1).min(3), |s| {
+                        s.saturating_mul(1000).max(50)
+                    });
+                    warn!(%path, attempt, wait_ms, "lium 429; backing off");
+                    sleep(Duration::from_millis(wait_ms)).await;
+                    continue;
+                }
             }
             if !status.is_success() {
                 return Err(LiumError::Api(format!(
@@ -769,6 +783,7 @@ impl EvalJobBackend for LiumClient {
             let mut rented: Result<Value, LiumError> = Err(LiumError::Api("unrented".into()));
             for gcount in split_choices {
                 let body = make_body(gcount);
+                let permit = rent_pool().take().await;
                 rented = self
                     .request(
                         reqwest::Method::POST,
@@ -777,7 +792,12 @@ impl EvalJobBackend for LiumClient {
                     )
                     .await;
                 if let Err(e) = &rented {
-                    if e.to_string().contains("splitting") {
+                    let es = e.to_string();
+                    if lium_rent_pool::is_rate_limited(&es) {
+                        permit.rate_limited(&es);
+                        return Err(LiumError::Api(es));
+                    }
+                    if es.contains("splitting") {
                         continue;
                     }
                 }
@@ -819,9 +839,6 @@ impl EvalJobBackend for LiumClient {
                 }
                 Err(e) => {
                     last_err = e.to_string();
-                    if last_err.contains("429") {
-                        sleep(Duration::from_millis(RATE_LIMIT_BASE_MS)).await;
-                    }
                     self.cleanup_after_rent(pod_id.as_deref()).await;
                 }
             }
