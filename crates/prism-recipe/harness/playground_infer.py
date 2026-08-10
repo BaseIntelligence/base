@@ -114,7 +114,12 @@ def main(argv: list[str]) -> int:
     with torch.no_grad():
         for step in range(max_tokens):
             out = model(ids)
-            logits = out[0] if isinstance(out, (tuple, list)) else out
+            if hasattr(out, "logits"):
+                logits = out.logits
+            elif isinstance(out, (tuple, list)):
+                logits = out[0]
+            else:
+                logits = out
             if logits.dim() == 3:
                 logits = logits[:, -1, :]
             probs = torch.softmax(logits.float(), dim=-1)
