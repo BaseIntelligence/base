@@ -314,10 +314,12 @@ async fn competition_credits_owner_and_challenger() {
     let scores = prism_registry::competition_scores(&rows, &owners);
     // TEMP: owner-arch credit disabled — each hotkey keeps only own score.
     // Re-enable OWNER_ARCH_CREDIT_ENABLED to restore owner=900k / chall=900k.
-    assert!(
-        !prism_registry::OWNER_ARCH_CREDIT_ENABLED,
-        "update expectations when restoring owner-arch credit"
-    );
+    const {
+        assert!(
+            !prism_registry::OWNER_ARCH_CREDIT_ENABLED,
+            "update expectations when restoring owner-arch credit"
+        );
+    }
     assert_eq!(
         scores.get(&"aa".repeat(32)),
         Some(&FinalScore::Score(400_000))

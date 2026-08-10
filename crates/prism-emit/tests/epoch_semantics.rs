@@ -312,10 +312,12 @@ async fn competition_credits_survive_batching() {
     store.insert_queued(&chall).await.unwrap();
     let s8 = em.tick(8, &exp).await.unwrap().expect("epoch 8");
     assert_eq!(s8.batch, 1);
-    assert!(
-        !prism_registry::OWNER_ARCH_CREDIT_ENABLED,
-        "update expectations when restoring owner-arch credit"
-    );
+    const {
+        assert!(
+            !prism_registry::OWNER_ARCH_CREDIT_ENABLED,
+            "update expectations when restoring owner-arch credit"
+        );
+    }
     assert_score(&leaf_soa(&s8, 0xBB), 900_000);
     assert_score(&leaf_soa(&s8, 0xAA), 0);
 
