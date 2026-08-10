@@ -25,8 +25,10 @@
 //!   `Score(v>0)` row keeps participating in every later epoch's
 //!   competition set until a better/valid score supersedes it via `max`.
 //!   Leaf emission then applies **WTA** ([`prism_registry::apply_wta`]) so
-//!   only the single best hotkey receives a positive Score leaf. Empty or
-//!   reject-only fresh batches therefore do not burn the prism share.
+//!   only the single best hotkey receives a positive Score leaf. Architecture-
+//!   owner credit is temporarily off ([`prism_registry::OWNER_ARCH_CREDIT_ENABLED`])
+//!   so WTA follows own BPB-derived scores. Empty or reject-only fresh batches
+//!   therefore do not burn the prism share.
 //! - Epochs during a master outage carry no *new* outbox rows; the first
 //!   epoch after recovery still includes active positive scores plus any
 //!   backlog (the seal always pins fresh epochs — stale ones can never
