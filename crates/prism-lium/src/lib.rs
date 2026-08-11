@@ -1,8 +1,11 @@
 //! Lium GPU rental client for PRISM master-centralized eval.
 //!
-//! **No Phala CVM.** The challenge operator holds `LIUM_API_KEY` and rents
-//! ephemeral pods per eval. Cost guardrails refuse unbounded lifetime / price
-//! **before** any rent call. Every provision path terminates + verifies on failure.
+//! **No Phala CVM.** Live GPU eval is **miner-funded by default**: intake takes
+//! `X-Lium-Api-Key` and rents via that key ([`PayerKeyVault`]). The operator
+//! may still hold `LIUM_API_KEY` for Sim fallback / opt-in operator billing
+//! (`PRISM_ALLOW_OPERATOR_LIUM=1`). Cost guardrails refuse unbounded lifetime /
+//! price **before** any rent call. Every provision path terminates + verifies
+//! on failure.
 //!
 //! # Backends
 //!
@@ -30,11 +33,16 @@
 
 mod artifacts;
 mod client;
+mod payer;
 mod sim;
 mod ssh;
 
 pub use artifacts::harvest_checkpoint_ssh;
 pub use client::LiumClient;
+pub use payer::{
+    allow_operator_lium_fallback, normalize_lium_api_key, require_miner_lium, PayerBackendFactory,
+    PayerKeyVault, LIUM_API_KEY_HEADER,
+};
 pub use prism_artifacts::{
     artifact_dir_for, artifact_root, checkpoint_path_for, ensure_artifact_root,
     write_sim_checkpoint, MAX_CHECKPOINT_BYTES, POD_WORKDIR,

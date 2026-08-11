@@ -79,8 +79,23 @@ compete on an already-published architecture, submit `training.py` +
 ZIP). Do **not** include `architecture.py` — the source is pulled from the
 registry. Published archs and their best bpb: `GET /v1/architectures`.
 
-Evaluation runs on operator-rented Lium GPU pods (or `SimLiumBackend` in CI).
-You do **not** deploy a miner CVM.
+Evaluation runs on **miner-funded** Lium GPU pods (you pay the rent). Master
+still operates the pod over SSH; you do **not** deploy a miner CVM. CI uses
+`SimLiumBackend` and does not need a key.
+
+## Pay for your own GPU (required on live)
+
+Create a [Lium](https://lium.io) account, fund it, and pass your API key on
+every live submit:
+
+```http
+X-Lium-Api-Key: <your Lium API key>
+```
+
+The key is held only in master memory for that submission (never stored in the
+DB, never logged). Missing key on live → `400 missing_lium_api_key`. Cost
+guardrails (`max_price_per_hour`, lifetime) still apply so a bad key cannot
+rent unbounded SKUs through the orchestrator.
 
 ## Submit
 
@@ -89,16 +104,19 @@ You do **not** deploy a miner CVM.
 curl -sS -X POST "$BASE_GATEWAY/challenge/prism/v1/submissions" \
   -H 'content-type: application/zip' \
   -H "X-Miner-Hotkey: <64 lowercase hex>" \
+  -H "X-Lium-Api-Key: $LIUM_API_KEY" \
   --data-binary @submission.zip
 
 # JSON sources (local/CI convenience)
 curl -sS -X POST "$BASE_GATEWAY/challenge/prism/v1/submissions" \
   -H 'content-type: application/json' \
+  -H "X-Lium-Api-Key: $LIUM_API_KEY" \
   -d @submission.json
 
 # Local / direct
 curl -sS -X POST "http://127.0.0.1:28092/v1/submissions" \
   -H 'content-type: application/json' \
+  -H "X-Lium-Api-Key: $LIUM_API_KEY" \
   -d @submission.json
 ```
 

@@ -28,7 +28,8 @@
 | Score 0 after review | `Copied` / high-confidence `Suspicious` (≥0.9, non-trope) | Similarity gate; rewrite unique structure; tropes alone are not plagiarism |
 | `similar: true` on precheck | Would hit intake copy gate | Rewrite `architecture.py`; baseline is fine to start from |
 | `429 precheck_quota_exceeded` | 3 prechecks/coldkey/UTC day used | Wait until next UTC day; rotating hotkeys does not reset |
-| Stuck `Provisioning` | Lium market thinness | Ops-side; watch `GET /v1/jobs` / events |
+| `400 missing_lium_api_key` | Live path needs miner-funded Lium | Pass `X-Lium-Api-Key` (your Lium account); see [`prism.md`](prism.md) |
+| Stuck `Provisioning` | Lium market / underfunded key | Check your Lium balance; watch `GET /v1/jobs` / events |
 | Idempotent replay | Same `submission_id` | Expected — returns prior row |
 
 ## Shared

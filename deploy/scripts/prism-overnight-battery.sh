@@ -186,9 +186,18 @@ print(json.dumps({
 }))
 PY
 )
+# Miner-funded Lium: operator overnight reuses the same header miners must send.
+LIUM_KEY_FILE="${LIUM_API_KEY_FILE:-/root/gbase/deploy/secrets/lium/api_key}"
+CURL_AUTH=()
+if [[ -f "$LIUM_KEY_FILE" ]]; then
+  CURL_AUTH=(-H "X-Lium-Api-Key: $(tr -d '[:space:]' <"$LIUM_KEY_FILE")")
+else
+  log "WARN: $LIUM_KEY_FILE missing — live submit will 400 missing_lium_api_key"
+fi
 HTTP=$(curl -sS -o "$EVIDENCE/submit.json" -w '%{http_code}' \
   -X POST "$PRISM_URL/v1/submissions" \
   -H 'content-type: application/json' \
+  "${CURL_AUTH[@]}" \
   -d "$BODY" || true)
 log "submit HTTP $HTTP → $EVIDENCE/submit.json"
 SUB_ID=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("submission_id") or (d.get("submission") or {}).get("id") or d.get("id") or "")' "$EVIDENCE/submit.json" 2>/dev/null || true)

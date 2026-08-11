@@ -25,7 +25,7 @@ use challenge_agentic::{
 use challenge_common::{expected_set_at_chain, GatewayClient, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
-use prism_lium::{EvalJobBackend, InstanceSpec, RemoteExecResult};
+use prism_lium::{EvalJobBackend, InstanceSpec, PayerBackendFactory, RemoteExecResult};
 use prism_pipeline::{gating_key, measurement_patch, resume_measurement, ScoringMode};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
@@ -104,6 +104,8 @@ pub struct Orchestrator<C: ChainClient + Send> {
     cfg: OrchestratorConfig,
     store: Arc<dyn PrismStore>,
     backend: Arc<dyn EvalJobBackend>,
+    /// When set, each measure builds a miner-billed [`EvalJobBackend`] from the vault.
+    payer: Option<PayerBackendFactory>,
     reviewer: Arc<dyn ReviewBackend>,
     agentic: Arc<dyn AgenticBackend>,
     chain: Arc<C>,
@@ -132,6 +134,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             cfg,
             store,
             backend,
+            payer: None,
             reviewer,
             agentic,
             chain,
@@ -140,6 +143,13 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             topmodel: None,
             eval_store: None,
         }
+    }
+
+    /// Miner-funded Lium: resolve a per-submission client from the vault.
+    #[must_use]
+    pub fn with_payer(mut self, payer: PayerBackendFactory) -> Self {
+        self.payer = Some(payer);
+        self
     }
 
     /// Attach the submission gating store (terminal states + retry attempts).
@@ -166,6 +176,14 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     ) -> Self {
         self.topmodel = publisher;
         self
+    }
+
+    /// Backend that bills `submission_id` (miner vault or operator/sim).
+    fn backend_for(&self, submission_id: &str) -> Result<Arc<dyn EvalJobBackend>, String> {
+        match &self.payer {
+            Some(p) => p.resolve(submission_id, Arc::clone(&self.backend)),
+            None => Ok(Arc::clone(&self.backend)),
+        }
     }
 
     /// Config getter (API views).
@@ -222,14 +240,18 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         for row in stuck {
             // Harvest on-pod harness log **before** reclaim — otherwise the
             // costly long attempt leaves only `swept: stuck beyond grace`.
+            let be = self.backend_for(&row.id).unwrap_or_else(|_| Arc::clone(&self.backend));
             let harvested = if let Some(pod) = row.pod_id.as_deref() {
-                self.backend.harvest_logs(pod).await.unwrap_or_default()
+                be.harvest_logs(pod).await.unwrap_or_default()
             } else {
                 String::new()
             };
             if let Some(pod) = row.pod_id.clone() {
-                let _ = self.backend.terminate(&pod).await;
-                let _ = self.backend.verify_terminated(&pod).await;
+                let _ = be.terminate(&pod).await;
+                let _ = be.verify_terminated(&pod).await;
+            }
+            if let Some(p) = &self.payer {
+                p.vault.remove(&row.id);
             }
             let msg = if harvested.trim().is_empty() {
                 "swept: stuck beyond grace".into()
@@ -697,6 +719,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     ) -> Result<(prism_lium::RemoteExecResult, prism_lium::EvalReceipt), String> {
         self.to_stage(id, Stage::Provisioning).await?;
 
+        let backend = self.backend_for(id)?;
+
         let spec = InstanceSpec {
             name: format!("prism-{}", &id[..12]),
             max_lifetime_hours: self.cfg.max_lifetime_hours,
@@ -711,8 +735,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         };
         self.to_stage(id, Stage::Running).await?;
 
-        let inst = self
-            .backend
+        let inst = backend
             .provision(&spec)
             .await
             .map_err(|e| format!("provision: {e}"))?;
@@ -731,7 +754,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await;
 
         #[rustfmt::skip]
-        let metrics = self.backend
+        let metrics = backend
             .exec_eval(&pod_id, &row.architecture_py, &row.training_py, row.tree_blob.as_deref())
             .await;
 
@@ -742,8 +765,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         // verify_parked (RECEIPT.json) and refuses without it.
         if let Ok(ref m) = metrics {
             let dest = prism_lium::artifact_dir_for(id);
-            match self
-                .backend
+            match backend
                 .harvest_artifacts(&pod_id, &dest, id.as_bytes(), m.n_params)
                 .await
             {
@@ -762,21 +784,22 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
 
         // Always terminate + verify (billing guard, receipt gate).
-        if let Err(e) = self.backend.terminate(&pod_id).await {
+        if let Err(e) = backend.terminate(&pod_id).await {
             warn!(error = %e, %pod_id, "terminate failed");
         }
-        let mut termination_verified = self
-            .backend
+        let mut termination_verified = backend
             .verify_terminated(&pod_id)
             .await
             .unwrap_or(false);
         if !termination_verified {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            termination_verified = self
-                .backend
+            termination_verified = backend
                 .verify_terminated(&pod_id)
                 .await
                 .unwrap_or(false);
+        }
+        if let Some(p) = &self.payer {
+            p.vault.remove(id);
         }
 
         let receipt = prism_lium::EvalReceipt {

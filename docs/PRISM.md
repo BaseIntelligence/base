@@ -13,7 +13,7 @@ PRISM on Base accepts miner two-script submissions (`architecture.py` +
 `training.py`) under the official [`recipe v1`](PRISM_RECIPE.md) contract,
 plus **training-only submissions** (`training.py` + a published `arch_id`)
 for the architecture competition (see below). Each evaluation is executed
-for real on a Lium GPU pod rented by the operator master (Sim backend in CI
+for real on a Lium GPU pod **funded by the miner** via `X-Lium-Api-Key` (Sim backend in CI
 only). A **pre-LLM copy gate** rejects byte/AST copies of strictly-earlier
 **champion** architectures (Score>0 top + ex-tops; `created_at` ordered)
 without spending pod or LLM time. The code is then LLM-reviewed for
@@ -494,7 +494,7 @@ the harness semantics listed above, and the baseline sources they may reuse.
 
 | Dimension | Real | Fallback |
 |-----------|------|----------|
-| Eval backend | `LIUM_API_KEY(_FILE)` present → Lium pods | `SimLiumBackend` |
+| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`) | `SimLiumBackend` |
 | Reviewer | `/run/base/openrouter/api_key` exists → OpenRouter LLM | `SimReviewer` (deterministic) |
 | Agentic | same OpenRouter key → `OpenRouterAgent` | `SimAgent` (AST + metrics heuristics) |
 | Store | `BASE_DATABASE_URL` set → Postgres w/ migrations | in-memory (dev only) |

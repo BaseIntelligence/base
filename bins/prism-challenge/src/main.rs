@@ -29,7 +29,10 @@ use prism_challenge::{
     submission_router, AppState, DbEvalStore, DbPrismStore, EvalStore, MemoryEvalStore,
     MemoryPrismStore, Orchestrator, OrchestratorConfig, PrismStore, CHALLENGE_ID, SCORING_VERSION,
 };
-use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
+use prism_lium::{
+    allow_operator_lium_fallback, EvalJobBackend, LiumClient, LiumSshConfig, PayerBackendFactory,
+    PayerKeyVault, SimLiumBackend,
+};
 use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
 use submission_gating::{
     watch_once, GatingStore, MemoryGatingStore, MetagraphCache, PgGatingStore,
@@ -211,13 +214,15 @@ fn load_ssh_public_key() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-type BackendBundle = (Arc<dyn EvalJobBackend>, String, Vec<String>, f64);
+type BackendBundle = (
+    Arc<dyn EvalJobBackend>,
+    String,
+    Vec<String>,
+    LiumSshConfig,
+    Option<String>,
+);
 
-fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
-    if force_sim || load_lium_api_key().is_none() {
-        return Ok((Arc::new(SimLiumBackend::new()), "sim".into(), vec![], 0.0));
-    }
-    let api_key = load_lium_api_key().ok_or_else(|| "LIUM_API_KEY missing".to_string())?;
+fn live_ssh_config() -> LiumSshConfig {
     let mut ssh = LiumSshConfig::default_live();
     if let Ok(v) = std::env::var("PRISM_SSH_ATTEMPTS") {
         ssh.ssh_attempts = v.parse().unwrap_or(ssh.ssh_attempts);
@@ -236,15 +241,44 @@ fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
             ssh.private_key_path = Some(default);
         }
     }
-    let client = LiumClient::with_config(api_key, prism_challenge::LIUM_API_BASE_URL, ssh)
-        .map_err(|e| e.to_string())?;
+    ssh
+}
+
+fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
+    let ssh = live_ssh_config();
+    // Live path: SSH must exist so miner-funded pods can still be operated by master.
+    // Operator LIUM_API_KEY is optional when miners bring X-Lium-Api-Key (BYOK).
+    if force_sim {
+        return Ok((
+            Arc::new(SimLiumBackend::new()),
+            "sim".into(),
+            vec![],
+            ssh,
+            None,
+        ));
+    }
     let pk = load_ssh_public_key()
         .ok_or("live Lium requires SSH public key (LIUM_SSH_PUBLIC_KEY_FILE or default)")?;
+    if let Some(api_key) = load_lium_api_key() {
+        let client =
+            LiumClient::with_config(api_key.clone(), prism_challenge::LIUM_API_BASE_URL, ssh.clone())
+                .map_err(|e| e.to_string())?;
+        return Ok((
+            Arc::new(client),
+            "lium".into(),
+            vec![pk],
+            ssh,
+            Some(api_key),
+        ));
+    }
+    // Miner-BYOK only: placeholder backend is unused when the vault supplies a key.
+    tracing::info!("lium mode: miner-funded only (no operator LIUM_API_KEY)");
     Ok((
-        Arc::new(client),
+        Arc::new(SimLiumBackend::new()),
         "lium".into(),
         vec![pk],
-        1.0, // not used by orchestrator.
+        ssh,
+        None,
     ))
 }
 
@@ -402,7 +436,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         return Err(format!("challenge secret file missing: {}", path.display()));
     }
     let sk = load_challenge_secret(&path).map_err(|e| e.to_string())?;
-    let (backend, backend_mode, ssh_pks, _) = build_backend(cli.force_sim)?;
+    let (backend, backend_mode, ssh_pks, live_ssh, _operator_key) = build_backend(cli.force_sim)?;
     let (reviewer, reviewer_mode) = build_reviewer();
     let (agentic, agentic_mode) = build_agentic();
     let (store, gating, eval_store, store_mode) = build_store().await;
@@ -421,6 +455,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
 
     // Metagraph cache + watcher feed the intake membership check.
     let metagraph = Arc::new(MetagraphCache::new());
+    let payer_vault = (backend_mode == "lium").then(|| Arc::new(PayerKeyVault::new()));
 
     let state = Arc::new(AppState {
         store: Arc::clone(&store),
@@ -434,6 +469,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         gating: gating_enabled.then(|| Arc::clone(&gating)),
         metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
         admin_token_hashes: prism_intake::load_token_hashes(cli.admin_tokens_file.as_deref()),
+        payer_vault: payer_vault.clone(),
     });
     // Zone B miner self-report intake: split into `prism-attribution` for
     // the per-crate LOC cap (same pattern as the attribution planner,
@@ -479,6 +515,16 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     // (scoring mode from PRISM_SCORING_MODE; default shadow keeps the v2
     // score bit-identical).
     .with_eval_store(Some(eval_store));
+    if let Some(vault) = payer_vault {
+        // Never fall back to Sim when "allow operator" is set without a real key.
+        let allow_op = allow_operator_lium_fallback() && _operator_key.is_some();
+        tracing::info!(
+            allow_operator_lium = allow_op,
+            "miner-funded Lium enabled (X-Lium-Api-Key)"
+        );
+        orchestrator =
+            orchestrator.with_payer(PayerBackendFactory::new(vault, live_ssh, allow_op));
+    }
     if gating_enabled {
         orchestrator = orchestrator.with_gating(Arc::clone(&gating));
         spawn_gating_watcher(

@@ -69,6 +69,8 @@ pub struct AppState {
     pub metagraph: Option<Arc<MetagraphCache>>,
     /// Operator bearer hashes. Empty → retry/admin/playground answer 503.
     pub admin_token_hashes: Vec<String>,
+    /// Miner Lium API keys (BYOK). `None` → Sim / operator-only billing.
+    pub payer_vault: Option<std::sync::Arc<prism_lium::PayerKeyVault>>,
 }
 
 /// Router over the full API surface.
@@ -226,6 +228,11 @@ async fn post_submission(
     headers: axum::http::HeaderMap,
     body: bytes::Bytes,
 ) -> Response {
+    let miner_lium_key = headers
+        .get(prism_lium::LIUM_API_KEY_HEADER)
+        .or_else(|| headers.get("X-Lium-Api-Key"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(prism_lium::normalize_lium_api_key);
     let mut req = match parse_submission_body(&headers, body.as_ref()) {
         Ok(r) => r,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
@@ -268,10 +275,21 @@ async fn post_submission(
         Ok(b) => b,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "tree", &e),
     };
+    // Live Lium: miners fund their own pod via X-Lium-Api-Key (not persisted).
+    if prism_lium::require_miner_lium(st.backend_mode) && miner_lium_key.is_none() && !exists {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "missing_lium_api_key",
+            "live Prism eval requires header X-Lium-Api-Key (miner-funded Lium account)",
+        );
+    }
     let row = queued_row(&st, &req, id.clone(), tree_blob);
     // Idempotent no-op duplicate accepted (same id → 200 OK {status:"already-queued"}).
     match st.store.insert_queued(&row).await {
         Ok(()) => {
+            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key.as_ref()) {
+                vault.insert(id.clone(), key.clone());
+            }
             // Registration finalizes only after the row is queued so intake
             // failures never consume the miner's single slot.
             if !exists {
@@ -297,11 +315,16 @@ async fn post_submission(
             )
                 .into_response()
         }
-        Err(StoreError::Backend(e)) if e.contains("duplicate") || e.contains("unique") => (
-            StatusCode::OK,
-            Json(json!({"submission_id": id, "status": "already-queued"})),
-        )
-            .into_response(),
+        Err(StoreError::Backend(e)) if e.contains("duplicate") || e.contains("unique") => {
+            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key.as_ref()) {
+                vault.insert(id.clone(), key.clone());
+            }
+            (
+                StatusCode::OK,
+                Json(json!({"submission_id": id, "status": "already-queued"})),
+            )
+                .into_response()
+        }
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
 }
@@ -516,6 +539,7 @@ mod tests {
             gating: None,
             metagraph: None,
             admin_token_hashes: vec![],
+            payer_vault: None,
         })
     }
 
@@ -538,6 +562,7 @@ mod tests {
                 gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
                 metagraph: Some(cache),
                 admin_token_hashes: vec![],
+                payer_vault: None,
             }),
             gating,
         )
@@ -558,6 +583,7 @@ mod tests {
             gating: None,
             metagraph: None,
             admin_token_hashes: vec![prism_intake::token_hash(ADMIN)],
+            payer_vault: None,
         });
         st = inner;
         let app = submission_router(Arc::clone(&st));
@@ -1119,6 +1145,7 @@ mod tests {
             gating: Some(gating as Arc<dyn GatingStore>),
             metagraph: Some(Arc::new(MetagraphCache::new())),
             admin_token_hashes: vec![],
+            payer_vault: None,
         });
         let app = submission_router(st);
         let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
