@@ -529,7 +529,7 @@ impl LiumClient {
         }
         // Staged packs default to `public` (HF held-out). `private` remains
         // valid for optional contamination / secret-seed mirrors.
-        let tier_ok = matches!(res.eval_tier.as_deref(), Some("public") | Some("private"));
+        let tier_ok = matches!(res.eval_tier.as_deref(), Some("public" | "private"));
         if staged && !tier_ok {
             return Err(LiumError::Exec(format!(
                 "eval assets staged but harness reported eval_tier={:?} (want \"public\"|\"private\")",

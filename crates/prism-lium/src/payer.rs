@@ -18,7 +18,7 @@ pub struct PayerKeyVault {
 
 impl fmt::Debug for PayerKeyVault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let n = self.inner.lock().map(|g| g.len()).unwrap_or(0);
+        let n = self.inner.lock().map_or(0, |g| g.len());
         f.debug_struct("PayerKeyVault")
             .field("entries", &n)
             .finish()
@@ -138,7 +138,7 @@ pub fn normalize_lium_api_key(raw: &str) -> Option<String> {
 pub fn allow_operator_lium_fallback() -> bool {
     matches!(
         std::env::var("PRISM_ALLOW_OPERATOR_LIUM").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE")
+        Ok("1" | "true" | "TRUE")
     )
 }
 
@@ -150,7 +150,7 @@ pub fn require_miner_lium(backend_mode: &str) -> bool {
     }
     !matches!(
         std::env::var("PRISM_REQUIRE_MINER_LIUM").as_deref(),
-        Ok("0") | Ok("false") | Ok("FALSE")
+        Ok("0" | "false" | "FALSE")
     )
 }
 
