@@ -51,8 +51,8 @@ pub const MAX_TREE_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum path length for a tree entry, in bytes.
 ///
 /// Bounded by the USTAR 100-byte name field minus the [`POD_SUBMISSION_DIR`]
-/// prefix the pod staging layout adds, so every accepted tree is guaranteed to
-/// serialize without needing a PAX extension header.
+/// prefix the pod staging layout adds, so every accepted tree fits USTAR
+/// name+prefix (≤255) without a PAX extension header.
 pub const MAX_TREE_PATH_BYTES: usize = MAX_TAR_PATH_BYTES - POD_SUBMISSION_DIR.len() - 1;
 /// Maximum number of files under the miner's `tokenizer/` directory.
 pub const MAX_TOKENIZER_FILES: usize = 12;

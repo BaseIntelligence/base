@@ -14,13 +14,21 @@ use std::collections::BTreeMap;
 use crate::TreeError;
 
 const BLOCK: usize = 512;
-/// Longest path the USTAR name field can hold without a PAX extension.
-pub const MAX_TAR_PATH_BYTES: usize = 100;
+/// USTAR name field length (header bytes 0..100).
+const USTAR_NAME_MAX: usize = 100;
+/// USTAR prefix field length (header bytes 345..500).
+const USTAR_PREFIX_MAX: usize = 155;
+/// Longest path representable with USTAR name + prefix (no PAX).
+///
+/// `name` (≤100) + optional `prefix/` (≤155) → 255 bytes. Enough for NeMo
+/// AutoModel pin paths under `submission/` (observed max ~126).
+pub const MAX_TAR_PATH_BYTES: usize = USTAR_NAME_MAX + 1 + USTAR_PREFIX_MAX;
 
 /// Pack `files` into a deterministic USTAR archive.
 ///
 /// Entries are sorted by path, so callers need not pre-sort. Paths must be
 /// relative, `/`-separated, free of `..`, and fit [`MAX_TAR_PATH_BYTES`].
+/// Paths longer than 100 bytes use the USTAR `prefix` field (POSIX).
 ///
 /// # Errors
 /// Unsafe or over-long path, or a body too large for the USTAR size field.
@@ -74,7 +82,13 @@ pub fn untar(blob: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, TreeError> {
         if head[156] != b'0' && head[156] != 0 {
             return Err(TreeError::Archive("non-regular entry"));
         }
-        let path = field_str(&head[..MAX_TAR_PATH_BYTES])?;
+        let name = field_str(&head[..USTAR_NAME_MAX])?;
+        let prefix = field_str(&head[345..345 + USTAR_PREFIX_MAX])?;
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
         check_path(&path)?;
         let size = parse_octal(&head[124..136])?;
         let end = at
@@ -90,8 +104,12 @@ pub fn untar(blob: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, TreeError> {
 }
 
 fn header(path: &str, size: usize) -> Result<[u8; BLOCK], TreeError> {
+    let (name, prefix) = split_ustar_path(path)?;
     let mut h = [0u8; BLOCK];
-    h[..path.len()].copy_from_slice(path.as_bytes());
+    h[..name.len()].copy_from_slice(name.as_bytes());
+    if !prefix.is_empty() {
+        h[345..345 + prefix.len()].copy_from_slice(prefix.as_bytes());
+    }
     h[100..107].copy_from_slice(b"0000644");
     let size_field = format!("{size:011o}");
     if size_field.len() != 11 {
@@ -105,6 +123,29 @@ fn header(path: &str, size: usize) -> Result<[u8; BLOCK], TreeError> {
     let sum = checksum(&h);
     h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
     Ok(h)
+}
+
+/// Split `path` into USTAR `(name, prefix)` so both fields fit.
+fn split_ustar_path(path: &str) -> Result<(&str, &str), TreeError> {
+    if path.len() <= USTAR_NAME_MAX {
+        return Ok((path, ""));
+    }
+    // Prefer the rightmost `/` that keeps name ≤100 and prefix ≤155.
+    for (i, _) in path.rmatch_indices('/') {
+        let prefix = &path[..i];
+        let name = &path[i + 1..];
+        if !name.is_empty()
+            && name.len() <= USTAR_NAME_MAX
+            && prefix.len() <= USTAR_PREFIX_MAX
+            && !prefix.is_empty()
+        {
+            return Ok((name, prefix));
+        }
+    }
+    Err(TreeError::Path {
+        path: path.to_string(),
+        why: "cannot split into ustar name+prefix fields",
+    })
 }
 
 /// USTAR header checksum: unsigned sum of all bytes with the checksum field
@@ -231,6 +272,23 @@ mod tests {
         }
         let long = "a".repeat(MAX_TAR_PATH_BYTES + 1);
         assert!(ustar(&[(long.as_str(), b"x".as_slice())]).is_err());
+    }
+
+    #[test]
+    fn prefix_field_round_trips_long_paths() {
+        let path = "examples/convergence/tulu3/models/qwen3-moe-30b/experiments/qwen3_moe_30b_ep8_cp2_flashoptim_fp32_attn_res.yaml";
+        assert!(path.len() > USTAR_NAME_MAX);
+        assert!(path.len() <= MAX_TAR_PATH_BYTES);
+        let blob = ustar(&[(path, b"cfg".as_slice())]).expect("pack long");
+        let back = untar(&blob).expect("untar long");
+        assert_eq!(back.get(path).map(Vec::as_slice), Some(b"cfg".as_slice()));
+        let sub = format!("submission/{path}");
+        let blob2 = ustar(&[(sub.as_str(), b"x".as_slice())]).expect("pack submission/");
+        let back2 = untar(&blob2).expect("untar submission/");
+        assert_eq!(
+            back2.get(sub.as_str()).map(Vec::as_slice),
+            Some(b"x".as_slice())
+        );
     }
 
     #[test]
