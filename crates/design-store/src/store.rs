@@ -1,6 +1,6 @@
 //! Async persistence contract + in-memory impl.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -1018,36 +1018,41 @@ impl DesignStore for MemoryDesignStore {
         netuid: u16,
         epoch: u64,
     ) -> Result<Vec<(String, FinalScore)>, StoreError> {
-        // Match PG `design_scores_for_epoch`: newest rating per miner among
-        // rounds with `round.epoch <= target` (rolling window projection).
-        let round_epoch: BTreeMap<u64, u64> = self
+        // Match PG `design_scores_for_epoch`: ratings from the single latest
+        // scored round with `round.epoch <= target` (tip window projection).
+        let eligible_rounds: BTreeSet<u64> = self
             .rounds
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .values()
             .filter(|r| r.netuid == netuid && r.epoch <= epoch)
-            .map(|r| (r.round_id, r.epoch))
+            .map(|r| r.round_id)
             .collect();
-        let mut by: BTreeMap<String, (u64, FinalScore)> = BTreeMap::new();
         let ratings = self
             .ratings
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?;
-        for ((rid, _), row) in ratings.iter() {
-            if !round_epoch.contains_key(rid) {
-                continue;
-            }
-            let Some(fs) = &row.final_score else {
-                continue;
-            };
-            match by.get(&row.miner_hotkey) {
-                Some((prev_rid, _)) if *prev_rid >= *rid => {}
-                _ => {
-                    by.insert(row.miner_hotkey.clone(), (*rid, fs.clone()));
-                }
-            }
-        }
-        Ok(by.into_iter().map(|(hk, (_, fs))| (hk, fs)).collect())
+        let tip = ratings
+            .iter()
+            .filter_map(|((rid, _), row)| {
+                (eligible_rounds.contains(rid) && row.final_score.is_some()).then_some(*rid)
+            })
+            .max();
+        let Some(tip_rid) = tip else {
+            return Ok(Vec::new());
+        };
+        Ok(ratings
+            .iter()
+            .filter_map(|((rid, _), row)| {
+                (*rid == tip_rid)
+                    .then(|| {
+                        row.final_score
+                            .clone()
+                            .map(|fs| (row.miner_hotkey.clone(), fs))
+                    })
+                    .flatten()
+            })
+            .collect())
     }
 
     async fn set_round_award(&self, award: &RoundAward) -> Result<(), StoreError> {
@@ -1184,5 +1189,81 @@ mod tests {
             s.quota_get("aa", "2026-08-05").await.unwrap(),
             QuotaUsage::default()
         );
+    }
+
+    fn round(id: u64, epoch: u64) -> RoundRow {
+        RoundRow {
+            round_id: id,
+            epoch,
+            netuid: 100,
+            prompt_set_digest: format!("{id:064x}"),
+            status: "emitted".into(),
+            opens_at_secs: id * 100,
+            closes_at_secs: id * 100 + 50,
+        }
+    }
+
+    fn rating(round_id: u64, miner: &str, score: u64) -> RatingRow {
+        RatingRow {
+            round_id,
+            miner_hotkey: miner.into(),
+            rating: i32::try_from(score / 1000).unwrap_or(0),
+            wins: 0,
+            losses: 0,
+            final_score: Some(FinalScore::Score(score)),
+        }
+    }
+
+    /// Stale SCORE_MAX on an older round must not tip-emit after the miner
+    /// leaves the current scored tip (UID-94 carry-forward).
+    #[tokio::test]
+    async fn scores_for_epoch_uses_tip_round_only() {
+        let s = MemoryDesignStore::new();
+        s.insert_round(&round(10, 100)).await.unwrap();
+        s.insert_round(&round(20, 200)).await.unwrap();
+        // Old window tip: sole SCORE_MAX winner (stale after they leave).
+        s.upsert_rating(&rating(10, "stale_max", 1_000_000))
+            .await
+            .unwrap();
+        // Current tip projection: only live-window winners (stale_max absent).
+        s.upsert_rating(&rating(20, "live_a", 250_000))
+            .await
+            .unwrap();
+        s.upsert_rating(&rating(20, "live_b", 250_000))
+            .await
+            .unwrap();
+        s.upsert_rating(&rating(20, "live_c", 250_000))
+            .await
+            .unwrap();
+        s.upsert_rating(&rating(20, "live_d", 250_000))
+            .await
+            .unwrap();
+
+        let mut got = s.scores_for_epoch(100, 200).await.unwrap();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            got,
+            vec![
+                ("live_a".into(), FinalScore::Score(250_000)),
+                ("live_b".into(), FinalScore::Score(250_000)),
+                ("live_c".into(), FinalScore::Score(250_000)),
+                ("live_d".into(), FinalScore::Score(250_000)),
+            ]
+        );
+        assert!(
+            !got.iter().any(|(hk, _)| hk == "stale_max"),
+            "stale SCORE_MAX outside tip round must not carry forward"
+        );
+    }
+
+    /// New chain epoch may still emit the previous tip round's projection
+    /// before any round in the new epoch is awarded (no zero-lock).
+    #[tokio::test]
+    async fn scores_for_epoch_allows_prior_epoch_tip() {
+        let s = MemoryDesignStore::new();
+        s.insert_round(&round(20, 200)).await.unwrap();
+        s.upsert_rating(&rating(20, "aa", 1_000_000)).await.unwrap();
+        let got = s.scores_for_epoch(100, 201).await.unwrap();
+        assert_eq!(got, vec![("aa".into(), FinalScore::Score(1_000_000))]);
     }
 }
