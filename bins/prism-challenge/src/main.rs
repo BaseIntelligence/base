@@ -433,13 +433,31 @@ fn orchestrator_config(
     }
 }
 
+fn attach_miner_payer(
+    orch: Orchestrator<chain_live::LiveChainClient>,
+    vault: Option<Arc<PayerKeyVault>>,
+    live_ssh: LiumSshConfig,
+    has_operator_key: bool,
+) -> Orchestrator<chain_live::LiveChainClient> {
+    let Some(vault) = vault else {
+        return orch;
+    };
+    // Never fall back to Sim when "allow operator" is set without a real key.
+    let allow_op = allow_operator_lium_fallback() && has_operator_key;
+    tracing::info!(
+        allow_operator_lium = allow_op,
+        "miner-funded Lium enabled (X-Lium-Api-Key)"
+    );
+    orch.with_payer(PayerBackendFactory::new(vault, live_ssh, allow_op))
+}
+
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let path = resolve_sk_path(cli.challenge_sk_file.as_ref())?;
     if !path.is_file() {
         return Err(format!("challenge secret file missing: {}", path.display()));
     }
     let sk = load_challenge_secret(&path).map_err(|e| e.to_string())?;
-    let (backend, backend_mode, ssh_pks, live_ssh, _operator_key) = build_backend(cli.force_sim)?;
+    let (backend, backend_mode, ssh_pks, live_ssh, operator_key) = build_backend(cli.force_sim)?;
     let (reviewer, reviewer_mode) = build_reviewer();
     let (agentic, agentic_mode) = build_agentic();
     let (store, gating, eval_store, store_mode) = build_store().await;
@@ -518,15 +536,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     // (scoring mode from PRISM_SCORING_MODE; default shadow keeps the v2
     // score bit-identical).
     .with_eval_store(Some(eval_store));
-    if let Some(vault) = payer_vault {
-        // Never fall back to Sim when "allow operator" is set without a real key.
-        let allow_op = allow_operator_lium_fallback() && _operator_key.is_some();
-        tracing::info!(
-            allow_operator_lium = allow_op,
-            "miner-funded Lium enabled (X-Lium-Api-Key)"
-        );
-        orchestrator = orchestrator.with_payer(PayerBackendFactory::new(vault, live_ssh, allow_op));
-    }
+    orchestrator = attach_miner_payer(orchestrator, payer_vault, live_ssh, operator_key.is_some());
     if gating_enabled {
         orchestrator = orchestrator.with_gating(Arc::clone(&gating));
         spawn_gating_watcher(
