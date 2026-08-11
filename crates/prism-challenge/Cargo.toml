@@ -26,6 +26,7 @@ prism-emit = { path = "../prism-emit" }
 prism-eval-store = { path = "../prism-eval-store" }
 prism-intake = { path = "../prism-intake" }
 prism-lium = { path = "../prism-lium" }
+prism-lium-payer = { path = "../prism-lium-payer" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-playground = { path = "../prism-playground" }
 prism-recipe = { path = "../prism-recipe" }

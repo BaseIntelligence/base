@@ -4,11 +4,13 @@
 //! submission store. Master still SSHs with the operator keypair; the miner
 //! key pays for rent/terminate only.
 
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use crate::{EvalJobBackend, LiumClient, LiumError, LiumSshConfig, LIUM_API_BASE_URL};
+use prism_lium::{EvalJobBackend, LiumClient, LiumError, LiumSshConfig, LIUM_API_BASE_URL};
 
 /// In-memory map `submission_id → Lium API key`.
 #[derive(Default)]

@@ -70,7 +70,7 @@ pub struct AppState {
     /// Operator bearer hashes. Empty → retry/admin/playground answer 503.
     pub admin_token_hashes: Vec<String>,
     /// Miner Lium API keys (BYOK). `None` → Sim / operator-only billing.
-    pub payer_vault: Option<std::sync::Arc<prism_lium::PayerKeyVault>>,
+    pub payer_vault: Option<std::sync::Arc<prism_lium_payer::PayerKeyVault>>,
 }
 
 /// Router over the full API surface.
@@ -229,10 +229,10 @@ async fn post_submission(
     body: bytes::Bytes,
 ) -> Response {
     let miner_lium_key = headers
-        .get(prism_lium::LIUM_API_KEY_HEADER)
+        .get(prism_lium_payer::LIUM_API_KEY_HEADER)
         .or_else(|| headers.get("X-Lium-Api-Key"))
         .and_then(|v| v.to_str().ok())
-        .and_then(prism_lium::normalize_lium_api_key);
+        .and_then(prism_lium_payer::normalize_lium_api_key);
     let mut req = match parse_submission_body(&headers, body.as_ref()) {
         Ok(r) => r,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
@@ -276,7 +276,8 @@ async fn post_submission(
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "tree", &e),
     };
     // Live Lium: miners fund their own pod via X-Lium-Api-Key (not persisted).
-    if prism_lium::require_miner_lium(st.backend_mode) && miner_lium_key.is_none() && !exists {
+    if prism_lium_payer::require_miner_lium(st.backend_mode) && miner_lium_key.is_none() && !exists
+    {
         return json_err(
             StatusCode::BAD_REQUEST,
             "missing_lium_api_key",

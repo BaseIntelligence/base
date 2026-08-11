@@ -25,7 +25,8 @@ use challenge_agentic::{
 use challenge_common::{expected_set_at_chain, GatewayClient, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
-use prism_lium::{EvalJobBackend, InstanceSpec, PayerBackendFactory, RemoteExecResult};
+use prism_lium::{EvalJobBackend, InstanceSpec, RemoteExecResult};
+use prism_lium_payer::PayerBackendFactory;
 use prism_pipeline::{gating_key, measurement_patch, resume_measurement, ScoringMode};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
