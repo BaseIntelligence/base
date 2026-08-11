@@ -20,7 +20,7 @@ use std::time::Duration;
 use bundle::NoScoreReasonCode;
 use chain::ChainClient;
 use challenge_agentic::{
-    copy_gate, static_source_cheat, AgenticBackend, AgenticVerdict, VerdictKind,
+    copy_gate, prism_static_screen, AgenticBackend, AgenticVerdict, VerdictKind,
 };
 use challenge_common::{expected_set_at_chain, GatewayClient, PinnedBlockHash};
 use crypto::KEY_LEN;
@@ -649,10 +649,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     }
 
     /// Static source cheat screen (`METRICS_JSON` / non-causal mix / telemetry
-    /// hooks). Pre-pod. Returns `true` when the row was finalized terminal
-    /// `rejected`.
+    /// hooks; recipe 2.0: delta telemetry/network/eval-leak). Pre-pod.
+    /// Returns `true` when the row was finalized terminal `rejected`.
     async fn static_source_step(&self, row: &SubmissionState) -> bool {
-        let Some(hit) = static_source_cheat(&row.architecture_py, &row.training_py) else {
+        let patch = row
+            .tree_blob
+            .as_deref()
+            .and_then(prism_automodel::patch_text_from_tree_blob);
+        let Some(hit) =
+            prism_static_screen(&row.architecture_py, &row.training_py, patch.as_deref())
+        else {
             return false;
         };
         warn!(

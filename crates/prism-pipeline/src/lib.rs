@@ -34,7 +34,8 @@ pub use precheck::{
 };
 pub use score::{final_lattice, score_from_bpb, score_from_pipeline, PipelineOutcome, ScoringMode};
 pub use submission::{
-    arch_digest, arch_id_for, example_valid_request, expand_zip_fields, gating_key, is_arch_id,
+    arch_digest, arch_id_for, example_automodel_request, example_legacy_request,
+    example_valid_request, expand_zip_fields, gating_key, is_arch_id, is_automodel_request,
     queued_row, source_tree, submission_id, tree_blob_for, validate, QueuedSubmission,
     SubmissionAccepted, SubmissionError, SubmissionId, SubmissionRequest, SubmissionService,
 };

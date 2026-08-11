@@ -207,6 +207,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/prismlib/__init__.py"),
     ),
     (
+        "prismlib/automodel.py",
+        include_str!("../harness/prismlib/automodel.py"),
+    ),
+    (
         "prismlib/cheatguard.py",
         include_str!("../harness/prismlib/cheatguard.py"),
     ),
@@ -274,25 +278,13 @@ pub const BASELINE_ARCHITECTURE_PY: &str = include_str!("../baseline/architectur
 /// Baseline submission: `training.py`.
 pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 
-/// Recipe semantic version (surfaced through the API). Bumped to 1.1.0 for
-/// the miner telemetry hook contract (`prism_telemetry.report` /
-/// `finish_evaluation`) captured by the harness into `metrics_json`, to
-/// 1.2.0 for the architecture registry and training-only submission type
-/// (telemetry hooks now hard-enforced at review), to 1.3.0 for the v3
-/// harness foundations: multi-file harness package (`main.py`, `prismlib/`,
-/// `eval/` registry), miner code executed in an `unshare --net` subprocess
-/// with harness-owned scoring (the parent never imports miner code), seeded
-/// `ctx["train_stream"]` with an authoritative tokens-seen counter, G6
-/// intermediate probes fired from `prism_telemetry.report`, and
-/// `METRICS_JSON` v2 (additive over v1), to **1.4.0** for the G5 scored
-/// path: RULER + `BABILong` + natural-document slices (LongBench-v2 MCQ /
-/// HELMET RAG), lengths in tokens of the miner-submitted tokenizer,
-/// `org.g5.{ruler,babilong,natural_mcq,helmet_rag}_acc` + `org.g5.lstar`
-/// in the composite (group weight still 0.15; internal weights
-/// 0.35/0.25/0.15/0.15/0.10), and G5 mirror-gap for the natural packs.
-/// Scoring stays behind `PRISM_SCORING_MODE=shadow` until anchors are
-/// measured — this bump is the normative harness/anchor contract change.
-pub const RECIPE_VERSION: &str = "1.4.0";
+/// Recipe semantic version (surfaced through the API). **2.0.0** requires the
+/// `AutoModel` pin + miner unified-diff ZIP layout (`automodel.base` +
+/// `automodel.patch`); legacy 1.x two-script / source-tree / `arch_id`
+/// layouts are rejected on live (`unsupported_layout` / `recipe_version`).
+/// Caps, `FineWeb` pin, telemetry, and the G1–G8 battery from 1.4 remain
+/// unless a later bump says otherwise. See `docs/PRISM_RECIPE.md`.
+pub const RECIPE_VERSION: &str = "2.0.0";
 
 /// Maximum model parameters allowed after `build_model` (350M).
 pub const MAX_PARAMS: u64 = 350_000_000;
@@ -463,6 +455,9 @@ pub fn recipe_pin_hex() -> String {
     h.update(DATASET_URL.as_bytes());
     h.update(dataset_sha256().as_bytes());
     h.update(harness_files_sha256().as_bytes());
+    h.update(prism_automodel::AUTOMODEL_PIN.id.as_bytes());
+    h.update(prism_automodel::AUTOMODEL_PIN.git_commit.as_bytes());
+    h.update(prism_automodel::AUTOMODEL_PIN.content_sha256.as_bytes());
     hex::encode(h.finalize())
 }
 
@@ -497,11 +492,22 @@ pub struct RecipeDescriptor {
     pub max_params: u64,
     /// Recipe contract pin (sha256 hex over the tuple).
     pub pin_hex: String,
+    /// `AutoModel` pin id miners must echo in `automodel.base`.
+    pub automodel_pin_id: &'static str,
+    /// Upstream `AutoModel` repository URL.
+    pub automodel_repo_url: &'static str,
+    /// Frozen upstream tag (informational).
+    pub automodel_git_ref: &'static str,
+    /// Exact `AutoModel` commit the pin checkout must match.
+    pub automodel_git_commit: &'static str,
+    /// Content SHA-256 of the staged pin archive (empty until operator freeze).
+    pub automodel_content_sha256: &'static str,
 }
 
 /// Build the public descriptor (deterministic).
 #[must_use]
 pub fn descriptor() -> RecipeDescriptor {
+    let pin = &prism_automodel::AUTOMODEL_PIN;
     RecipeDescriptor {
         version: RECIPE_VERSION,
         dataset_url: DATASET_URL,
@@ -517,6 +523,11 @@ pub fn descriptor() -> RecipeDescriptor {
         max_source_bytes: MAX_SOURCE_BYTES,
         max_params: MAX_PARAMS,
         pin_hex: recipe_pin_hex(),
+        automodel_pin_id: pin.id,
+        automodel_repo_url: pin.git_url,
+        automodel_git_ref: pin.git_tag,
+        automodel_git_commit: pin.git_commit,
+        automodel_content_sha256: pin.content_sha256,
     }
 }
 
@@ -591,6 +602,7 @@ mod tests {
             "eval/public_dev/seeds.json",
             "eval/public_dev/README.md",
             "prismlib/__init__.py",
+            "prismlib/automodel.py",
             "prismlib/cheatguard.py",
             "prismlib/runner.py",
             "prismlib/miner_entry.py",

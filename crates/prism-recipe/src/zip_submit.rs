@@ -118,6 +118,8 @@ pub(crate) const CHEATGUARD_PATTERNS_JSON: &str =
 /// ZIP shape classification used by intake routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZipKind {
+    /// Recipe ≥ 2.0 `AutoModel` patch layout (`automodel.base` + `automodel.patch`).
+    Automodel,
     /// v1 two-script layout (flat, or one shared wrapper folder).
     TwoScript,
     /// v3 source-tree layout (subdirectories, `prism.toml`, `vendor/`, or
@@ -440,14 +442,20 @@ impl SourceTree {
     }
 }
 
-/// Classify ZIP bytes as v1 two-script or v3 source-tree (names only;
-/// wrapper-folder normalization and junk filtering match tree extraction).
+/// Classify ZIP bytes as `AutoModel` patch, v1 two-script, or v3 source-tree
+/// (names only; wrapper-folder normalization and junk filtering match tree
+/// extraction).
 ///
 /// # Errors
 /// Archive open / unsafe-path failures.
 pub fn probe_zip_kind(zip_bytes: &[u8]) -> Result<ZipKind, ZipSubmitError> {
     if zip_bytes.len() > MAX_TREE_ZIP_BYTES {
         return Err(ZipSubmitError::Invalid("zip exceeds size budget".into()));
+    }
+    if prism_automodel::zip_is_automodel_layout(zip_bytes)
+        .map_err(|e| ZipSubmitError::Invalid(e.to_string()))?
+    {
+        return Ok(ZipKind::Automodel);
     }
     let mut archive = ZipArchive::new(Cursor::new(zip_bytes))
         .map_err(|e| ZipSubmitError::Invalid(format!("zip open: {e}")))?;

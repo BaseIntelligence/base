@@ -28,7 +28,7 @@ Do **not** conflate version axes:
 |------|-------|
 | [design.md](./design.md) | Design harness (`agent.py` + `pyproject.toml`) HTTP submit |
 | [examples/design-baseline/](./examples/design-baseline/) | Reference design miner (`llm.chat` → required HTML pages) |
-| [prism.md](./prism.md) | Prism recipe scripts HTTP submit |
+| [prism.md](./prism.md) | Prism AutoModel patch (`automodel.base` + `automodel.patch`) HTTP submit |
 | [troubleshoot.md](./troubleshoot.md) | Common HTTP / quota / scoring failures |
 
 Normative contracts:

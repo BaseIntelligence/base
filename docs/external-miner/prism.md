@@ -1,83 +1,56 @@
 <!-- protocol_version: 1 -->
 
-# Prism challenge — HTTP script submit
+# Prism challenge — HTTP AutoModel patch submit
 
 **challenge_id:** `prism`  
 **scoring_version:** `2` live (bpb-only; LLM review is an anti-cheat gate, not a grader). **v3 (opt-in, shadow-by-default):** composite scoring runs alongside — your run is also measured on the G1–G8 battery; see *v3 scoring* below.  
-**recipe_version:** `1.4.0` (miner-chosen tokenizer; G5 = RULER + BABILong + natural docs, **pretrain-only**)  
+**recipe_version:** `2.0.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) base + miner unified diff; legacy 1.x layouts rejected on live)  
 **Path:** HTTP only — **no Phala/CVM**
 
 Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../PRISM_RECIPE.md).
 
 ## What you submit
 
-A **ZIP** (preferred) containing two Python scripts under the official recipe
-contract, or JSON with the same fields / `zip_base64`:
+A **ZIP** (preferred) — or JSON with the same members / `zip_base64` — that is
+**not** a free-form `architecture.py` / `training.py` project. Recipe **2.0.0**
+accepts only an AutoModel pin id plus your git diff against that pin:
 
-- `architecture.py`
-- `training.py`
-
-Since recipe **1.3.0** you may instead submit a **source-tree ZIP**: the two
-seam files plus optional extras — a `prism.toml` manifest (entry point),
-`count_params.py`, a `kernels/` directory of custom ops implementing
-`KERNEL_INTERFACE.md` (pure Python + torch; no prebuilt binaries, no
-`ctypes`, no I/O or threads — intake scans for banned patterns and the
-in-pod **cheatguard** AST audit re-checks them), and a `vendor.lock`. Trees
-with `kernels/` are eligible for the 2×2 **attribution** decomposition
-(`POST /v1/submissions/{id}/attribution`) with a hidden-shape correctness
-gate on kernel-swapped cells.
-
-Models must stay **≤ 350M parameters** after `build_model` — since 1.3.0 a
-breach is a **terminal Score(0)** (`CAP_EXCEEDED`), not a retryable failure.
-
-**The tokenizer is yours (no hardcoded GPT-2).** The harness resolves one
-tokenizer per run and injects it as `ctx["tokenizer"]`, with its vocab at
-`ctx["vocab_size"]` — size your embedding/head from that key. Declare yours by
-exporting `build_tokenizer(ctx)` from `architecture.py`, beside `build_model`
-(it must live there: the eval phase imports that module only, and a hook found
-in `training.py` is rejected instead of silently falling back). Declare nothing
-and you get the pinned `gpt2` fallback, exactly like earlier submissions.
-
-```python
-# architecture.py
-def build_tokenizer(ctx):
-    """Anything offline: train a BPE on ctx["dataset_path"], wrap a vendored
-    implementation, or hand-roll a byte-level tokenizer. Must satisfy:
-
-        tok(text, add_special_tokens=False)["input_ids"] -> list[int]
-        tok.decode(ids) -> str            # roundtrips plain ASCII
-        len(tok) or tok.vocab_size -> int # 256 .. 262144
-        tok.eos_token_id -> int | None
-    """
+```text
+automodel.base          # required — pin id from GET /v1/recipe (live: automodel@v0.5.0)
+automodel.patch         # required — unified diff vs that pin (git diff pin...HEAD)
+prism.toml              # optional — entry / model-config knobs
 ```
 
-Your pod has **no network** (`unshare --net`), so `from_pretrained("<hub id>")`
-inside your code fails closed — build the tokenizer from the pinned shard or
-from files in your own submission. The harness validates it (vocab bounds,
-probe ids in range, encode/decode roundtrip) and fingerprints it: the eval
-phase re-resolves it and refuses to score a run whose tokenizer does not
-reconstruct identically, so `build_tokenizer` must be deterministic. Shipping
-raw `tokenizer/` files in a source-tree ZIP is supported: the whole validated
-tree (kernels, helpers, `tokenizer/`) is staged under `submission/` on the
-pod (≤ 12 tokenizer files, ≤ 8 MiB total — enough for a real HF
-`tokenizer.json`). Fairness note:
-different vocabs change tokenization, not the unit — `bits_per_byte` (bits over
-UTF-8 bytes) is the tokenizer-neutral anchor, while the legacy `bpb` key is
-bits per *token* and only comparable at equal tokenizers.
+**Workflow: fork pin → edit → `git diff` → submit**
 
-**Telemetry hooks (required, recipe ≥ 1.1.0).** Your `training.py` MUST import
-the harness-provided `prism_telemetry` module and call
-`prism_telemetry.report(loss=..., step=..., ...)` during training plus
-`prism_telemetry.finish_evaluation()` to end the eval early. Missing hooks
-are a hard contract violation — the review fails the submission
-(`missing_telemetry_hooks`, zero score, terminal). See the baseline for the
-exact pattern (it includes an offline fallback stub you can copy).
+1. Read the live pin from `GET /v1/recipe` (`automodel_pin_id`,
+   `automodel_repo_url`, `automodel_git_commit`, `automodel_content_sha256`).
+2. Check out that exact AutoModel commit (or extract the staged archive and
+   verify `automodel_content_sha256` matches `/v1/recipe`).
+3. Edit under the AutoModel layout — new model modules / configs are allowed;
+   trainer / data-path edits get high scrutiny.
+4. Produce a unified diff against the pin commit, e.g.
+   `git diff <automodel_git_commit> > automodel.patch`.
+5. Write `automodel.base` as a single line equal to `automodel_pin_id`, pack
+   the ZIP, and `POST /v1/submissions` with your hotkey + **`X-Lium-Api-Key`**.
 
-**Training-only entries (architecture competition, recipe ≥ 1.2.0).** To
-compete on an already-published architecture, submit `training.py` +
-`arch_id` (JSON field, or `X-Prism-Arch-Id` header with a `training.py`-only
-ZIP). Do **not** include `architecture.py` — the source is pulled from the
-registry. Published archs and their best bpb: `GET /v1/architectures`.
+Models must stay **≤ 350M parameters**. The pod has **no network**
+(`unshare --net`) beyond the operator-owned dataset pull — do not call Hub
+downloads from miner code.
+
+**Legacy recipe 1.x rejected on live.** Two-script ZIPs
+(`architecture.py` + `training.py`), 1.3 source-tree ZIPs, and training-only
+`arch_id` submissions return `400 unsupported_layout` or `400 recipe_version`
+once 2.0 is advertised. Do not ship Megatron-Bridge or other non-AutoModel
+frameworks.
+
+**Telemetry.** The harness wrap still requires `prism_telemetry` reporting /
+`finish_evaluation` under the AutoModel train entry. Patches that remove or
+bypass those hooks fail review (`missing_telemetry_hooks`, zero score,
+terminal).
+
+**Diff visibility.** After intake, inspect your applied delta at
+`GET /v1/submissions/{id}/diff` (full unified diff + diffstat / classification).
 
 Evaluation runs on **miner-funded** Lium GPU pods (you pay the rent). Master
 still operates the pod over SSH; you do **not** deploy a miner CVM. CI uses
@@ -120,51 +93,45 @@ curl -sS -X POST "http://127.0.0.1:28092/v1/submissions" \
   -d @submission.json
 ```
 
-Inspect recipe pins before coding:
+Inspect recipe + AutoModel pin before coding:
 
 ```bash
 curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe"
-curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe/baseline"
 ```
 
-Live production (recipe **1.2.0**) advertises `train_rows: 2048`,
-`val_rows: 256`, `train_hours_cap: 6.0`, `max_train_steps: 20000`,
-`max_params: 350000000`, and `pin_hex` (sha over version + caps + dataset +
-harness). The sealed baseline only trains on the 2048-row cut (~2M GPT-2
-tokens) and scores poorly by design; competitive entries may stream the full
-pinned FineWeb-Edu shard for up to 6h. Site chart labels that show “~2.6B
-tokens · single pass” were **observed leader telemetry**, not a fixed recipe
-quota — trust `/v1/recipe`, not the chart meta line.
+Live recipe **2.0.0** advertises `version: "2.0.0"` and AutoModel pin fields
+(`automodel_pin_id` = `automodel@v0.5.0`, `automodel_repo_url`,
+`automodel_git_ref`, `automodel_git_commit`, `automodel_content_sha256`),
+plus caps such as `train_hours_cap: 6.0`, `max_train_steps: 20000`,
+`max_params: 350000000`, FineWeb dataset pin, and `pin_hex` (sha over the
+versioned descriptor). Trust `/v1/recipe`, not marketing chart labels.
 
-`POST /v1/submissions` is idempotent by `submission_id`.
+`POST /v1/submissions` is idempotent by `submission_id` (hash of **pin id ‖
+`0x00` ‖ patch bytes**).
 
 ## Submission gating (1-max)
 
 - Your hotkey must be **registered on the subnet** (metagraph). Unknown hotkey
   → `403 hotkey_not_in_metagraph`; a fresh registration may lag the snapshot
   (`503 metagraph_unavailable` → retry shortly).
-- **One accepted architecture submission per hotkey.** While yours is
-  `registered` / `blocked` / `rejected`, a *different* architecture submission
-  gets `409 submission_gated`. Re-POSTing the **identical** sources is always
+- **One accepted submission per hotkey.** While yours is `registered` /
+  `blocked` / `rejected`, a *different* patch submission gets
+  `409 submission_gated`. Re-POSTing the **identical** pin+patch is always
   safe (idempotent `200 already-queued`).
-- **Training-only entries are separate**: one accepted entry per
-  `(hotkey, arch_id)`, same retry rules — you may train on many published
-  archs, one script per arch.
 - If your hotkey **leaves the metagraph**, the watcher reopens your slot(s)
   automatically — resubmit under your new uid.
 - Infra failures (Lium pod, review/similarity/LLM infra) **auto-retry up to 3
   times**; cheat / rejected verdicts are terminal. Manual retry:
   `POST /v1/submissions/{id}/retry`.
 
-## Anti-copy rule (architecture-only)
+## Anti-copy rule (patch / delta)
 
-Copying another miner's `architecture.py` (byte-for-byte or renamed/shuffled)
-from an **earlier** submission is terminal `rejected` with zero score — judged
-automatically before any GPU time is spent, no appeal. Similarity is judged on
-`architecture.py` **only**: reusing a known training loop on your own novel
-architecture is fine, and training-only entries on a published arch are never
-"copies" by construction. Starting from the published baseline is always
-allowed.
+Copying another miner's **patch** (or an equivalent touched-file rewrite of
+an earlier champion delta) is terminal `rejected` with zero score — judged
+before or without burning GPU when the gate can decide from the diff alone.
+Review focuses on your unified diff and touched files (`arch` / `trainer` /
+`data` / `other`), not the whole AutoModel tree. Starting from the operator
+pin and submitting only your delta is the intended path.
 
 ## Causal LM contract (banned: non-causal label leak)
 
@@ -179,8 +146,8 @@ used as a next-token LM are not.
 
 ### Precheck before you submit (recommended)
 
-Dry-run the same pre-LLM copy gate **without** burning your 1-max slot or a
-GPU eval:
+Dry-run the copy / layout gate **without** burning your 1-max slot or a
+GPU eval (send the same AutoModel ZIP you would submit):
 
 ```bash
 curl -sS -X POST "$GATEWAY/challenge/prism/v1/submissions/precheck" \
@@ -192,7 +159,7 @@ curl -sS -X POST "$GATEWAY/challenge/prism/v1/submissions/precheck" \
 | Field | Meaning |
 |-------|---------|
 | `similar` | `true` → would hard-reject at intake copy gate |
-| `verdict` | `clean` / `copied` / `skipped` (training-only) |
+| `verdict` | `clean` / `copied` / `skipped` |
 | `matched_against` | Corpus id only (never competitor source) |
 | `score` | Similarity in `[0,1]` when compared |
 | `quota` | `{ day, used, limit: 3, remaining, identity }` |
@@ -287,16 +254,16 @@ registry and pre-registration commits at `GET /v1/anchors` and
 
 | Route | Use |
 |-------|-----|
-| `POST /v1/submissions/precheck` | Advisory copy-gate (3/coldkey/UTC day); no submit |
+| `POST /v1/submissions/precheck` | Advisory copy/layout gate (3/coldkey/UTC day); no submit |
 | `GET /v1/status` | Backend mode, epoch, queue |
+| `GET /v1/recipe` | Caps + AutoModel pin (`automodel_pin_id`, commit, content sha) |
 | `GET /v1/submissions/{id}` | Detail + receipt + scores + composite block (v3) |
+| `GET /v1/submissions/{id}/diff` | Unified diff + diffstat / classification (recipe ≥ 2.0) |
 | `GET /v1/submissions/{id}/events` | Stage timeline |
 | `GET /v1/submissions/{id}/metrics?zone=a\|b` | Zone A battery rows / Zone B self-report chain (v3) |
 | `POST /v1/submissions/{id}/zone-b` | Miner Zone B self-report intake: validated + chained + stored (v3) |
-| `POST /v1/submissions/{id}/attribution` | 2×2 arch/kernel attribution run plans (v3) |
 | `GET /v1/anchors` | v3 anchor-set registry + status |
 | `GET /v1/preregistration` | v3 anchor pre-registration hash-commits |
-| `GET /v1/architectures` | Published archs + per-arch best bpb |
 | `GET /v1/site/arenas/prism/submissions/{id}/telemetry` | Miner-reported loss curve / gradients / layer stats (from `prism_telemetry.report`) |
 | `GET /v1/jobs` | Active/recent pods (ops) |
 | `GET /health` | Liveness |

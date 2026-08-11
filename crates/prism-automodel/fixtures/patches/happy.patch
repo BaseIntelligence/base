@@ -1,0 +1,26 @@
+diff --git a/nemo_automodel/components/models/toy/layers.py b/nemo_automodel/components/models/toy/layers.py
+new file mode 100644
+index 0000000..ade4ca1
+--- /dev/null
++++ b/nemo_automodel/components/models/toy/layers.py
+@@ -0,0 +1,5 @@
++"""Extra layer module — allowed novelty under models/."""
++
++
++def scale(x, factor: int = 2):
++    return x * factor
+diff --git a/nemo_automodel/components/models/toy/model.py b/nemo_automodel/components/models/toy/model.py
+index 271db14..34601a2 100644
+--- a/nemo_automodel/components/models/toy/model.py
++++ b/nemo_automodel/components/models/toy/model.py
+@@ -2,8 +2,8 @@
+ 
+ 
+ class ToyModel:
+-    def __init__(self, width: int = 8) -> None:
++    def __init__(self, width: int = 16) -> None:
+         self.width = width
+ 
+     def forward(self, x):
+-        return x
++        return x * self.width

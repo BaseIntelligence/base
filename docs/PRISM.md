@@ -2,28 +2,31 @@
 
 **challenge_id:** `prism`  
 **scoring_version:** `2` live (bpb-only; v1 blended a 0.3 LLM quality vote; the architecture competition below reallocates credits *inside* this same lattice — no chain-facing version change). **v3 addition (opt-in):** composite scoring ships behind `PRISM_SCORING_MODE` (`shadow` default — v2 score bit-identical, composite observed; `composite` — v3 lattice becomes the score, rows carry `scoring_version 3`). See **v3 composite scoring** below.  
-**recipe_version:** `1.4.0` (telemetry 1.1.0 + architecture registry 1.2.0 + v3 multi-file harness / source-tree / G1–G8 battery + **1.4.0:** miner-chosen tokenizer + G5 community protocols + natural docs, pretrain-only)  
+**recipe_version:** `2.0.0` (pinned NeMo AutoModel base + miner unified diff; legacy **1.x** two-script / source-tree layouts rejected on live — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))  
 **port:** `8092`  
 **emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
 
 ## What it is
 
-PRISM on Base accepts miner two-script submissions (`architecture.py` +
-`training.py`) under the official [`recipe v1`](PRISM_RECIPE.md) contract,
-plus **training-only submissions** (`training.py` + a published `arch_id`)
-for the architecture competition (see below). Each evaluation is executed
-for real on a Lium GPU pod **funded by the miner** via `X-Lium-Api-Key` (Sim backend in CI
-only). A **pre-LLM copy gate** rejects byte/AST copies of strictly-earlier
-**champion** architectures (Score>0 top + ex-tops; `created_at` ordered)
-without spending pod or LLM time. The code is then LLM-reviewed for
-coherence, then judged for architecture similarity (**`architecture.py`
-only** — `training.py` is exempt: the same training script on two different
-architectures is legitimate), then run through the shared **agentic**
+PRISM on Base (recipe **2.0.0**) accepts miner submissions as a **unified
+diff against a pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel)
+checkout** — ZIP members `automodel.base` (pin id) + `automodel.patch` (+
+optional `prism.toml`). Megatron-Bridge and free-form
+`architecture.py` / `training.py` (or 1.x source-tree) layouts are **not**
+accepted on live. Novel architectures remain allowed when expressed as
+AutoModel extensions in the patch. Full pin fields and ZIP layout:
+[`PRISM_RECIPE.md`](PRISM_RECIPE.md).
+
+Each evaluation runs on a Lium GPU pod **funded by the miner** via
+`X-Lium-Api-Key` (Sim backend in CI only). Intake applies the patch
+fail-closed onto the pin; the delta is persisted for
+`GET /v1/submissions/{id}/diff`. Copy / similarity / agentic review focus on
+the **miner delta** (touched files / hunks), then the shared **agentic**
 anti-cheat verifier (`challenge-agentic`: tools + AST + metrics/receipt;
-OpenRouter when keyed, `SimAgent` in CI). The LLM review also enforces the
-**telemetry contract**: `training.py` must call `prism_telemetry.report(...)`
-+ `prism_telemetry.finish_evaluation()`; missing hooks are a hard contract
+OpenRouter when keyed, `SimAgent` in CI). The harness wrap still enforces
+the **telemetry contract** (`prism_telemetry.report` +
+`finish_evaluation`); missing or stripped hooks are a hard contract
 violation (`missing_telemetry_hooks` → `Score(0)`, terminal). Cheap
 `Copied` is a hard first filter; cheap `Suspicious` hard-zeros only when
 `score ≥ 0.9` (`SUSPICIOUS_HARD_ZERO_THRESHOLD`) and evidence is not
@@ -35,6 +38,14 @@ hard-zero on agentic `cheat`/`suspicious` and cheap `Copied` / high-confidence
 Leaves are D24-complete per chain epoch, emitted at
 epoch close from the finalized-since-last-epoch batch (see **Leaf emission**
 below). Review findings are audit events, not points.
+
+> **Historical 1.x path.** Recipe ≤ 1.4.0 accepted two-script
+> (`architecture.py` + `training.py`), training-only + `arch_id`, and
+> source-tree ZIPs. That contract text remains in
+> [`PRISM_RECIPE.md`](PRISM_RECIPE.md) (legacy section) and in the
+> architecture-registry sections below for leaf/audit continuity; live
+> intake under 2.0 rejects those layouts (`unsupported_layout` /
+> `recipe_version`).
 
 This is **not** agent-challenge Phala/TDX attestation and **not**
 hypertraining B300 tournament code.
@@ -227,15 +238,12 @@ hash-committed. Modes (`prism-pipeline::ScoringMode`):
 | `shadow` (default; the v2/"legacy" behavior) | v2 `score_from_bpb` — **bit-identical** | `2` |
 | `composite` | v3 lattice (fail-closed `0` without a scored composite) | `3` |
 
-**Source-tree submissions (v3).** In addition to the two-script intake,
-miners may submit a full source tree as a ZIP (`zip_base64` JSON field or
-`application/zip` with a `prism.toml` manifest naming the entry;
-`train.py`, or `training.py` for the legacy layout, is the default entry).
-The tree is validated at intake (file count/size budgets, banned-pattern
-scan shared with the harness-side `prismlib/cheatguard.py` AST audit,
-canonical sha-256) and may carry a `kernels/` directory implementing the
-stable `KERNEL_INTERFACE.md` contract for custom ops (mechanically
-swappable for attribution, gated on a hidden-shape correctness suite).
+**Source-tree submissions (v3 / recipe 1.3–1.4 historical).** Under recipe
+≤ 1.4.0, miners could submit a full source tree as a ZIP (`zip_base64` or
+`application/zip` with `prism.toml`; `train.py` / `training.py` entry) with
+optional `kernels/`. **Recipe 2.0.0 live intake rejects that layout** in
+favor of `automodel.base` + `automodel.patch` (see
+[`PRISM_RECIPE.md`](PRISM_RECIPE.md)).
 
 **Two-phase pod flow (v3).** The multi-file harness (`main.py` +
 `prismlib/`, miner code in an `unshare --net` subprocess) runs two fresh
@@ -438,10 +446,11 @@ for the bpb score (coherence gate, never a grader).
 
 | Route | Purpose |
 |-------|---------|
-| `POST /v1/submissions` | Accept a submission (idempotent by `submission_id`); training-only via `arch_id` + `training.py`; **v3:** source-tree ZIP via the JSON `zip_base64` field + `prism.toml` (raw `application/zip` carries two scripts only and rejects trees) |
-| `POST /v1/submissions/precheck` | Advisory copy-gate on the same payload shape (no queue, no pod, no 1-max spend) |
-| `GET /v1/submissions` | List (filter `?status=`, `?miner=`) — rows carry `arch_id` |
+| `POST /v1/submissions` | Accept a submission (idempotent by `submission_id` = hash of pin id + patch bytes). **Recipe ≥ 2.0:** ZIP/JSON with `automodel.base` + `automodel.patch` (+ optional `prism.toml`); legacy 1.x two-script / source-tree / `arch_id` → `unsupported_layout` / `recipe_version` on live |
+| `POST /v1/submissions/precheck` | Advisory copy/layout gate on the same payload shape (no queue, no pod, no 1-max spend) |
+| `GET /v1/submissions` | List (filter `?status=`, `?miner=`) |
 | `GET /v1/submissions/{id}` | Full detail + receipt + scores + `eval` composite block (v3) |
+| `GET /v1/submissions/{id}/diff` | **Recipe ≥ 2.0:** unified diff + diffstat / file classification |
 | `GET /v1/submissions/{id}/events` | Append-only transition timeline |
 | `GET /v1/submissions/{id}/metrics?zone=a\|b` | **v3:** Zone A organizer rows / Zone B participant-reported chain (labelled; never scored) |
 | `GET /v1/submissions/{id}/inference` | **v3:** paginated battery inference traces (+ optional playground journal); organizer-measured; never scored |
@@ -451,8 +460,8 @@ for the bpb score (coherence gate, never a grader).
 | `GET /v1/architectures` | Published architecture registry (owner, digest, per-arch best bpb) |
 | `GET /v1/status` | Backend mode, epoch, queue depths, recipe pin |
 | `GET /v1/jobs` | One row per active/recent pod (ops) |
-| `GET /v1/recipe` | Recipe descriptor (pinned URL/sha, budget, caps) |
-| `GET /v1/recipe/baseline` | Baseline `architecture.py` / `training.py` |
+| `GET /v1/recipe` | Recipe descriptor (AutoModel pin fields, FineWeb URL/sha, budget, caps, `pin_hex`) |
+| `GET /v1/recipe/baseline` | Historical 1.x baseline scripts (not the 2.0 AutoModel pin archive) |
 | `POST /v1/submissions/{id}/retry` | Operator retry (Bearer `PRISM_ADMIN_TOKENS_FILE`; fail-closed 503 if unset) |
 | `POST /v1/admin/gating/{hotkey}/reset` | Operator 1-max reset (same Bearer) |
 | `POST /v1/admin/playground/complete` | Operator prompt playground: text + logprobs against parked top/specified checkpoint (same Bearer) |
@@ -467,8 +476,9 @@ Operator Bearer tokens: one per line in `deploy/secrets/prism/admin_tokens`
 
 ### Similarity precheck (`POST /v1/submissions/precheck`)
 
-Miners can dry-run the **pre-LLM copy gate** (byte/AST vs earlier
-`architecture.py` from other miners) before burning a real submission.
+Miners can dry-run the **pre-LLM copy / layout gate** (recipe ≥ 2.0: patch
+fingerprints / touched-file AST vs earlier champion deltas; historical 1.x:
+byte/AST vs earlier `architecture.py`) before burning a real submission.
 Auth and payload match submit (JSON or ZIP + `X-Miner-Hotkey`); metagraph
 membership is required when the cache is configured. The call does **not**
 insert a `prism_submission` row, does **not** mark the 1-max gate, and does

@@ -115,6 +115,10 @@ def run_miner_subprocess(
     harness_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     prev_pp = env.get("PYTHONPATH", "")
     parts = [harness_root]
+    # Recipe 2.0 applied AutoModel tree (after prismlib.automodel.stage).
+    automodel = os.path.join(workdir, "automodel")
+    if os.path.isdir(automodel):
+        parts.append(automodel)
     submission = os.path.join(workdir, "submission")
     if os.path.isdir(submission):
         parts.append(submission)

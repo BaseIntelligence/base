@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""PRISM pod harness parent (recipe 1.3.0) — uploaded by prism-lium over SSH.
+"""PRISM pod harness parent (recipe 2.0.0) — uploaded by prism-lium over SSH.
 
 Multi-file harness package:
   main.py            — this parent orchestrator (network + SSH channel)
   prismlib/          — library modules (dataset, telemetry, train stream,
-                       probes, scoring, manifest, subprocess runner, miner entry)
+                       probes, scoring, manifest, subprocess runner, miner
+                       entry, AutoModel staging adapter)
   eval/              — G1–G8 battery registry (modules land in a later step)
 
-Flow: verify the pinned fineweb-edu shard (URL + SHA-256) -> collect pod
-manifest -> spawn the miner subprocess (`unshare --net -- python3 -m
-prismlib.miner_entry ctx.json` when available; plain subprocess fallback
-with a loud warning) -> read its one-line JSON result from the dedicated FD
--> print `METRICS_JSON={...}` (v2) and `EVAL_OK` (or stage line + EVAL_FAIL).
+Flow: verify the pinned fineweb-edu shard (URL + SHA-256) -> (recipe 2.0)
+stage AutoModel pin + applied miner tree when env/workdir requests it ->
+collect pod manifest -> spawn the miner subprocess (`unshare --net --
+python3 -m prismlib.miner_entry ctx.json` when available; plain subprocess
+fallback with a loud warning) -> read its one-line JSON result from the
+dedicated FD -> print `METRICS_JSON={...}` (v2) and `EVAL_OK` (or stage
+line + EVAL_FAIL).
+
+AutoModel fixture/sim (`PRISM_AUTOMODEL_FIXTURE=1`) exercises staging +
+entry gates only — never treat fixture markers as proof of a real train.
 
 v3 flow (`PRISM_FLOW=v3`, or auto when eval assets / a secret seed are
 staged): TRAIN-phase child (`prismlib.train_v3`, saves
@@ -105,7 +111,20 @@ def _resolve_miner_paths(workdir):
     with a harness-owned `.prism_entry` naming the training entry module.
     Legacy two-script uploads keep `architecture.py` / `training.py` at the
     workdir root.
+
+    Recipe 2.0 AutoModel: when env/workdir requests the patch layout,
+    `prismlib.automodel.stage_and_prepare` materialises the applied tree and
+    writes harness-owned seams at the workdir root (returned here).
     """
+    from prismlib import automodel as am
+
+    if am.layout_requested(workdir):
+        try:
+            prep = am.stage_and_prepare(workdir)
+        except Exception as exc:  # noqa: BLE001
+            fail("automodel_stage", exc)
+        return prep["arch_path"], prep["train_path"], prep.get("automodel")
+
     sub = os.path.join(workdir, "submission")
     if os.path.isdir(sub):
         entry = "training.py"
@@ -119,10 +138,11 @@ def _resolve_miner_paths(workdir):
             fail("contract", FileNotFoundError(f"missing {arch}"))
         if not os.path.isfile(train):
             fail("contract", FileNotFoundError(f"missing entry {train}"))
-        return arch, train
+        return arch, train, None
     return (
         os.path.join(workdir, "architecture.py"),
         os.path.join(workdir, "training.py"),
+        None,
     )
 
 
@@ -384,12 +404,70 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
     log(f"v3 eval complete in {time.time()-t_start:.0f}s")
 
 
+def _run_automodel_fixture_stub(t_start):
+    """CI/Sim AutoModel fixture: stage + entry only (no FineWeb / CUDA / EVAL_OK)."""
+    from prismlib import automodel as am
+
+    log(
+        "automodel fixture/stub path — staging + entry gates only "
+        "(not proof of a real NVIDIA AutoModel train)"
+    )
+    try:
+        prep = am.stage_and_prepare(WORKDIR)
+        am.invoke_entry(prep["automodel"], ctx=None)
+    except Exception as exc:  # noqa: BLE001
+        fail("automodel_fixture", exc)
+    manifest = prep["automodel"]
+    unshare = probe_unshare()
+    print(
+        "METRICS_JSON="
+        + json.dumps(
+            {
+                "bpb": 0.0,
+                "tokens_seen": 0,
+                "wall_clock_seconds": time.time() - t_start,
+                "gpu_type": os.environ.get("PRISM_GPU_TYPE", "sim-fixture"),
+                "notes": "automodel fixture stub — not real train proof",
+                "val_rows": 0,
+                "n_params": 0,
+                "recipe": RECIPE_VERSION,
+                "metrics_version": 2,
+                "automodel_stub": True,
+                "real_train": False,
+                "netns": bool(unshare.get("available")),
+                "automodel": {
+                    "base": manifest.get("base"),
+                    "entry": manifest.get("entry"),
+                    "mode": manifest.get("mode"),
+                },
+                "harness_files_sha256": manifest_mod.harness_files_sha256(),
+            }
+        )
+    )
+    print("AUTOMODEL_FIXTURE_OK")
+    # Deliberately no EVAL_OK — fixture markers are not scored proof.
+
+
 def main():
     t_start = time.time()
     log(f"prism harness parent starting (recipe {RECIPE_VERSION})")
+    os.makedirs(WORKDIR, exist_ok=True)
+
+    from prismlib import automodel as am
+
+    # Fixture/host-sim short-circuit before FineWeb/CUDA (like DESIGN_FORCE_SIM).
+    if am.fixture_requested() and am.layout_requested(WORKDIR):
+        _run_automodel_fixture_stub(t_start)
+        return
+    if am.fixture_requested() and not (
+        os.environ.get(am.ENV_APPLIED_DIR) or os.environ.get(am.ENV_PIN_DIR)
+    ):
+        # Explicit fixture flag alone is enough for local/CI staging smoke.
+        _run_automodel_fixture_stub(t_start)
+        return
+
     dataset_url = os.environ["PRISM_DATASET_URL"]
     dataset_sha = os.environ["PRISM_DATASET_SHA256"]
-    os.makedirs(WORKDIR, exist_ok=True)
 
     unshare = probe_unshare()
     netns = bool(unshare["available"])
@@ -419,7 +497,12 @@ def main():
     if device == "cuda":
         torch.cuda.manual_seed_all(RECIPE_SEED)
 
-    arch_path, train_path = _resolve_miner_paths(WORKDIR)
+    arch_path, train_path, automodel_manifest = _resolve_miner_paths(WORKDIR)
+    if automodel_manifest and automodel_manifest.get("stub"):
+        # Applied fixture tree without early ENV_FIXTURE — still not scored.
+        _run_automodel_fixture_stub(t_start)
+        return
+
     # Warm the HF cache from the parent (which has network) so the isolated
     # child can resolve the PINNED FALLBACK tokenizer offline from the same
     # cache. A submission that declares its own tokenizer (files in the
@@ -451,6 +534,8 @@ def main():
         "workdir": WORKDIR,
         "arch_path": arch_path,
         "train_path": train_path,
+        "layout": "automodel" if automodel_manifest else "legacy",
+        "automodel": automodel_manifest,
     }
     ctx_path = os.path.join(WORKDIR, "prism_ctx.json")
     with open(ctx_path, "w", encoding="utf-8") as f:

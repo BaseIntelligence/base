@@ -3,10 +3,11 @@
 //! | Route | Purpose |
 //! |-------|---------|
 //! | `GET  /health` | liveness |
-//! | `POST /v1/submissions` | accept a two-script recipe |
+//! | `POST /v1/submissions` | accept AutoModel patch ZIP (recipe ≥ 2.0) |
 //! | `POST /v1/submissions/precheck` | advisory copy-gate (quota 3/coldkey/UTC day) |
 //! | `GET  /v1/submissions` | list (`status` / `miner` filter, limit) |
 //! | `GET  /v1/submissions/{id}` | full detail + event timeline + `eval` |
+//! | `GET  /v1/submissions/{id}/diff` | unified diff + diffstat (recipe ≥ 2.0) |
 //! | `GET  /v1/submissions/{id}/events` | journal only |
 //! | `POST /v1/submissions/{id}/attribution` | 2×2 attribution run plans (JSON) |
 //! | `POST /v1/submissions/{id}/zone-b` | Zone B self-report intake (mounted by the service bin from `prism-attribution`) |
@@ -40,10 +41,10 @@ use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use crate::CHALLENGE_ID;
 use prism_eval_store::{detail_view, eval_json, list_view};
 use prism_intake::{
-    coldkey_of, json_err, map_submission_err, materialize_arch, metagraph_uid, now_ms,
+    coldkey_of, json_err, map_submission_err, map_zip_err, materialize_arch, metagraph_uid, now_ms,
     parse_submission_body, require_bearer, BearerGate,
 };
-use prism_pipeline::SubmissionRequest;
+use prism_pipeline::{is_automodel_request, SubmissionRequest};
 use prism_store::eval::EvalStore;
 use prism_store::{PrismStore, Stage, StoreError, SubmissionState};
 
@@ -114,6 +115,7 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/submissions", get(list_submissions))
         .route("/v1/submissions/{id}", get(get_submission))
+        .route("/v1/submissions/{id}/diff", get(get_submission_diff))
         .route("/v1/submissions/{id}/events", get(get_events))
         // Attribution planner (2×2 matrix run plans) and the v3 read-only
         // eval surface: split into the `prism-attribution` crate for the
@@ -238,20 +240,20 @@ async fn post_submission(
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
     };
     if let Err(e) = prism_pipeline::expand_zip_fields(&mut req) {
-        return json_err(StatusCode::BAD_REQUEST, "zip", &e);
+        return map_zip_err(&e);
     }
     if let Err(e) = prism_pipeline::validate(&req) {
         return map_submission_err(&e);
     }
-    // Training-only: pull the architecture from the registry (miner-sent
-    // source is rejected by validate above, so the registry is the only
-    // source of truth — this is what makes the pre-LLM copy gate safe to
-    // skip on these rows).
-    if let Err(resp) = materialize_arch(st.store.as_ref(), &mut req).await {
-        return resp;
-    }
-    if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
-        return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
+    // Training-only (legacy): pull architecture from the registry. AutoModel
+    // rows skip the 1.x contract check — review uses GET …/diff.
+    if !is_automodel_request(&req) {
+        if let Err(resp) = materialize_arch(st.store.as_ref(), &mut req).await {
+            return resp;
+        }
+        if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
+            return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
+        }
     }
     // Normalize hotkey case so gating + ids are case-stable.
     req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
@@ -367,6 +369,62 @@ async fn get_submission(State(st): State<Arc<AppState>>, Path(id): Path<String>)
         Ok(None) => json_err(StatusCode::NOT_FOUND, "not_found", "submission not found"),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
+}
+
+/// `GET /v1/submissions/{id}/diff` — unified diff + classified diffstat.
+async fn get_submission_diff(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let row = match st.store.get(&id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, "not_found", "submission not found"),
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    let Some(blob) = row.tree_blob.as_deref() else {
+        return json_err(
+            StatusCode::NOT_FOUND,
+            "no_diff",
+            "submission has no AutoModel diff artifacts",
+        );
+    };
+    let staged = match prism_tree::StagedTree::unpack(blob) {
+        Ok(t) => t,
+        Err(e) => {
+            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "tree", &e.to_string());
+        }
+    };
+    let Some((patch, diffstat)) = prism_automodel::diff_from_files(staged.files()) else {
+        return json_err(
+            StatusCode::NOT_FOUND,
+            "no_diff",
+            "submission tree lacks .prism/automodel.patch",
+        );
+    };
+    let pin_id = staged
+        .get(prism_automodel::META_BASE)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map_or("", str::trim);
+    let files: Vec<Value> = diffstat
+        .files
+        .iter()
+        .map(|f| {
+            json!({
+                "path": f.path,
+                "added": f.added,
+                "deleted": f.deleted,
+                "class": f.class,
+            })
+        })
+        .collect();
+    Json(json!({
+        "submission_id": id,
+        "pin_id": pin_id,
+        "patch": patch,
+        "diffstat": {
+            "files": files,
+            "total_added": diffstat.total_added,
+            "total_deleted": diffstat.total_deleted,
+        },
+    }))
+    .into_response()
 }
 
 async fn get_events(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
@@ -530,6 +588,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn state() -> Arc<AppState> {
+        // Transitional: training-only `arch_id` unit tests still exercise 1.x.
+        std::env::set_var(prism_automodel::ALLOW_LEGACY_ENV, "1");
         Arc::new(AppState {
             store: Arc::new(MemoryPrismStore::new()),
             eval_store: Arc::new(crate::MemoryEvalStore::new()),
@@ -925,7 +985,9 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["version"], "2.0.0");
         assert_eq!(v["train_hours_cap"], 6.0);
+        assert_eq!(v["automodel_pin_id"], prism_automodel::AUTOMODEL_PIN_ID);
         let (s, v) = call(
             app,
             Request::get("/v1/recipe/baseline")
@@ -1402,5 +1464,80 @@ mod tests {
         let regs = v["preregistrations"].as_array().unwrap();
         assert_eq!(regs.len(), 1);
         assert_eq!(regs[0]["hash"], anchors[0]["prereg_hash"]);
+    }
+
+    #[tokio::test]
+    async fn automodel_fixture_intake_and_diff_route() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let req = crate::example_automodel_request();
+        let id = prism_pipeline::submission_id(&req);
+        let body = serde_json::to_vec(&req).unwrap();
+        // Wire JSON omits packed_tree (serde skip) — re-expand via zip_base64.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(v["submission_id"], id);
+        assert_eq!(v["status"], "accepted");
+
+        let (s, v) = call(
+            app,
+            Request::get(format!("/v1/submissions/{id}/diff"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["pin_id"], prism_automodel::FIXTURE_PIN_ID);
+        assert!(v["patch"].as_str().unwrap().contains("ToyModel"));
+        assert!(!v["diffstat"]["files"].as_array().unwrap().is_empty());
+        let classes: Vec<&str> = v["diffstat"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["class"].as_str())
+            .collect();
+        assert!(classes.contains(&"arch"), "{classes:?}");
+    }
+
+    #[tokio::test]
+    async fn legacy_zip_rejected_unsupported_layout() {
+        use base64::Engine as _;
+        let st = state();
+        let app = submission_router(st);
+        let arch = "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
+        let train = "def train(model, ctx):\n    return {}\n";
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            use std::io::Write;
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            w.start_file("architecture.py", opts).unwrap();
+            w.write_all(arch.as_bytes()).unwrap();
+            w.start_file("training.py", opts).unwrap();
+            w.write_all(train.as_bytes()).unwrap();
+            w.finish().unwrap();
+        }
+        let zip_b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+        let body = serde_json::json!({
+            "miner_hotkey": "11".repeat(32),
+            "zip_base64": zip_b64,
+        });
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["code"], "unsupported_layout");
     }
 }

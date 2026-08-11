@@ -13,6 +13,7 @@ base64 = "0.22"
 bundle = { path = "../bundle" }
 challenge-agentic = { path = "../challenge-agentic" }
 hex = "0.4"
+prism-automodel = { path = "../prism-automodel" }
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }
 prism-recipe = { path = "../prism-recipe" }

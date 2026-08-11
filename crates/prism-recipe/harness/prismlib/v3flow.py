@@ -82,6 +82,9 @@ def run_phase(
     harness_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     prev_pp = env.get("PYTHONPATH", "")
     parts = [harness_root]
+    automodel = os.path.join(workdir, "automodel")
+    if os.path.isdir(automodel):
+        parts.append(automodel)
     submission = os.path.join(workdir, "submission")
     if os.path.isdir(submission):
         parts.append(submission)  # last among harness roots: no shadowing

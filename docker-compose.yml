@@ -217,6 +217,9 @@ services:
       PRISM_TOPMODEL_REQUIRE_WEIGHTS: "${PRISM_TOPMODEL_REQUIRE_WEIGHTS:-1}"
       # Parked checkpoints harvested from Lium pods (master-local).
       PRISM_ARTIFACT_DIR: /var/lib/prism/artifacts
+      # Recipe 2.0 AutoModel pin checkout (deploy/scripts/stage-automodel-pin.sh).
+      # Required for live AutoModel intake; unset → pin unavailable (fail-closed).
+      PRISM_AUTOMODEL_PIN_DIR: "${PRISM_AUTOMODEL_PIN_DIR:-}"
       # Operator bearer (retry + playground + gating + artifacts). Empty → 503.
       PRISM_ADMIN_TOKENS_FILE: /run/base/prism/admin_tokens
     env_file:

@@ -1,16 +1,201 @@
-# PRISM recipe v1.0.2 — `prism-recipe-v1` (current harness `RECIPE_VERSION 1.4.0`)
+# PRISM recipe v2.0.0 — AutoModel base + miner git diffs
 
-The official execution contract every miner submission is verified inside.
-Miners ship **two scripts only** (`architecture.py` + `training.py`) — or,
-since recipe **1.3.0**, a **source-tree ZIP** (see *Source-tree
-submissions* below); the harness and data pin are operator-owned. No
-offline weights, no network reach at pod runtime beyond the pinned dataset
-pull. Recipe **1.4.0** makes the tokenizer miner-chosen and replaces the
-G5 long-context scored path with community protocols + natural documents
-under a **pretrain-only** rule (base LM completion / few-shot; no IFT,
-chat templates, or LLM judges on ranked metrics).
+**Live contract:** recipe **`2.0.0`**. Miners submit a **unified diff against a
+pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) checkout** —
+not a free-form `architecture.py` / `training.py` project. Megatron-Bridge is
+**out of scope**. Legacy recipe **1.x** two-script / source-tree / training-only
+layouts are **rejected on live** once 2.0 is enabled (`400 recipe_version` /
+`unsupported_layout`). Local Sim may keep a tiny fixture patch for CI.
 
-## Contract
+Caps, FineWeb dataset pin, telemetry, two-phase train/eval, and the G1–G8
+battery from 1.4 remain operator-owned unless a later bump says otherwise.
+
+**Harness staging (pod).** Operator harness (`prismlib/automodel.py`) materialises
+the pin + applied tree under `$PRISM_WORKDIR/automodel/` and invokes the train
+entry (default `nemo_automodel/recipes/llm/train_ft.py`, overridable via
+`prism.toml`). Env contract shared with crate `prism-automodel`:
+`PRISM_AUTOMODEL_APPLIED_DIR` (preferred), or `PRISM_AUTOMODEL_PIN_DIR` +
+`PRISM_AUTOMODEL_PATCH_PATH`, plus `PRISM_AUTOMODEL_BASE` / optional
+`PRISM_AUTOMODEL_PRISM_TOML`. CI/Sim uses `PRISM_AUTOMODEL_FIXTURE=1` with the
+tiny `FIXTURE_PIN` + `happy.patch` — fixture markers are **not** proof of a
+real NVIDIA AutoModel train.
+
+Historical 1.x contract text is preserved below under
+[*Legacy recipe 1.x*](#legacy-recipe-1x-historical--rejected-on-live-under-20)
+for leaf/audit continuity.
+
+---
+
+## Recipe 2.0.0 — product contract
+
+```text
+pinned AutoModel commit ──┐
+                          ├─► git apply (fail-closed) ─► materialized tree
+miner unified diff ───────┘         │
+                                    ├─► diff view + agentic (delta-focused)
+                                    └─► Lium pod train / eval (harness wrap)
+```
+
+1. **Operator pin** — recipe freezes AutoModel at a tagged git commit plus a
+   content-addressed archive hash (tarball staged like today’s FineWeb pin).
+2. **Miner submit** — ZIP (or JSON equivalent) with `automodel.base` +
+   `automodel.patch` (+ optional `prism.toml`).
+3. **Apply fail-closed** — master applies the patch onto a clean pin checkout;
+   reject on conflict / path escape / binary blobs / oversized diff.
+4. **Visibility** — persist full unified diff, `diffstat`, and file
+   classification (`arch` / `trainer` / `data` / `other`); expose
+   `GET /v1/submissions/{id}/diff` (site complete-view panel).
+5. **Allowed novelty** — new model modules / configs under the AutoModel
+   layout are OK. Trainer edits OK but **high scrutiny**.
+6. **Cheat focus on the delta** — agentic + AST primarily on diff hunks and
+   touched files (not the whole AutoModel tree). Harness gates remain:
+   netns, telemetry hooks, budget, causal screen, no eval-asset reads in train.
+7. **Harness wrap** — pod still owns dataset pin, `prism_telemetry`,
+   wall-clock/step caps, eval battery. Miner code must call into AutoModel’s
+   train entry under those constraints (thin operator adapter — not miner-owned).
+
+### AutoModel pin metadata (apply-lib fields)
+
+Operator freeze writes these fields into the recipe descriptor (surfaced on
+`GET /v1/recipe` as `automodel_*` keys). Live pin identity is frozen in
+`crates/prism-automodel` (`AUTOMODEL_PIN`) including the content SHA of the
+staged checkout.
+
+| Field (JSON on `/v1/recipe`) | Type | Live / notes |
+|------------------------------|------|----------------|
+| `automodel_pin_id` | string | `automodel@v0.5.0` — tag-shaped id miners must echo in `automodel.base` |
+| `automodel_repo_url` | string | `https://github.com/NVIDIA-NeMo/Automodel` |
+| `automodel_git_ref` | string | `v0.5.0` (informational tag label) |
+| `automodel_git_commit` | 40-hex | `d02f49cb314554715aabb97e8dba6599c9f6e9e0` — exact commit the pin checkout must match |
+| `automodel_content_sha256` | 64-hex | SHA-256 of the staged pin tree (`tree_content_sha256`; `.git`/dotfiles skipped) |
+| archive name (ops only) | string | suggested `automodel@v0.5.0.tar.zst` (or `.tar.gz`) under the operator pin store |
+
+**Operator staging (required on live):** set `PRISM_AUTOMODEL_PIN_DIR` to a
+clean checkout of `automodel_git_commit`. Use
+`deploy/scripts/stage-automodel-pin.sh` (clone + hash verify). Intake
+fail-closes when the dir is missing or the content SHA mismatches.
+
+**CI / Sim fixture (not live):** pin id `automodel@fixture-v1` + vendored tree
+`crates/prism-automodel/fixtures/automodel-pin/` + `fixtures/patches/happy.patch`.
+Accepted **only** when `PRISM_AUTOMODEL_FIXTURE=1`. Fixture markers are not
+proof of a real NVIDIA AutoModel train.
+
+**Example shape (live constants):**
+
+```text
+automodel_pin_id         = automodel@v0.5.0
+automodel_repo_url       = https://github.com/NVIDIA-NeMo/Automodel
+automodel_git_ref        = v0.5.0
+automodel_git_commit     = d02f49cb314554715aabb97e8dba6599c9f6e9e0
+automodel_content_sha256 = f8af64ef572e2e3634dcbae7b351fdcd3c8d458caf2fe974aff26d301a11d838
+```
+
+Rules:
+
+- Submit `automodel.base` **must equal** the recipe’s current
+  `automodel_pin_id` (byte-identical ASCII, no whitespace). Mismatch →
+  intake reject (`pin`).
+- `submission_id` hashes **`pin_id` + `0x00` + patch bytes** (not ephemeral
+  keys).
+- Apply-lib resolves the live pin on production; the CI fixture pin requires
+  `PRISM_AUTOMODEL_FIXTURE=1`. Live always verifies `content_sha256` against
+  `PRISM_AUTOMODEL_PIN_DIR` before `git apply`.
+- Local/CI fixture env must not be set on live hosts.
+
+### Submission ZIP layout (recipe ≥ 2.0.0)
+
+Preferred: `application/zip` (or JSON with the same members / `zip_base64`).
+
+```text
+automodel.base          # required — single-line pin id (ASCII), must match recipe pin_id
+automodel.patch         # required — unified diff vs that pin (git diff / format-patch style)
+prism.toml              # optional — entry / recipe knobs (train script path, model config)
+```
+
+| Member | Required | Notes |
+|--------|----------|-------|
+| `automodel.base` | yes | Exact recipe `automodel_pin_id` (live: `automodel@v0.5.0`; CI fixture: `automodel@fixture-v1`). Trailing newline OK; no other files aliased to this name. |
+| `automodel.patch` | yes | Text unified diff against the pin tree. No binary blobs; size budgets enforced in intake (fail-closed). |
+| `prism.toml` | no | Optional knobs: `entry` / train script path under the applied tree, model config path. Unknown keys ignored or rejected per intake strictness. |
+
+**Not accepted on live (recipe ≥ 2.0.0):**
+
+- Two-script ZIPs (`architecture.py` + `training.py`)
+- Recipe 1.3+ source-tree ZIPs (`train.py` / `kernels/` / … without AutoModel members)
+- Training-only `training.py` + `arch_id` / `X-Prism-Arch-Id`
+- Megatron-Bridge or any non-AutoModel framework tree
+
+Those layouts return **`400 unsupported_layout`** (or **`400 recipe_version`**
+when the advertised recipe is ≥ 2.0.0 and the payload declares/implies 1.x).
+
+### Miner workflow (normative)
+
+1. Clone the pin: checkout `automodel_git_commit` from `automodel_repo_url`
+   (or extract the staged archive and verify `automodel_content_sha256` once
+   set).
+2. Edit under the AutoModel layout (new modules / configs OK).
+3. Produce a unified diff: `git diff <automodel_git_commit>` (or equivalent
+   `git format-patch` series folded into one `automodel.patch`).
+4. Pack ZIP with `automodel.base` = recipe `automodel_pin_id`,
+   `automodel.patch`, optional `prism.toml`.
+5. `POST /v1/submissions` with miner hotkey + **`X-Lium-Api-Key`** (BYOK;
+   unchanged from 1.x live).
+
+### Apply / reject (fail-closed)
+
+Master applies `automodel.patch` onto a clean pin checkout. Reject when:
+
+| Condition | Typical code / note |
+|-----------|---------------------|
+| Patch does not apply cleanly | patch apply failure (conflict / missing context) |
+| Path escape / touches outside allowlisted roots | hard reject |
+| Binary blobs in patch | hard reject |
+| Oversized diff / too many files | hard reject (budgets in intake) |
+| Wrong / unknown `automodel.base` | pin mismatch |
+| Legacy 1.x layout | `unsupported_layout` / `recipe_version` |
+| Removes or disables telemetry / introduces network exfil / eval-set leakage | anti-cheat hard reject |
+
+### Caps that carry forward (unchanged unless bumped)
+
+| Cap | Value |
+|-----|-------|
+| Train wall clock | 6.0 h per submission |
+| Pod lifetime | 7.0 h (train + bootstrap margin) |
+| Hard step cap | 20 000 (config may only lower) |
+| Model parameters | ≤ **350 000 000** |
+| Dataset pin | FineWeb-Edu shard below (*Pinned dataset*) |
+| GPU funding | Miner `X-Lium-Api-Key` on live |
+
+### Recipe pin hex
+
+`recipe_pin_hex()` remains SHA-256 over the versioned descriptor (URL, dataset
+pin, AutoModel pin fields, budget, caps, harness bytes, recipe version) —
+surfaced on `GET /v1/recipe` and `GET /v1/status`. Any change to these
+parameters **must** bump the recipe version string so old leaves stay
+unambiguous.
+
+---
+
+## Legacy recipe 1.x (historical — rejected on live under 2.0)
+
+> The sections below document harness **`RECIPE_VERSION 1.4.0`** and earlier
+> miner layouts (`architecture.py` + `training.py`, source-tree ZIP,
+> training-only + `arch_id`). They remain for audit / leaf interpretation.
+> **Do not submit 1.x layouts to live once recipe 2.0.0 is advertised.**
+
+# PRISM recipe v1.0.2 — `prism-recipe-v1` (harness `RECIPE_VERSION 1.4.0`)
+
+The official execution contract every miner submission was verified inside
+under 1.x. Miners shipped **two scripts only** (`architecture.py` +
+`training.py`) — or, since recipe **1.3.0**, a **source-tree ZIP** (see
+*Source-tree submissions* below); the harness and data pin are
+operator-owned. No offline weights, no network reach at pod runtime beyond
+the pinned dataset pull. Recipe **1.4.0** made the tokenizer miner-chosen
+and replaced the G5 long-context scored path with community protocols +
+natural documents under a **pretrain-only** rule (base LM completion /
+few-shot; no IFT, chat templates, or LLM judges on ranked metrics).
+
+## Contract (1.x)
 
 ```python
 # architecture.py
@@ -47,6 +232,9 @@ The harness captures the series into `METRICS_JSON.telemetry.loss_series`
 `train()` returns or the wall-clock cap fires. **Missing hooks are a hard
 contract violation**: review fails the submission
 (`missing_telemetry_hooks` cheat code, zero score, terminal — no retry).
+
+Under 2.0 the same telemetry contract is enforced via the harness wrap around
+the AutoModel entry (miner patches must not remove or disable hooks).
 
 ## Causal next-token contract
 
@@ -104,6 +292,10 @@ group view for debugging; leaf v2 `bpb` is still bits/token. Fill measured
 GPU runs. Long-context length targets are counted in tokens of the submitted
 tokenizer.
 
+> **2.0 note:** tokenizer resolution under AutoModel patches is harness-defined
+> (offline HF / AutoModel paths inside the applied tree). Do not assume the
+> 1.x `build_tokenizer` / `tokenizer/` ZIP rules still apply as intake layout.
+
 ## Training-only submissions (recipe 1.2.0)
 
 Instead of shipping both scripts, a miner may submit `training.py` +
@@ -111,6 +303,10 @@ Instead of shipping both scripts, a miner may submit `training.py` +
 [`PRISM.md`](PRISM.md) § Architecture registry + competition). The master
 pulls `architecture.py` from the registry; the same harness contract applies
 unchanged. Published archs: `GET /v1/architectures`.
+
+> **2.0 conflict:** live 2.0 rejects this layout (`unsupported_layout`). A
+> 2.0-native architecture-competition model (if any) is **not** specified in
+> this freeze — see open conflicts in the rollout plan.
 
 ## Source-tree submissions (recipe 1.3.0 — v3)
 
@@ -214,6 +410,10 @@ They are the reference points the v3 anchor set (`anchors/v0.json`,
 currently placeholder) is measured against before any
 `PRISM_SCORING_MODE=composite` flip, and the attribution reference family.
 
+> **2.0 note:** 1.x baselines are not AutoModel patch fixtures. CI will ship a
+> separate fixture patch that applies cleanly to the 2.0 pin (apply-lib /
+> ci-docs todos).
+
 ## Pinned dataset
 
 | Field | Value |
@@ -266,7 +466,7 @@ Caps are **unchanged** in v3 (350M params, 6h). The parameter-cap breach
 semantics changed in 1.3.0: it is a terminal `Score(0)` (`CAP_EXCEEDED`),
 not an infra retry.
 
-## Recipe pin
+## Recipe pin (1.x descriptor)
 
 `recipe_pin_hex()` = SHA-256 over the versioned descriptor (URL, dataset pin,
 budget, caps, harness bytes, recipe version) — surfaced on `GET /v1/recipe`
@@ -318,3 +518,12 @@ legitimate. Verdicts: `Original` / `Suspicious` / `Copied`, with a similarity
 score and evidence line — all stored append-only in `prism_stage_event`.
 Generic modern-LM components (RMSNorm, RoPE, SwiGLU, …) must not appear as
 copy evidence; parsers coerce those false positives to `Original`.
+
+> **2.0:** copy / similarity use a **patch fingerprint** (`patch_sha256` in the
+> store architecture surface) plus **touched-file AST** (concatenated post-apply
+> `.py` bodies), not the whole AutoModel tree. Agentic primaries are
+> `.prism/automodel.patch`, `.prism/diffstat.json`, `.prism/review_brief.md`,
+> and touched paths only. Trainer/data-class edits get higher scrutiny in the
+> brief + domain rules; static screens hard-reject telemetry disable, network
+> exfil, and eval-set leakage patterns in added hunk lines. Harness gates
+> (netns, telemetry wrap, budget, causal screen) stay unchanged.

@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+base64 = "0.22"
 bytes = "1"
 crypto = { path = "../crypto" }
 hex = "0.4"

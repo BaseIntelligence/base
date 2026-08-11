@@ -9,8 +9,8 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use challenge_ast::{
-    fingerprint_source, similarity_bps, static_source_cheat, top_k_nearest, SourceCheatKind,
-    AST_CHEAT_BPS, AST_SUSPICIOUS_BPS, BASELINE_CORPUS_PREFIX,
+    fingerprint_source, similarity_bps, static_automodel_delta_cheat, static_source_cheat,
+    top_k_nearest, SourceCheatKind, AST_CHEAT_BPS, AST_SUSPICIOUS_BPS, BASELINE_CORPUS_PREFIX,
 };
 use serde_json::Value;
 
@@ -69,6 +69,19 @@ fn scoped_primaries<'a>(req: &ReviewRequest, primaries: &'a [(String, String)]) 
             .collect();
         if !arch.is_empty() {
             return arch;
+        }
+        // Recipe 2.0 AutoModel: fingerprint touched Python only (skip patch/json/md).
+        let touched_py: Vec<&str> = primaries
+            .iter()
+            .filter(|(p, _)| {
+                std::path::Path::new(p)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+            })
+            .map(|(_, s)| s.as_str())
+            .collect();
+        if !touched_py.is_empty() {
+            return touched_py;
         }
     }
     primaries.iter().map(|(_, s)| s.as_str()).collect()
@@ -200,10 +213,34 @@ fn static_source_cheat_verdict(
             .find(|(p, _)| p.ends_with(suf))
             .map_or("", |(_, s)| s.as_str())
     };
-    let hit = static_source_cheat(pick("architecture.py"), pick("training.py"))?;
+    let patch = primaries
+        .iter()
+        .find(|(p, _)| p.ends_with("automodel.patch"))
+        .map(|(_, s)| s.as_str());
+    let hit = if let Some(patch_text) = patch {
+        // Recipe 2.0: delta-focused; concatenate touched .py primaries for arch scan.
+        let mut touched = String::new();
+        for (p, s) in primaries {
+            if std::path::Path::new(p)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+            {
+                touched.push_str(s);
+                touched.push('\n');
+            }
+        }
+        static_automodel_delta_cheat(patch_text, &touched)?
+    } else {
+        static_source_cheat(pick("architecture.py"), pick("training.py"))?
+    };
+    // Map delta-only kinds onto the closest existing CheatCode surface.
     let code = match hit.kind {
-        SourceCheatKind::EvalShortCircuit => CheatCode::EvalShortCircuit,
-        SourceCheatKind::MissingTelemetryHooks => CheatCode::MissingTelemetryHooks,
+        SourceCheatKind::EvalShortCircuit
+        | SourceCheatKind::NetworkExfil
+        | SourceCheatKind::EvalSetLeak => CheatCode::EvalShortCircuit,
+        SourceCheatKind::MissingTelemetryHooks | SourceCheatKind::TelemetryDisable => {
+            CheatCode::MissingTelemetryHooks
+        }
         SourceCheatKind::NonCausalLabelLeak => CheatCode::NonCausalLabelLeak,
     };
     Some(cheat_verdict(code, format!("sim: {}", hit.rationale)))
@@ -657,6 +694,64 @@ def train(model, ctx):
 "#;
         let mut req = write_primary(dir.path(), "training.py", body);
         req.domain_rules = crate::PRISM_DOMAIN_RULES.into();
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Clean);
+    }
+
+    #[tokio::test]
+    async fn sim_automodel_delta_network_exfil_is_cheat() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".prism")).unwrap();
+        let patch = "\
+diff --git a/nemo_automodel/components/models/toy/model.py b/nemo_automodel/components/models/toy/model.py
+--- a/nemo_automodel/components/models/toy/model.py
++++ b/nemo_automodel/components/models/toy/model.py
+@@ -0,0 +1,2 @@
++import socket
++x = 1
+";
+        fs::write(dir.path().join(".prism/automodel.patch"), patch).unwrap();
+        fs::write(dir.path().join("model.py"), "import socket\nx = 1\n").unwrap();
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec![".prism/automodel.patch".into(), "model.py".into()],
+            corpus: vec![],
+            metrics_relpath: None,
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: crate::PRISM_DOMAIN_RULES.into(),
+        };
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Cheat);
+    }
+
+    #[tokio::test]
+    async fn sim_automodel_clean_delta_skips_hooks() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".prism")).unwrap();
+        let patch = "\
+diff --git a/nemo_automodel/components/models/toy/layers.py b/nemo_automodel/components/models/toy/layers.py
+--- /dev/null
++++ b/nemo_automodel/components/models/toy/layers.py
+@@ -0,0 +1,2 @@
++def scale(x, factor=2):
++    return x * factor
+";
+        fs::write(dir.path().join(".prism/automodel.patch"), patch).unwrap();
+        fs::write(
+            dir.path().join("layers.py"),
+            "def scale(x, factor=2):\n    return x * factor\n",
+        )
+        .unwrap();
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec![".prism/automodel.patch".into(), "layers.py".into()],
+            corpus: vec![],
+            metrics_relpath: None,
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: crate::PRISM_DOMAIN_RULES.into(),
+        };
         let v = SimAgent::new().review(&req).await.unwrap();
         assert_eq!(v.verdict, VerdictKind::Clean);
     }

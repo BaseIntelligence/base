@@ -3776,6 +3776,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-automodel"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prism-tree",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "zip",
+]
+
+[[package]]
 name = "prism-challenge"
 version = "0.1.0"
 dependencies = [
@@ -3793,6 +3807,7 @@ dependencies = [
  "http-body-util",
  "prism-artifacts",
  "prism-attribution",
+ "prism-automodel",
  "prism-challenge-task",
  "prism-emit",
  "prism-eval-store",
@@ -3805,6 +3820,7 @@ dependencies = [
  "prism-registry",
  "prism-review",
  "prism-store",
+ "prism-tree",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3816,6 +3832,7 @@ dependencies = [
  "tower",
  "tracing",
  "trustroot",
+ "zip",
 ]
 
 [[package]]
@@ -3893,6 +3910,7 @@ name = "prism-intake"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bytes",
  "crypto",
  "hex",
@@ -3951,6 +3969,7 @@ dependencies = [
  "bundle",
  "challenge-agentic",
  "hex",
+ "prism-automodel",
  "prism-challenge-task",
  "prism-lium",
  "prism-recipe",
@@ -3983,6 +4002,7 @@ name = "prism-recipe"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "prism-automodel",
  "prism-tree",
  "serde",
  "serde_json",

@@ -22,6 +22,17 @@ const EXTERNAL_MINER_PINS: &[(&str, &str)] = &[
     ("bundle_spec_link", "BUNDLE_SPEC.md"),
 ];
 
+/// Pins required in `docs/external-miner/prism.md` for recipe 2.0 `AutoModel`.
+const PRISM_AUTOMODEL_PINS: &[(&str, &str)] = &[
+    ("recipe_2_0_0", "2.0.0"),
+    ("automodel_base_member", "automodel.base"),
+    ("automodel_patch_member", "automodel.patch"),
+    ("live_pin_id", "automodel@v0.5.0"),
+    ("recipe_json_pin_id", "automodel_pin_id"),
+    ("diff_route", "/v1/submissions/{id}/diff"),
+    ("lium_byok", "X-Lium-Api-Key"),
+];
+
 /// Substrings that must not appear as live miner guidance (removed path).
 const FORBIDDEN_LIVE_PATHS: &[&str] = &[
     "phala deploy",
@@ -125,6 +136,27 @@ fn check_external_miner_docs(
             failures.push(format!(
                 "docs/external-miner/{required} missing (HTTP submit guide required)"
             ));
+        }
+    }
+
+    let prism_md = dir.join("prism.md");
+    if prism_md.is_file() {
+        let prism_body = fs::read_to_string(&prism_md)
+            .map_err(|e| format!("read {}: {e}", prism_md.display()))?;
+        for (name, needle) in PRISM_AUTOMODEL_PINS {
+            if !prism_body.contains(needle) {
+                failures.push(format!(
+                    "docs/external-miner/prism.md missing AutoModel pin {name}: {needle:?}"
+                ));
+            }
+        }
+        // Stale plan wording — live pin ids are tag-shaped (`automodel@…`).
+        if prism_body.contains("automodel-<12hex>") {
+            failures.push(
+                "docs/external-miner/prism.md still mentions stale pin shape automodel-<12hex> \
+                 (live pin is automodel@v0.5.0)"
+                    .into(),
+            );
         }
     }
 
@@ -301,5 +333,15 @@ mod tests {
         assert!(EXTERNAL_MINER_PINS
             .iter()
             .any(|(n, v)| *n == "no_phala_cvm" && *v == "no Phala/CVM"));
+    }
+
+    #[test]
+    fn prism_automodel_pins_cover_recipe_2() {
+        assert!(PRISM_AUTOMODEL_PINS
+            .iter()
+            .any(|(n, v)| *n == "live_pin_id" && *v == "automodel@v0.5.0"));
+        assert!(PRISM_AUTOMODEL_PINS
+            .iter()
+            .any(|(n, v)| *n == "automodel_patch_member" && *v == "automodel.patch"));
     }
 }

@@ -77,7 +77,7 @@ where
 
 /// A submission body: JSON sources, JSON + `zip_base64`, or raw
 /// `application/zip` with `X-Miner-Hotkey` (+ optional `X-Prism-Arch-Id` for
-/// training-only).
+/// transitional legacy training-only when `PRISM_ALLOW_LEGACY_INTAKE=1`).
 pub fn parse_submission_body(
     headers: &axum::http::HeaderMap,
     body: &[u8],
@@ -95,21 +95,20 @@ pub fn parse_submission_body(
             .get("x-prism-arch-id")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let (architecture_py, training_py) = if arch_id.is_some() {
-            (
-                String::new(),
-                prism_recipe::training_from_zip(body).map_err(|e| e.to_string())?,
-            )
-        } else {
-            prism_recipe::sources_from_zip(body).map_err(|e| e.to_string())?
-        };
+        // Keep raw ZIP bytes so recipe ≥ 2.0 AutoModel expand can apply the
+        // patch; legacy paths still go through expand when allowed.
+        let zip_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, body);
         return Ok(SubmissionRequest {
             miner_hotkey: hk.to_owned(),
-            architecture_py,
-            training_py,
-            zip_base64: None,
+            architecture_py: String::new(),
+            training_py: String::new(),
+            zip_base64: Some(zip_b64),
             arch_id,
             label: None,
+            automodel_base: None,
+            automodel_patch: None,
+            prism_toml: None,
+            packed_tree: None,
         });
     }
     serde_json::from_slice(body).map_err(|e| format!("invalid_json: {e}"))
@@ -192,12 +191,13 @@ async fn front_end(
 ) -> Result<SubmissionRequest, Response> {
     let mut req = parse_submission_body(headers, body)
         .map_err(|e| json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e))?;
-    prism_pipeline::expand_zip_fields(&mut req)
-        .map_err(|e| json_err(StatusCode::BAD_REQUEST, "zip", &e))?;
+    prism_pipeline::expand_zip_fields(&mut req).map_err(|e| map_zip_err(&e))?;
     prism_pipeline::validate(&req).map_err(|e| map_submission_err(&e))?;
-    materialize_arch(st.store.as_ref(), &mut req).await?;
-    prism_recipe::check_contract(&req.architecture_py, &req.training_py)
-        .map_err(|e| json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string()))?;
+    if !prism_pipeline::is_automodel_request(&req) {
+        materialize_arch(st.store.as_ref(), &mut req).await?;
+        prism_recipe::check_contract(&req.architecture_py, &req.training_py)
+            .map_err(|e| json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string()))?;
+    }
     req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
     metagraph_uid(st.metagraph.as_deref(), &req.miner_hotkey)?;
     Ok(req)
@@ -258,7 +258,24 @@ async fn post_precheck(
 /// A rejected [`SubmissionRequest`] as a 400 with the contract error text.
 #[must_use]
 pub fn map_submission_err(err: &SubmissionError) -> Response {
-    json_err(StatusCode::BAD_REQUEST, "invalid_request", &err.to_string())
+    json_err(StatusCode::BAD_REQUEST, err.code(), &err.to_string())
+}
+
+/// Map expand/apply errors to stable API codes (`unsupported_layout`, …).
+#[must_use]
+pub fn map_zip_err(err: &str) -> Response {
+    let code = if err.starts_with("unsupported_layout") {
+        "unsupported_layout"
+    } else if err.starts_with("recipe_version") {
+        "recipe_version"
+    } else if err.starts_with("pin ") || err.starts_with("pin mismatch") || err.contains("pin ") {
+        "pin"
+    } else if err.contains("patch") || err.contains("conflict") {
+        "patch"
+    } else {
+        "zip"
+    };
+    json_err(StatusCode::BAD_REQUEST, code, err)
 }
 
 /// The API's uniform error envelope.
