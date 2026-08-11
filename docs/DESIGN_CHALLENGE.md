@@ -456,6 +456,11 @@ one **point**. The leaf projection uses a **rolling window of the last
 | No harness | `NoScore(NotAttempted)` |
 | Agentic / infra failure (retry budget spent) | `NoScore(ChallengeInternal)` |
 
+Leaf emit (`scores_for_epoch`) reads ratings from the **latest scored round**
+with `round.epoch ≤ target` only — that row set *is* the rolling-window
+projection written by `award_round`. Do **not** carry forward a miner's older
+`SCORE_MAX` after they leave the window (per-miner history walk is a bug).
+
 Proportional share uses integer floor division; the remainder is unassigned.
 
 ---

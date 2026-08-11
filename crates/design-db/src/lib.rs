@@ -885,6 +885,17 @@ pub async fn design_ratings_for_round(
 
 /// Scores for epoch (D24 leaf projection from ratings).
 ///
+/// Uses ratings from the **single latest scored round** whose `epoch <=`
+/// target (not a per-miner walk of history). Each `award_round` writes the
+/// full rolling-window projection onto that round — so tip emit matches the
+/// current `SCORING_WINDOW_ROUNDS` share. Carrying forward an older
+/// `DISTINCT ON (miner)` `SCORE_MAX` after a miner leaves the window incorrectly
+/// keeps them weighted (prod UID-94 failure mode).
+///
+/// Still allows `round.epoch <= target` so a new chain epoch can emit the
+/// previous round's projection before its first close/award (avoids
+/// zero-lock).
+///
 /// # Errors
 /// SQL error.
 pub async fn design_scores_for_epoch(
@@ -892,17 +903,17 @@ pub async fn design_scores_for_epoch(
     netuid: i32,
     epoch: i64,
 ) -> Result<Vec<(String, String, Option<i64>, Option<i16>)>, DbError> {
-    // Window semantics (scoring v3): each miner's *latest* rating is the
-    // rolling 10-round window projection, so "scores for this chain epoch"
-    // means the newest rating per miner — never filter by the round's epoch.
-    // Filtering by round epoch zero-locks every chain epoch: the first close
-    // inside it emits before any of its rounds is awarded.
     let rows: Vec<(String, String, Option<i64>, Option<i16>)> = sqlx::query_as(
-        "SELECT DISTINCT ON (r.miner_hotkey) r.miner_hotkey, r.kind, r.score, r.absence_reason \
+        "SELECT r.miner_hotkey, r.kind, r.score, r.absence_reason \
          FROM design_rating r \
          JOIN design_round dr ON dr.round_id = r.round_id \
          WHERE dr.netuid = $1 AND dr.epoch <= $2 AND r.kind IS NOT NULL \
-         ORDER BY r.miner_hotkey, r.round_id DESC",
+           AND r.round_id = ( \
+             SELECT MAX(r2.round_id) \
+             FROM design_rating r2 \
+             JOIN design_round dr2 ON dr2.round_id = r2.round_id \
+             WHERE dr2.netuid = $1 AND dr2.epoch <= $2 AND r2.kind IS NOT NULL \
+           )",
     )
     .bind(netuid)
     .bind(epoch)
