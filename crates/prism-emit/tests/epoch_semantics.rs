@@ -211,10 +211,10 @@ async fn no_double_emission_across_epochs() {
 
     let s = em.tick(7, &exp).await.unwrap().expect("emit");
     assert_eq!(s.batch, 1);
-    assert!(
-        em.tick(7, &exp).await.unwrap().is_none(),
-        "same epoch is a no-op"
-    );
+    // Tip refresh re-submits WTA for the same epoch; cursor stays put.
+    let tip = em.tick(7, &exp).await.unwrap().expect("tip refresh");
+    assert_eq!(tip.epoch, 7);
+    assert_eq!(store.emit_cursor(541).await.unwrap(), Some(7));
 
     // A second scorer finalizes during epoch 7; only that row is freshly assigned.
     store

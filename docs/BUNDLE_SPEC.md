@@ -517,9 +517,10 @@ Validators compare:
 |----------|----------|
 | `GET /v1/bundle/{epoch}` | Returns the sealed `EpochBundleV1` SCALE bytes (content-type `application/octet-stream`) or 404 |
 | `GET /v1/bundle/root/{root}` | Lookup by `merkle_root` hex (64 lowercase hex chars); returns same body or 404 |
-| `GET /v1/weights/latest` | Sealed projection when a bundle exists (`sealed: true`). If no sealed bundle is available or the stored bytes cannot be decoded, MUST return **200** with the fail-closed **burn vector** under `burn-uid0.v1` (`uids: [0]`, `weights: [1.0]`, `sealed: false`) — never 404. Validators MUST NOT treat `sealed: false` as a Match / submit path |
+| `GET /v1/weights/latest` | Sealed projection of the **newest revision** of the highest chain-scale sealed epoch (`sealed: true`, with `revision` / `vector_digest`). If no sealed bundle is available or the stored bytes cannot be decoded, MUST return **200** with the fail-closed **burn vector** under `burn-uid0.v1` (`uids: [0]`, `weights: [1.0]`, `sealed: false`) — never 404. Validators MUST NOT treat `sealed: false` as a Match / submit path — Match only on `sealed: true` |
+| Tip reseal | Within the live tip epoch, when challenge leaves tip-supersede (`POST /v1/weights/raw` with a changed `payload_digest` for the same `(challenge_id, epoch, miner_hotkey)`), the gateway MAY append a new `epoch_bundle.revision` whose merkle/vector reflect the updated leaves. Re-seal with unchanged merkle root and `final_vector` is a no-op (returns the existing seal). Older epochs are not rewritten by the tip sealer walk |
 | Validator mirroring | Validators MAY re-serve a bundle they have verified and persisted; peers SHOULD prefer multi-source fetch |
-| **No last-known-good** | MUST NOT fall back to a previous epoch's bundle, root, or vector when the current epoch fetch/verify fails. Failure → class B / degraded path, not stale success (aligns with D13 spirit for attestation). The unsealed burn response on `/v1/weights/latest` is an operator-safety default, not a last-known-good seal |
+| **No last-known-good** | MUST NOT fall back to a previous epoch's bundle, root, or vector when the current epoch fetch/verify fails. Failure → class B / degraded path, not stale success (aligns with D13 spirit for attestation). The unsealed burn response on `/v1/weights/latest` is an operator-safety default, not a last-known-good seal. Mid-epoch tip revision bumps are intentional tip-tracking, not last-known-good |
 
 Gateway signature and leaf signatures are always verified against local trust roots after fetch.
 

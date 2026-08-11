@@ -237,6 +237,46 @@ fn s2_reseal_idempotent_identical_bytes_and_signature() {
     assert_eq!(bytes1, bytes2, "re-seal must be byte-identical");
     assert_eq!(b1.gateway_sig, b2.gateway_sig);
     assert_eq!(bundles.get_by_epoch(params.epoch).unwrap(), bytes1);
+    assert_eq!(bundles.seal_record(params.epoch).unwrap().revision, 1);
+}
+
+#[test]
+fn s2b_tip_reseal_bumps_revision_when_leaf_digest_changes() {
+    let (chain, challenges, weights, bundles, params, trust, _gsk) = seal_fixture();
+    let b1 = seal_epoch(
+        &chain,
+        &challenges,
+        weights.as_ref(),
+        bundles.as_ref(),
+        &params,
+    )
+    .expect("seal1");
+    assert_eq!(bundles.seal_record(params.epoch).unwrap().revision, 1);
+
+    // Supersede one tip leaf with a different score → merkle/vector change.
+    let csk = sk(1);
+    let cid = b"dummy";
+    let miners = [hk(0xA1), hk(0xB2), hk(0xC3)];
+    seed_leaf_row(
+        weights.as_ref(),
+        &csk,
+        cid,
+        miners[0],
+        params.epoch,
+        ScoreOrAbsence::Score { value: 90 },
+    );
+    let b2 = seal_epoch(
+        &chain,
+        &challenges,
+        weights.as_ref(),
+        bundles.as_ref(),
+        &params,
+    )
+    .expect("reseal");
+    assert_ne!(b1.body.merkle_root, b2.body.merkle_root);
+    assert_ne!(b1.body.final_vector, b2.body.final_vector);
+    assert_eq!(bundles.seal_record(params.epoch).unwrap().revision, 2);
+    verify_bundle(&b2, &chain, &trust).expect("verify reseal");
 }
 
 #[test]

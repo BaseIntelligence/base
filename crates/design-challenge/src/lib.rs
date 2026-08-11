@@ -97,7 +97,14 @@ mod tests {
     }
 
     #[test]
-    fn emit_plan_noop_when_already_emitted_current() {
-        assert!(design_emit_plan(11, 11, 350, 360, 1000).is_none());
+    fn emit_plan_reemits_tip_when_already_emitted_current() {
+        let p = design_emit_plan(11, 11, 10, 360, 1000).unwrap();
+        assert_eq!(
+            p,
+            DesignEmitPlan {
+                epoch: 11,
+                pin_block: 1000
+            }
+        );
     }
 }

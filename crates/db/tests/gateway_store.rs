@@ -2,7 +2,7 @@
 //!
 //! Scenarios:
 //! - S1 happy: raw-weight insert + read back + list + count
-//! - S2 edge: duplicate `(challenge_id, epoch, miner_hotkey)` is a conflict, not a second row
+//! - S2 edge: identical digest is a conflict; digest change tip-supersedes in place
 //! - S3 happy: sealed bundle insert, read by epoch / root, and re-seal bumps `revision`
 //! - S4 regression: schema `CHECK`s still reject a malformed raw weight
 
@@ -169,8 +169,35 @@ async fn s2_duplicate_raw_weight_conflicts() {
     )
     .await
     .expect("retry must not error");
-    assert!(retry.is_none(), "unique key → no second row");
+    assert!(retry.is_none(), "identical digest → no second row");
     assert_eq!(count_raw_weights(pool).await.expect("count"), 1);
+
+    // Tip supersede: different digest replaces in place.
+    let digest2 = vec![9u8; 32];
+    let payload2 = b"scale-body-v2".to_vec();
+    let supersede = insert_raw_weight(
+        pool,
+        &score_row(
+            Uuid::new_v4(),
+            "c1",
+            1,
+            "aa",
+            &payload2,
+            &digest2,
+            &sig,
+            &nonce,
+        ),
+    )
+    .await
+    .expect("supersede");
+    assert!(supersede.is_some());
+    assert_eq!(count_raw_weights(pool).await.expect("count"), 1);
+    let row = get_raw_weight(pool, "c1", 1, "aa")
+        .await
+        .expect("get")
+        .expect("row");
+    assert_eq!(row.payload, payload2);
+    assert_eq!(row.payload_digest, digest2);
 
     tp.drop_schema().await.expect("drop");
 }
