@@ -109,8 +109,6 @@ services:
       PRISM_EVAL_ASSETS_DIR: "/tmp/prism-eval-assets"
       PRISM_ARTIFACT_DIR: "/tmp/prism-artifacts"
       PRISM_TEST_EVAL_CAPS: "0"
-      # Neutralize env-staging.yml short-train / tiny-model knobs (compose
-      # cannot unset inherited keys — pin production values instead).
       PRISM_TEST_TRAIN_MINUTES: "0"
       PRISM_TEST_MAX_PARAMS: "350000000"
       PRISM_MAX_CONCURRENT_EVALS: "1"
@@ -133,10 +131,15 @@ if [[ "$SKIP_RECREATE" -eq 0 ]]; then
   log "recreating prism-challenge with overnight env (no short-train knobs)"
   # Drop the previous short-train az override by not including it.
   "${COMPOSE[@]}" up -d --no-deps --force-recreate prism-challenge
-  sleep 3
 fi
 
 ENV_SNAP="$EVIDENCE/prism-env.txt"
+for i in $(seq 1 60); do
+  if docker exec base-prism-challenge-1 true 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
 docker exec base-prism-challenge-1 env | grep -E 'PRISM_|LIUM_' | sort > "$ENV_SNAP" || true
 log "env snapshot → $ENV_SNAP"
 if grep -qE '^PRISM_TEST_TRAIN_MINUTES=([1-9]|0*[1-9][0-9]+)' "$ENV_SNAP"; then
