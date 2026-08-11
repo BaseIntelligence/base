@@ -255,6 +255,13 @@ pub fn materialize(members: &AutomodelMembers) -> Result<MaterializedAutomodel, 
     );
     files.insert(META_PATCH.into(), members.patch.clone());
     files.insert(META_DIFFSTAT.into(), diffstat_json);
+    // Persist miner knobs into the applied tree + slim delivery blob so the
+    // pod harness can resolve a non-default entry (e.g. Prism-shaped smoke).
+    // Without this, expand_tree_blob_for_pod rematerializes with
+    // DEFAULT_TRAIN_ENTRY and live eval imports NeMo train_ft (mlflow, …).
+    if let Some(toml) = &members.prism_toml {
+        files.insert(MEMBER_TOML.into(), toml.as_bytes().to_vec());
+    }
     let entry = members
         .prism_toml
         .as_deref()
@@ -335,7 +342,17 @@ pub fn expand_tree_blob_for_pod(blob: &[u8]) -> Result<prism_tree::StagedTree, I
     let prism_toml = staged
         .get(MEMBER_TOML)
         .and_then(|b| std::str::from_utf8(b).ok())
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .or_else(|| {
+            // Legacy slim blobs omitted prism.toml; recover entry from the
+            // StagedTree entry pointer when it is not the stock train_ft path.
+            let e = staged.entry().trim();
+            if e.is_empty() || e == DEFAULT_TRAIN_ENTRY {
+                None
+            } else {
+                Some(format!("entry = \"{e}\"\n"))
+            }
+        });
     let mat = materialize(&AutomodelMembers {
         pin_id: pin_id.to_owned(),
         patch: patch.to_vec(),
@@ -636,6 +653,40 @@ mod tests {
             assert!(!stat.files.is_empty());
             let id = submission_id_for_patch(&mat.pin_id, &mat.patch);
             assert_eq!(id.len(), 64);
+        });
+    }
+
+    #[test]
+    fn slim_blob_keeps_prism_toml_entry_through_expand() {
+        with_fixture_env(true, || {
+            let patch = fs::read(fixture_happy_patch_path()).unwrap();
+            let custom_entry = "nemo_automodel/components/models/toy/model.py";
+            let z = zip_of(&[
+                (MEMBER_BASE, format!("{FIXTURE_PIN_ID}\n").as_bytes()),
+                (MEMBER_PATCH, &patch),
+                (
+                    MEMBER_TOML,
+                    format!("entry = \"{custom_entry}\"\n").as_bytes(),
+                ),
+            ]);
+            let mat = intake_automodel_zip(&z).unwrap();
+            assert_eq!(mat.entry, custom_entry);
+            assert_eq!(
+                std::str::from_utf8(mat.files.get(MEMBER_TOML).unwrap())
+                    .unwrap()
+                    .trim(),
+                format!("entry = \"{custom_entry}\"")
+            );
+            let slim = pack_tree_blob(&mat).unwrap();
+            let slim_staged = prism_tree::StagedTree::unpack(&slim).unwrap();
+            assert!(
+                slim_staged.get(MEMBER_TOML).is_some(),
+                "slim delivery must carry prism.toml"
+            );
+            assert_eq!(slim_staged.entry(), custom_entry);
+            let expanded = expand_tree_blob_for_pod(&slim).unwrap();
+            assert_eq!(expanded.entry(), custom_entry);
+            assert!(expanded.get(MEMBER_TOML).is_some());
         });
     }
 

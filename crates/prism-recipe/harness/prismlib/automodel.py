@@ -232,6 +232,16 @@ def stage(workdir, *, force_fixture=False):
         sub_toml = intake_sub / "prism.toml"
         if sub_toml.is_file() and not prism_toml_src:
             prism_toml_src = str(sub_toml)
+        # Intake packs StagedTree entry as submission/.prism_entry; use it when
+        # slim blobs omitted prism.toml (pre-fix) so we do not fall back to
+        # stock NeMo train_ft.py.
+        entry_marker = intake_sub / ".prism_entry"
+        if entry_marker.is_file() and not prism_toml_src and not local_toml.is_file():
+            marked = entry_marker.read_text(encoding="utf-8").strip()
+            if marked and marked != DEFAULT_TRAIN_ENTRY:
+                synth = workdir / "prism.toml"
+                synth.write_text(f'entry = "{marked}"\n', encoding="utf-8")
+                prism_toml_src = str(synth)
     if local_base.is_file() and not base_id:
         base_id = local_base.read_text(encoding="utf-8").strip()
     if local_toml.is_file() and not prism_toml_src:
