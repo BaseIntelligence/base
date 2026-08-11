@@ -290,7 +290,7 @@ pub fn intake_automodel_zip(zip_bytes: &[u8]) -> Result<MaterializedAutomodel, I
 
 /// Pack a **slim** delivery blob for DB persistence (`.prism/` + touched files).
 ///
-/// The full AutoModel pin tree exceeds `prism_submission_tree_blob_len`
+/// The full `AutoModel` pin tree exceeds `prism_submission_tree_blob_len`
 /// (~17 MiB). Pods rematerialize via [`expand_tree_blob_for_pod`] against
 /// `PRISM_AUTOMODEL_PIN_DIR` at upload time.
 pub fn pack_tree_blob(mat: &MaterializedAutomodel) -> Result<Vec<u8>, IntakeError> {
@@ -303,29 +303,27 @@ pub fn pack_tree_blob(mat: &MaterializedAutomodel) -> Result<Vec<u8>, IntakeErro
 /// Files persisted in `tree_blob`: meta + patch-touched paths + entry + optional toml.
 fn slim_delivery_files(mat: &MaterializedAutomodel) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
-    for key in [META_BASE, META_PATCH, META_DIFFSTAT] {
+    for key in [
+        META_BASE,
+        META_PATCH,
+        META_DIFFSTAT,
+        mat.entry.as_str(),
+        MEMBER_TOML,
+    ]
+    .into_iter()
+    .chain(mat.diffstat.files.iter().map(|entry| entry.path.as_str()))
+    {
         if let Some(v) = mat.files.get(key) {
             out.insert(key.to_owned(), v.clone());
         }
     }
-    for entry in &mat.diffstat.files {
-        if let Some(v) = mat.files.get(&entry.path) {
-            out.insert(entry.path.clone(), v.clone());
-        }
-    }
-    if let Some(v) = mat.files.get(&mat.entry) {
-        out.insert(mat.entry.clone(), v.clone());
-    }
-    if let Some(v) = mat.files.get(MEMBER_TOML) {
-        out.insert(MEMBER_TOML.to_owned(), v.clone());
-    }
     out
 }
 
-/// Expand a stored AutoModel (or legacy) tree blob into the full pod tree.
+/// Expand a stored `AutoModel` (or legacy) tree blob into the full pod tree.
 ///
 /// When `.prism/automodel.patch` is present, re-applies onto the live pin
-/// checkout so the pod receives a complete applied AutoModel tree even though
+/// checkout so the pod receives a complete applied `AutoModel` tree even though
 /// the DB only kept the slim delta.
 pub fn expand_tree_blob_for_pod(blob: &[u8]) -> Result<prism_tree::StagedTree, IntakeError> {
     let staged =

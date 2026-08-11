@@ -34,12 +34,17 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
         event: Option<&StageEvent>,
     ) -> Result<SubmissionState, StoreError>;
 
-    /// Retry reset: clears review/score fields and the emission watermark,
-    /// and re-queues a failed row. A completed measurement (pod id/provider,
-    /// receipt, metrics, bpb, telemetry series) is RETAINED so a post-run
-    /// infra retry resumes without re-measure; a measure-phase failure never
-    /// persisted one, so install retries still re-provision from scratch.
-    async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError>;
+    /// Retry reset: clears review/score fields and re-queues. A completed
+    /// measurement (metrics plus its pod/receipt/bpb fields) is retained so a
+    /// post-run infra retry resumes without another GPU run; an incomplete
+    /// measure attempt is cleared so provisioning starts cleanly.
+    /// `bump_retry` increments `retry_count` (manual/auto infra). Pass
+    /// `false` for Lium 429 autonomous requeue (do not burn attempt budget).
+    async fn reset_for_retry(
+        &self,
+        id: &str,
+        bump_retry: bool,
+    ) -> Result<SubmissionState, StoreError>;
 
     /// Newsfeed listing for the API (`status` / `miner` optional filters).
     async fn list(
@@ -288,7 +293,11 @@ impl PrismStore for MemoryPrismStore {
         Ok(out)
     }
 
-    async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError> {
+    async fn reset_for_retry(
+        &self,
+        id: &str,
+        bump_retry: bool,
+    ) -> Result<SubmissionState, StoreError> {
         let mut rows = self
             .rows
             .lock()
@@ -297,16 +306,25 @@ impl PrismStore for MemoryPrismStore {
             .iter_mut()
             .find(|r| r.id == id)
             .ok_or(StoreError::NotFound)?;
-        // A completed measurement (pod id/provider, receipt, metrics, bpb and
-        // the derived telemetry series) is RETAINED: post-run infra retries
-        // resume from it instead of re-measuring. A measure-phase failure
-        // never persisted one, so install retries still re-provision.
+        // A completed measurement is retained so post-run retries resume at
+        // review. A failed/429 provisioning or exec attempt has no metrics;
+        // clear its stale pod fields before the next rent.
+        let retained_measurement = row.metrics_json.is_some();
         row.status = Stage::Queued;
+        if !retained_measurement {
+            row.pod_id = None;
+            row.pod_provider = None;
+            row.receipt = None;
+            row.metrics_json = None;
+            row.bpb = None;
+        }
         row.review = None;
         row.similarity = None;
         row.final_score = None;
         row.error_detail = None;
-        row.retry_count = row.retry_count.saturating_add(1);
+        if bump_retry {
+            row.retry_count = row.retry_count.saturating_add(1);
+        }
         row.updated_at_ms = now_ms();
         let out = row.clone();
         drop(rows);
@@ -315,6 +333,12 @@ impl PrismStore for MemoryPrismStore {
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .remove(id);
+        if !retained_measurement {
+            self.telemetry
+                .lock()
+                .map_err(|_| StoreError::Backend("poison".into()))?
+                .remove(id);
+        }
         Ok(out)
     }
 
@@ -789,7 +813,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let retried = s.reset_for_retry("a").await.unwrap();
+        let retried = s.reset_for_retry("a", true).await.unwrap();
         assert_eq!(retried.status, Stage::Queued);
         assert_eq!(retried.retry_count, 1);
         assert_eq!(s.telemetry("a").await.unwrap().len(), 2);

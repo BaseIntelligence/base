@@ -20,8 +20,8 @@ const USTAR_NAME_MAX: usize = 100;
 const USTAR_PREFIX_MAX: usize = 155;
 /// Longest path representable with USTAR name + prefix (no PAX).
 ///
-/// `name` (≤100) + optional `prefix/` (≤155) → 255 bytes. Enough for NeMo
-/// AutoModel pin paths under `submission/` (observed max ~126).
+/// `name` (≤100) + optional `prefix/` (≤155) → 255 bytes. Enough for `NeMo`
+/// `AutoModel` pin paths under `submission/` (observed max ~126).
 pub const MAX_TAR_PATH_BYTES: usize = USTAR_NAME_MAX + 1 + USTAR_PREFIX_MAX;
 
 /// Pack `files` into a deterministic USTAR archive.

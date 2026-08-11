@@ -27,12 +27,13 @@ pub use challenge_common::{
     GatewayClient, GatewayClientConfig, LeafEmitError,
 };
 pub use design_challenge_task::{
-    agent_run_timeout_secs, awaiting_admin_unscored_expired, daily_run_quota,
+    agent_run_timeout_secs, awaiting_admin_unscored_expired, daily_run_quota, design_emit_plan,
     manual_daily_run_quota, prompts_per_round, reject_awaiting_admin_run, round_id_at, round_secs,
     round_win_delta, rounds_per_day_effective, scheduled_daily_run_cap, scheduled_runs_per_day,
-    score_window, unscored_epochs_elapsed, window_start, ScorePlan, WindowScorePlan, CHALLENGE_ID,
-    CHALLENGE_ID_BYTES, MANUAL_DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS,
-    SCORE_MAX, SCORING_VERSION, SCORING_WINDOW_ROUNDS, UNSCORED_EPOCH_LIMIT,
+    score_window, unscored_epochs_elapsed, window_start, DesignEmitPlan, ScorePlan,
+    WindowScorePlan, CHALLENGE_ID, CHALLENGE_ID_BYTES, DESIGN_EMIT_LATE_BLOCKS,
+    MANUAL_DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS, SCORE_MAX,
+    SCORING_VERSION, SCORING_WINDOW_ROUNDS, UNSCORED_EPOCH_LIMIT,
 };
 pub use design_http::{
     design_router, mark_awaiting, mark_awaiting_admin, record_epoch, AdminAwardHook, AppState,
@@ -46,7 +47,6 @@ pub use host_sim::{
 };
 pub use orchestrator::{ErrorClass, Orchestrator, OrchestratorConfig};
 
-/// Crate identity smoke.
 #[must_use]
 pub fn crate_name() -> &'static str {
     "design-challenge"
@@ -61,5 +61,50 @@ mod tests {
         assert_eq!(crate_name(), "design-challenge");
         assert_eq!(CHALLENGE_ID, "design");
         assert_eq!(SCORING_VERSION, 3);
+    }
+
+    #[test]
+    fn emit_plan_waits_until_late_tempo_for_current_epoch() {
+        assert!(design_emit_plan(10, 11, 200, 360, 1000).is_none());
+        let p = design_emit_plan(10, 11, 360 - DESIGN_EMIT_LATE_BLOCKS, 360, 1000).unwrap();
+        assert_eq!(
+            p,
+            DesignEmitPlan {
+                epoch: 11,
+                pin_block: 1000
+            }
+        );
+    }
+
+    #[test]
+    fn emit_plan_catches_up_skipped_epochs_without_waiting() {
+        // Prod failure mode: award/boundary race skipped 24413 while chain is 24423.
+        let p = design_emit_plan(24412, 24423, 50, 360, 8_815_687).unwrap();
+        assert_eq!(p.epoch, 24413);
+        assert_eq!(p.pin_block, 8_815_687 - (24423 - 24413) * 360);
+    }
+
+    #[test]
+    fn emit_plan_cold_start_emits_current_immediately() {
+        let p = design_emit_plan(0, 24424, 10, 360, 8_816_047).unwrap();
+        assert_eq!(
+            p,
+            DesignEmitPlan {
+                epoch: 24424,
+                pin_block: 8_816_047
+            }
+        );
+    }
+
+    #[test]
+    fn emit_plan_reemits_tip_when_already_emitted_current() {
+        let p = design_emit_plan(11, 11, 10, 360, 1000).unwrap();
+        assert_eq!(
+            p,
+            DesignEmitPlan {
+                epoch: 11,
+                pin_block: 1000
+            }
+        );
     }
 }

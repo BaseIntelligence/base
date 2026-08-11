@@ -18,8 +18,8 @@ fn backend(e: sqlx::Error) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
-/// Batch-fill `arch_id` + `created_at_ms` onto states read through the plain
-/// `db::prism_store` row shape (which predates migration 0010).
+/// Batch-fill `arch_id` + `created_at_ms` + `updated_at_ms` onto states read
+/// through the plain `db::prism_store` row shape (predates migration 0010).
 pub(crate) async fn fill_arch_meta(
     pool: &PgPool,
     rows: &mut [SubmissionState],
@@ -28,20 +28,25 @@ pub(crate) async fn fill_arch_meta(
         return Ok(());
     }
     let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-    let meta: Vec<(String, Option<String>, i64)> = sqlx::query_as(
-        "SELECT id, arch_id, (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT \
+    let meta: Vec<(String, Option<String>, i64, i64)> = sqlx::query_as(
+        "SELECT id, arch_id, \
+            (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT, \
+            (FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000))::BIGINT \
          FROM prism_submission WHERE id = ANY($1)",
     )
     .bind(&ids)
     .fetch_all(pool)
     .await
     .map_err(backend)?;
-    let map: HashMap<String, (Option<String>, i64)> =
-        meta.into_iter().map(|(id, a, ms)| (id, (a, ms))).collect();
+    let map: HashMap<String, (Option<String>, i64, i64)> = meta
+        .into_iter()
+        .map(|(id, a, created, updated)| (id, (a, created, updated)))
+        .collect();
     for r in rows.iter_mut() {
-        if let Some((arch, ms)) = map.get(&r.id) {
+        if let Some((arch, created, updated)) = map.get(&r.id) {
             r.arch_id = arch.clone();
-            r.created_at_ms = (*ms).max(0).cast_unsigned();
+            r.created_at_ms = (*created).max(0).cast_unsigned();
+            r.updated_at_ms = (*updated).max(0).cast_unsigned();
         }
     }
     Ok(())

@@ -143,12 +143,12 @@ fn record_to_row(rec: RawWeightRecord) -> Result<RawWeightRow, String> {
 
 impl RawWeightStore for PgRawWeightStore {
     fn insert(&self, row: RawWeightRow) -> Result<RawWeightRow, StoreError> {
+        // Tip supersede (digest change) returns Some; identical digest → None.
         let inserted = self.try_insert(&row).map_err(StoreError::Backend)?;
         if inserted {
             return Ok(row);
         }
-        // The unique key already holds a row: the 409 body must echo the
-        // stored original, not the rejected resubmission.
+        // Same digest already stored: 409 body echoes the original row.
         match self.get(&row.challenge_id, row.epoch, &row.miner_hotkey) {
             Some(original) => Err(StoreError::Conflict {
                 original: Box::new(original),
@@ -196,7 +196,8 @@ impl RawWeightStore for PgRawWeightStore {
 }
 
 impl PgRawWeightStore {
-    /// `Ok(true)` when the row was appended, `Ok(false)` on unique conflict.
+    /// `Ok(true)` when the row was inserted or tip-superseded; `Ok(false)` when
+    /// the unique key already holds an identical `payload_digest`.
     fn try_insert(&self, row: &RawWeightRow) -> Result<bool, String> {
         let epoch = epoch_i64(row.epoch)?;
         let score = row
@@ -269,6 +270,10 @@ impl BundleStore for PgBundleStore {
         if let Some(existing) = self.get_by_epoch(epoch) {
             return existing;
         }
+        self.put_revision(epoch, bytes)
+    }
+
+    fn put_revision(&self, epoch: u64, bytes: Vec<u8>) -> Vec<u8> {
         match self.seal(epoch, &bytes) {
             Ok(()) => bytes,
             Err(e) => {

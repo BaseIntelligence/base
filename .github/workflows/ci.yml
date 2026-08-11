@@ -186,6 +186,7 @@ jobs:
              done; echo "UNHEALTHY: $bad"; exit 1'
 
       - name: Verify live chain (no fake backend)
+        if: matrix.role == 'validator'
         run: |
           set -euo pipefail
           ssh -i "$HOME/.ssh/staging_ed25519" -o BatchMode=yes \

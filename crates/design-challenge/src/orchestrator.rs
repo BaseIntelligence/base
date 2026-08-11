@@ -12,13 +12,14 @@ use challenge_agentic::{
     copy_gate, AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest, VerdictKind,
 };
 use challenge_common::{
-    emit_signed_leaf_set, expected_set_at_chain, submit_signed_leaf_set, ExpectedSet,
-    GatewayClient, PinnedBlockHash,
+    emit_signed_leaf_set, expected_set_at_chain, submit_signed_leaf_set, GatewayClient,
+    PinnedBlockHash,
 };
 use crypto::KEY_LEN;
 use design_challenge_task::{
-    awaiting_admin_unscored_expired, reject_awaiting_admin_run, round_id_at, round_secs,
-    UNSCORED_EPOCH_LIMIT,
+    awaiting_admin_unscored_expired, clip_logs, design_emit_plan, not_attempted, now_ms, now_secs,
+    reject_awaiting_admin_run, round_id_at, round_secs, score_window, to_leaf, window_start,
+    WindowScorePlan, MAX_LOG_CHARS, UNSCORED_EPOCH_LIMIT,
 };
 use design_http::{mark_awaiting_admin, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
@@ -35,27 +36,16 @@ use tracing::{info, warn};
 use crate::corpus;
 use crate::screenshot::{capture_full_page_png, png_artifact_tuple};
 use crate::CHALLENGE_ID;
-use design_challenge_task::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
 
-/// Cap harness log payload stored in stage-event detail (JSON).
-const MAX_LOG_CHARS: usize = 65_536;
-
-/// Classified run failure: retryable infra classes vs terminal miner errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorClass {
-    /// Package install / Docker engine infra (auto-retryable).
     Install,
-    /// AST / workdir / store infra (auto-retryable).
     AstInfra,
-    /// LLM transport / provider / verdict parse (auto-retryable).
     LlmInfra,
-    /// Miner-caused failure: agent crash, sanitize reject, missing output
-    /// (terminal — no auto-retry).
     Miner,
 }
 
 impl ErrorClass {
-    /// DB / gating label.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -66,7 +56,6 @@ impl ErrorClass {
         }
     }
 
-    /// Auto-retry budget applies (initial attempt + up to 3 retries).
     #[must_use]
     pub const fn retryable(self) -> bool {
         !matches!(self, Self::Miner)
@@ -121,7 +110,6 @@ fn classify_agentic(e: &AgenticError) -> RunFailure {
     }
 }
 
-/// Design domain rules appended to the agentic system prompt.
 const DESIGN_AGENTIC_RULES: &str = r"
 Design challenge rules:
 - Allowed: PyPI deps, external APIs/MCP over egress (network ≠ cheat), Mobbin/Dribbble, image gen, UI libs.
@@ -130,26 +118,15 @@ Design challenge rules:
 - suspicious and cheat → Score(0), not admin-eligible.
 ";
 
-/// Orchestrator config.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
-    /// Netuid.
     pub netuid: u16,
-    /// Claim poll.
     pub claim_poll: Duration,
-    /// Stuck grace secs.
     pub stuck_grace_secs: u64,
-    /// LLM proxy URL for sandbox.
     pub llm_proxy: String,
-    /// Staging root for agentic workdirs.
     pub staging_root: PathBuf,
-    /// Local/e2e only: pause after each published stage so mid-flight is
-    /// photographable. Zero in production (default).
     pub stage_delay: Duration,
-    /// Auto-retry budget for infra-class failures (initial attempt + this
-    /// many retries). Default 3; `cheat` / `rejected` are always terminal.
     pub auto_retry_max: u32,
-    /// Poll interval for the late-tempo D24 filler.
     pub emit_poll: Duration,
 }
 
@@ -168,7 +145,6 @@ impl Default for OrchestratorConfig {
     }
 }
 
-/// Orchestrator handle.
 pub struct Orchestrator<C: ChainClient + Send + Sync> {
     cfg: OrchestratorConfig,
     store: Arc<dyn DesignStore>,
@@ -178,9 +154,7 @@ pub struct Orchestrator<C: ChainClient + Send + Sync> {
     chain: Arc<C>,
     sk: [u8; KEY_LEN],
     gating: Option<Arc<dyn GatingStore>>,
-    /// Shared chain-epoch cache (HTTP `AppState.epoch` + sweeper clock).
     epoch_cache: Option<Arc<AtomicU64>>,
-    /// Last epoch successfully covered by [`Self::emit_leaves`].
     emitted_epoch: AtomicU64,
 }
 
@@ -193,7 +167,6 @@ impl<C: ChainClient + Send + Sync> std::fmt::Debug for Orchestrator<C> {
 }
 
 impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
-    /// Construct.
     #[must_use]
     pub fn new(
         cfg: OrchestratorConfig,
@@ -218,7 +191,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         }
     }
 
-    /// Attach the submission gating store (terminal states + retry attempts).
     #[must_use]
     pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
         self.gating = Some(gating);
@@ -241,14 +213,12 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         epoch
     }
 
-    /// Local/e2e: hold after publishing a stage so polls can photograph it.
     async fn pause_stage(&self) {
         if !self.cfg.stage_delay.is_zero() {
             sleep(self.cfg.stage_delay).await;
         }
     }
 
-    /// Worker loop.
     pub async fn run_worker(self: Arc<Self>) {
         loop {
             match self.cycle_once().await {
@@ -262,7 +232,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         }
     }
 
-    /// Round closer + leaf emitter loop.
     pub async fn run_round_loop(self: Arc<Self>) {
         let mut last_closed = 0u64;
         loop {
@@ -285,8 +254,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         }
     }
 
-    /// Late-tempo D24 filler: `NotAttempted` coverage when no admin award fired
-    /// (waits ~last 48 blocks so `award_round` can land Score leaves first).
     pub async fn run_emitter(self: Arc<Self>)
     where
         C: Sync,
@@ -299,25 +266,22 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         }
     }
 
-    /// One emitter tick. `Ok(true)` when a leaf set was submitted this tick.
-    ///
-    /// # Errors
-    /// Chain / sign / submit failures (retried next tick).
     pub async fn emitter_tick(&self) -> Result<bool, String>
     where
         C: Sync,
     {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
-        let epoch = state.subnet_epoch_index;
-        if epoch == 0 || self.emitted_epoch.load(Ordering::Relaxed) >= epoch {
+        let Some(plan) = design_emit_plan(
+            self.emitted_epoch.load(Ordering::Relaxed),
+            state.subnet_epoch_index,
+            state.blocks_since_last_step,
+            u64::from(state.tempo.max(1)),
+            state.last_epoch_block,
+        ) else {
             return Ok(false);
-        }
-        let tempo = u64::from(state.tempo.max(1));
-        if state.blocks_since_last_step.saturating_add(48) < tempo {
-            return Ok(false);
-        }
-        self.emit_leaves().await?;
+        };
+        self.emit_leaves_at(plan.epoch, plan.pin_block).await?;
         Ok(true)
     }
 
@@ -354,7 +318,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(())
     }
 
-    /// Stuck sweeper + unscored-timeout sweep.
     pub async fn run_sweeper(self: Arc<Self>) {
         loop {
             sleep(Duration::from_secs(60)).await;
@@ -385,7 +348,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         }
     }
 
-    /// Award winners (admin API) or timeout close: score + emit leaves.
     pub async fn award_round(&self, rid: u64) -> Result<(), String> {
         let _ = self.ensure_round(rid).await;
         let _ = self.store.set_round_status(rid, "scoring").await;
@@ -549,15 +511,14 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             }
         }
 
-        self.emit_leaves().await?;
+        let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map_err(|e| format!("schedule: {e}"))?;
+        self.emit_leaves_at(state.subnet_epoch_index, state.last_epoch_block)
+            .await?;
         let _ = self.store.set_round_status(rid, "emitted").await;
         Ok(())
     }
 
-    /// One claim→execute cycle; `Ok(true)` when one run was worked.
-    ///
-    /// # Errors
-    /// Claim fault only; per-run failures are retried or finalized inline.
     pub async fn cycle_once(&self) -> Result<bool, String> {
         let Some(run) = self
             .store
@@ -590,8 +551,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(true)
     }
 
-    /// Auto-retry retryable infra classes up to `auto_retry_max`; otherwise
-    /// finalize `failed` and block the hotkey in the gating store.
     async fn handle_run_failure(&self, run: &design_store::RunState, f: RunFailure) {
         let hotkey = self
             .store
@@ -1075,7 +1034,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(())
     }
 
-    /// Close round: if winners already awarded/emitted, no-op; else award (timeout zeros).
     async fn close_round(&self, rid: u64) -> Result<(), String> {
         if let Ok(Some(r)) = self.store.get_round(rid).await {
             if r.status == "emitted" {
@@ -1086,39 +1044,37 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         self.award_round(rid).await
     }
 
-    async fn emit_leaves(&self) -> Result<(), String> {
-        let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
-            .map_err(|e| format!("schedule: {e}"))?;
-        // Label with the *current* chain epoch (see the prism emitter for the
-        // full rationale): the expected set is pinned at `last_epoch_block`,
-        // so the label and the covered metagraph must refer to the same epoch
-        // or D24 exact-match against the other challenge 409s under churn.
-        let epoch = state.subnet_epoch_index;
+    async fn emit_leaves_at(&self, epoch: u64, pin_block: u64) -> Result<(), String> {
+        if epoch == 0 {
+            return Err("refuse emit for epoch 0".into());
+        }
         let block_hash = self
             .chain
-            .block_hash(state.last_epoch_block)
-            .map_err(|e| format!("block_hash: {e}"))?;
-        let expected: ExpectedSet = expected_set_at_chain(
+            .block_hash(pin_block)
+            .map_err(|e| format!("block_hash@{pin_block}: {e}"))?;
+        let expected = expected_set_at_chain(
             &trustroot::ParticipantPolicy::AllMetagraphHotkeys,
             PinnedBlockHash::new(block_hash),
             self.chain.as_ref(),
         )
         .map_err(|e| format!("expected set: {e}"))?;
-        let stored = self
+        let by_miner: BTreeMap<_, _> = self
             .store
             .scores_for_epoch(self.cfg.netuid, epoch)
             .await
-            .map_err(|e| e.to_string())?;
-        let by_miner: BTreeMap<String, FinalScore> = stored.into_iter().collect();
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect();
         let mut scores = BTreeMap::new();
-        let mut expected_set: BTreeSet<[u8; KEY_LEN]> = BTreeSet::new();
+        let mut expected_set = BTreeSet::new();
         for p in &expected.participants {
             expected_set.insert(p.hotkey);
-            let leaf = match by_miner.get(&hex::encode(p.hotkey)) {
-                Some(fs) => to_leaf(fs),
-                None => to_leaf(&not_attempted()),
-            };
-            scores.insert(p.hotkey, leaf);
+            scores.insert(
+                p.hotkey,
+                by_miner
+                    .get(&hex::encode(p.hotkey))
+                    .map_or_else(|| to_leaf(&not_attempted()), to_leaf),
+            );
         }
         let signed = emit_signed_leaf_set(
             &self.sk,
@@ -1131,11 +1087,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         submit_signed_leaf_set(self.gateway.as_ref(), &signed)
             .await
             .map_err(|e| e.to_string())?;
-        self.emitted_epoch.store(epoch, Ordering::Relaxed);
+        self.emitted_epoch.fetch_max(epoch, Ordering::Relaxed);
         info!(
             epoch,
             participants = expected_set.len(),
-            last_epoch_block = state.last_epoch_block,
+            pin_block,
             "design leaf set submitted"
         );
         Ok(())
@@ -1147,25 +1103,4 @@ impl<C: ChainClient + Send + Sync + 'static> AdminAwardHook for Orchestrator<C> 
     async fn on_winners(&self, round_id: u64, _harness_ids: &[String]) -> Result<(), String> {
         self.award_round(round_id).await
     }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
-fn clip_logs(text: &str) -> String {
-    if text.len() <= MAX_LOG_CHARS {
-        return text.to_owned();
-    }
-    let mut out = text[text.len() - MAX_LOG_CHARS..].to_owned();
-    out.insert_str(0, "...[truncated]\n");
-    out
 }

@@ -35,7 +35,8 @@ use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
 use submission_gating::{
     watch_once, GatingStore, MemoryGatingStore, MetagraphCache, PgGatingStore,
 };
-const MAX_ATTEMPTS: u32 = 2;
+/// Manual `/retry` ceiling; keep ≥ `PRISM_AUTO_RETRY_MAX` so infra retries work.
+const MAX_ATTEMPTS: u32 = 3;
 
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -449,6 +450,7 @@ fn attach_miner_payer(
     orch.with_payer(PayerBackendFactory::new(vault, live_ssh, allow_op))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let path = resolve_sk_path(cli.challenge_sk_file.as_ref())?;
     if !path.is_file() {
@@ -546,8 +548,12 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         );
     }
     let orchestrator = Arc::new(orchestrator);
-    spawn_orchestrator(&cli, &orchestrator);
-
+    spawn_orchestrator(
+        &cli,
+        &orchestrator,
+        Arc::clone(&state.store),
+        gating_enabled.then_some(gating),
+    );
     let listener = TcpListener::bind(cli.bind)
         .await
         .map_err(|e| format!("bind {}: {e}", cli.bind))?;
@@ -591,7 +597,12 @@ fn spawn_epoch_feed(chain_ep: &str, state: &Arc<AppState>) {
     });
 }
 
-fn spawn_orchestrator(cli: &Cli, orchestrator: &Arc<Orchestrator<chain_live::LiveChainClient>>) {
+fn spawn_orchestrator(
+    cli: &Cli,
+    orchestrator: &Arc<Orchestrator<chain_live::LiveChainClient>>,
+    store: Arc<dyn PrismStore>,
+    gating: Option<Arc<dyn GatingStore>>,
+) {
     let permits = cli.max_concurrent_evals.max(1) as usize;
     let sem = Arc::new(Semaphore::new(permits));
     for i in 0..permits {
@@ -607,4 +618,51 @@ fn spawn_orchestrator(cli: &Cli, orchestrator: &Arc<Orchestrator<chain_live::Liv
     tokio::spawn(async move { o.run_sweeper().await });
     let o = Arc::clone(orchestrator);
     tokio::spawn(async move { o.run_emitter().await });
+    spawn_rate_limit_recovery(store, gating);
+}
+
+/// Re-queue last-6h failed rows that died on Lium HTTP 429 (no `retry_count` burn).
+async fn recover_rate_limited(
+    store: &Arc<dyn PrismStore>,
+    gating: Option<&Arc<dyn GatingStore>>,
+) -> u32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let Ok(failed) = store.list(Some("failed"), None, 500).await else {
+        return 0;
+    };
+    let mut n = 0u32;
+    for row in failed {
+        let Some(err) = row.error_detail.as_deref() else {
+            continue;
+        };
+        if !lium_rent_pool::should_recover(err, row.updated_at_ms, now) {
+            continue;
+        }
+        if store.reset_for_retry(&row.id, false).await.is_err() {
+            continue;
+        }
+        n = n.saturating_add(1);
+        tracing::info!(submission_id = %row.id, "requeued rate-limited submission");
+        if let Some(g) = gating {
+            let key = prism_pipeline::gating_key(row.arch_id.as_deref());
+            let _ = g.reset_open(&key, &row.miner_hotkey).await;
+            let _ = g.mark_registered(&key, &row.miner_hotkey, None).await;
+        }
+    }
+    n
+}
+
+fn spawn_rate_limit_recovery(store: Arc<dyn PrismStore>, gating: Option<Arc<dyn GatingStore>>) {
+    tokio::spawn(async move {
+        loop {
+            let n = recover_rate_limited(&store, gating.as_ref()).await;
+            if n > 0 {
+                tracing::info!(requeued = n, "lium 429 recovery tick");
+            }
+            tokio::time::sleep(Duration::from_mins(2)).await;
+        }
+    });
 }

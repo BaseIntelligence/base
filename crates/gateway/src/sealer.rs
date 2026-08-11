@@ -31,6 +31,8 @@ pub type SharedBundleStore = Arc<dyn BundleStore>;
 pub trait BundleStore: Send + Sync {
     /// Insert or return existing sealed bytes for `epoch` (idempotent).
     fn put_if_absent(&self, epoch: u64, bytes: Vec<u8>) -> Vec<u8>;
+    /// Append a new seal revision for `epoch` (tip reseal). Returns stored bytes.
+    fn put_revision(&self, epoch: u64, bytes: Vec<u8>) -> Vec<u8>;
     /// Lookup by epoch.
     fn get_by_epoch(&self, epoch: u64) -> Option<Vec<u8>>;
     /// Lookup by merkle root.
@@ -68,20 +70,19 @@ impl BundleStore for MemoryBundleStore {
         if let Some(existing) = self.by_epoch.read().get(&epoch) {
             return existing.clone();
         }
+        self.put_revision(epoch, bytes)
+    }
+
+    fn put_revision(&self, epoch: u64, bytes: Vec<u8>) -> Vec<u8> {
         let root = match EpochBundleV1::decode_bytes(&bytes) {
             Ok(b) => b.body.merkle_root,
             Err(_) => [0u8; 32],
         };
-        let mut by_epoch = self.by_epoch.write();
-        if let Some(existing) = by_epoch.get(&epoch) {
-            return existing.clone();
-        }
-        by_epoch.insert(epoch, bytes.clone());
-        drop(by_epoch);
+        self.by_epoch.write().insert(epoch, bytes.clone());
         self.by_root.write().insert(root, bytes.clone());
         let mut seals = self.seals.write();
         // Revision counts accepted seals for the epoch; the first seal is 1 and
-        // only a replacing seal of the same epoch can raise it.
+        // tip reseal raises it when merkle/vector change.
         let revision = seals.get(&epoch).map_or(1, |prev| prev.revision + 1);
         seals.insert(epoch, SealRecord::now(revision));
         bytes
@@ -151,7 +152,11 @@ fn map_bundle_err(e: bundle::BundleError) -> SealError {
     }
 }
 
-/// Seal epoch: gather leaves, D24+aggregate+sign, persist (idempotent).
+/// Seal epoch: gather leaves, D24+aggregate+sign, persist.
+///
+/// Tip reseal: when a bundle already exists, rebuild from current leaves. If
+/// `merkle_root` and `final_vector` are unchanged, return the existing seal
+/// (no-op). Otherwise append the next `epoch_bundle.revision`.
 ///
 /// # Errors
 ///
@@ -163,9 +168,6 @@ pub fn seal_epoch(
     bundles: &dyn BundleStore,
     params: &SealParams,
 ) -> Result<EpochBundleV1, SealError> {
-    if let Some(existing) = bundles.get_by_epoch(params.epoch) {
-        return EpochBundleV1::decode_bytes(&existing).map_err(|e| SealError::Codec(e.to_string()));
-    }
     let leaves = rows_to_leaves(&weights.list_for_epoch(params.epoch))?;
     let trust = LocalTrustRoot {
         challenges: challenges.clone(),
@@ -178,6 +180,17 @@ pub fn seal_epoch(
         gateway_secret: params.gateway_secret,
     };
     let bundle = build_sealed_bundle(chain, &trust, leaves, &bparams).map_err(map_bundle_err)?;
+    if let Some(existing) = bundles.get_by_epoch(params.epoch) {
+        let old =
+            EpochBundleV1::decode_bytes(&existing).map_err(|e| SealError::Codec(e.to_string()))?;
+        if old.body.merkle_root == bundle.body.merkle_root
+            && old.body.final_vector == bundle.body.final_vector
+        {
+            return Ok(old);
+        }
+        let stored = bundles.put_revision(params.epoch, bundle.encode_bytes());
+        return EpochBundleV1::decode_bytes(&stored).map_err(|e| SealError::Codec(e.to_string()));
+    }
     let stored = bundles.put_if_absent(params.epoch, bundle.encode_bytes());
     EpochBundleV1::decode_bytes(&stored).map_err(|e| SealError::Codec(e.to_string()))
 }

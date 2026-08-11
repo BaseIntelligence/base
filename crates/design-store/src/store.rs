@@ -1018,27 +1018,36 @@ impl DesignStore for MemoryDesignStore {
         netuid: u16,
         epoch: u64,
     ) -> Result<Vec<(String, FinalScore)>, StoreError> {
-        let rounds: Vec<u64> = self
+        // Match PG `design_scores_for_epoch`: newest rating per miner among
+        // rounds with `round.epoch <= target` (rolling window projection).
+        let round_epoch: BTreeMap<u64, u64> = self
             .rounds
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .values()
-            .filter(|r| r.netuid == netuid && r.epoch == epoch)
-            .map(|r| r.round_id)
+            .filter(|r| r.netuid == netuid && r.epoch <= epoch)
+            .map(|r| (r.round_id, r.epoch))
             .collect();
-        let mut by: BTreeMap<String, FinalScore> = BTreeMap::new();
+        let mut by: BTreeMap<String, (u64, FinalScore)> = BTreeMap::new();
         let ratings = self
             .ratings
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?;
         for ((rid, _), row) in ratings.iter() {
-            if rounds.contains(rid) {
-                if let Some(fs) = &row.final_score {
-                    by.insert(row.miner_hotkey.clone(), fs.clone());
+            if !round_epoch.contains_key(rid) {
+                continue;
+            }
+            let Some(fs) = &row.final_score else {
+                continue;
+            };
+            match by.get(&row.miner_hotkey) {
+                Some((prev_rid, _)) if *prev_rid >= *rid => {}
+                _ => {
+                    by.insert(row.miner_hotkey.clone(), (*rid, fs.clone()));
                 }
             }
         }
-        Ok(by.into_iter().collect())
+        Ok(by.into_iter().map(|(hk, (_, fs))| (hk, fs)).collect())
     }
 
     async fn set_round_award(&self, award: &RoundAward) -> Result<(), StoreError> {

@@ -8,7 +8,8 @@
 //! S1 valid → 202 + row
 //! S2 wrong key → 401 + NO row
 //! S3 unknown challenge → 404 + no row
-//! S4 replay (challenge, epoch, miner) → 409 + original unchanged
+//! S4 replay identical digest → 409 + original unchanged
+//! S5 digest change for same key → 202 tip supersede
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -341,7 +342,35 @@ async fn s4_replay_challenge_epoch_miner_returns_409_original_unchanged() {
     assert_eq!(after.score, original.score);
     assert_eq!(after.id, original.id);
 
-    // Conflicting score for same key also 409 without mutation.
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn s5_digest_change_tip_supersedes() {
+    let (sk, pk) = mini_keypair();
+    let cid = "dummy";
+    let miner = [0x66u8; 32];
+    let epoch = 12u64;
+    let (_payload, sig) = sign_leaf(
+        &sk,
+        cid,
+        miner,
+        epoch,
+        ScoreOrAbsenceScale::Score { value: 100 },
+    );
+
+    let store = Arc::new(MemoryRawWeightStore::new());
+    let (addr, shutdown) = spawn_gateway(challenges_body(cid, pk), Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("http://{addr}/v1/weights/raw"))
+        .json(&json_score(cid, miner, epoch, 100, &sig))
+        .send()
+        .await
+        .expect("first");
+    assert_eq!(first.status().as_u16(), 202);
+
     let (_p2, sig2) = sign_leaf(
         &sk,
         cid,
@@ -349,16 +378,28 @@ async fn s4_replay_challenge_epoch_miner_returns_409_original_unchanged() {
         epoch,
         ScoreOrAbsenceScale::Score { value: 999 },
     );
+    let second = client
+        .post(format!("http://{addr}/v1/weights/raw"))
+        .json(&json_score(cid, miner, epoch, 999, &sig2))
+        .send()
+        .await
+        .expect("supersede");
+    let status = second.status().as_u16();
+    let body = second.text().await.unwrap_or_default();
+    assert_eq!(status, 202, "body={body}");
+    assert!(body.contains("\"superseded\":true"), "body={body}");
+    let final_row = store.get(cid, epoch, &hex::encode(miner)).expect("final");
+    assert_eq!(final_row.score, Some(999));
+    assert_eq!(store.len(), 1);
+
+    // Identical digest after supersede → 409.
     let third = client
         .post(format!("http://{addr}/v1/weights/raw"))
         .json(&json_score(cid, miner, epoch, 999, &sig2))
         .send()
         .await
-        .expect("third");
+        .expect("replay");
     assert_eq!(third.status().as_u16(), 409);
-    let final_row = store.get(cid, epoch, &hex::encode(miner)).expect("final");
-    assert_eq!(final_row.score, Some(value));
-    assert_eq!(final_row.id, original.id);
 
     let _ = shutdown.send(());
 }

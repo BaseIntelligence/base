@@ -19,6 +19,7 @@ challenge-common = { path = "../challenge-common" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
 hex = "0.4"
+lium-rent-pool = { path = "../lium-rent-pool" }
 prism-artifacts = { path = "../prism-artifacts" }
 prism-attribution = { path = "../prism-attribution" }
 prism-automodel = { path = "../prism-automodel" }

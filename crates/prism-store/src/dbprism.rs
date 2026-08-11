@@ -284,8 +284,12 @@ impl PrismStore for DbPrismStore {
             .ok_or(StoreError::NotFound)?)
     }
 
-    async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError> {
-        let row = dbs::reset_prism_submission_for_retry(&self.pool, id)
+    async fn reset_for_retry(
+        &self,
+        id: &str,
+        bump_retry: bool,
+    ) -> Result<SubmissionState, StoreError> {
+        let row = dbs::reset_prism_submission_for_retry(&self.pool, id, bump_retry)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
         dbs::insert_prism_stage_event(
@@ -293,7 +297,9 @@ impl PrismStore for DbPrismStore {
             &dbs::NewPrismStageEvent {
                 submission_id: id,
                 stage: "queued",
-                detail: Some(serde_json::json!({"op": "retry"})),
+                detail: Some(serde_json::json!({
+                    "op": if bump_retry { "retry" } else { "rate_limit_requeue" },
+                })),
             },
         )
         .await

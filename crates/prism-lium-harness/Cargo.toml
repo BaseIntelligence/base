@@ -1,0 +1,19 @@
+[package]
+name = "prism-lium-harness"
+description = "PRISM Lium pod harness packaging, environment, and seed helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+hex = "0.4"
+prism-automodel = { path = "../prism-automodel" }
+prism-lium-types = { path = "../prism-lium-types" }
+prism-recipe = { path = "../prism-recipe" }
+prism-tree = { path = "../prism-tree" }
+
+[lints]
+workspace = true

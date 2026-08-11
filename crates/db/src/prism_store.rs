@@ -224,22 +224,36 @@ pub async fn update_prism_submission(
     Ok(row)
 }
 
-/// Reset a failed row for a retry: clears review/score fields and the
-/// emission watermark, and re-queues it. A completed measurement (pod,
-/// receipt, metrics, bpb) is RETAINED so post-run infra retries resume
-/// without re-measure; install failures still re-provision.
+/// Reset a row for retry: clears review/score fields and re-queues.
+/// Completed measurements are retained for post-run review retries; rows
+/// without metrics drop stale pod/exec fields and re-provision cleanly.
+/// When `bump_retry`, increments `retry_count` (manual/auto infra). When
+/// false, keeps attempts (Lium 429 autonomous requeue — do not burn budget).
 ///
 /// # Errors
 /// SQL error / 0 rows for id.
 pub async fn reset_prism_submission_for_retry(
     pool: &PgPool,
     id: &str,
+    bump_retry: bool,
 ) -> Result<PrismSubmissionRow, DbError> {
     let q = format!(
-        "UPDATE prism_submission SET            status = 'queued',            review_json = NULL, similarity_json = NULL,            kind = NULL, score = NULL, absence_reason = NULL, emitted_epoch = NULL,            error_detail = NULL, retry_count = retry_count + 1, updated_at = now()          WHERE id = $1 RETURNING {COLS}"
+        "UPDATE prism_submission SET \
+            status = 'queued', \
+            pod_id = CASE WHEN metrics_json IS NULL THEN NULL ELSE pod_id END, \
+            pod_provider = CASE WHEN metrics_json IS NULL THEN NULL ELSE pod_provider END, \
+            receipt_json = CASE WHEN metrics_json IS NULL THEN NULL ELSE receipt_json END, \
+            bpb = CASE WHEN metrics_json IS NULL THEN NULL ELSE bpb END, \
+            review_json = NULL, similarity_json = NULL, \
+            kind = NULL, score = NULL, absence_reason = NULL, emitted_epoch = NULL, \
+            error_detail = NULL, \
+            retry_count = CASE WHEN $2 THEN retry_count + 1 ELSE retry_count END, \
+            updated_at = now() \
+          WHERE id = $1 RETURNING {COLS}"
     );
     let row = sqlx::query_as::<_, PrismSubmissionRow>(&q)
         .bind(id)
+        .bind(bump_retry)
         .fetch_one(pool)
         .await?;
     Ok(row)

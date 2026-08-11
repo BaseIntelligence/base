@@ -2,11 +2,11 @@
 Description=Seal the current chain epoch on the master gateway (real weights)
 
 [Timer]
-# 10 min cadence: both challenges emit within minutes of an epoch boundary /
-# round close, so the current epoch becomes sealable well before it ends
-# (~72 min at tempo 360). The endpoint 409s harmlessly until both sets land.
-OnBootSec=5min
-OnUnitActiveSec=10min
+# 2 min cadence: tip leaf supersede (design awards / prism WTA changes) should
+# land in `/v1/weights/latest` quickly via tip reseal. The endpoint 409s
+# harmlessly until both D24 sets land; identical tip reseal is a no-op 200.
+OnBootSec=2min
+OnUnitActiveSec=2min
 Persistent=true
 
 [Install]

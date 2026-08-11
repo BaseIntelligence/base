@@ -29,10 +29,12 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
 
+mod diff;
 mod eval_views;
 mod inference;
 mod zone_b;
 
+pub use diff::diff_route;
 pub use eval_views::{anchors_route, eval_views_router, metrics_route, prereg_route, MetricsState};
 pub use inference::{inference_route, InferenceState};
 pub use zone_b::{zone_b_route, zone_b_router, ZoneBState};

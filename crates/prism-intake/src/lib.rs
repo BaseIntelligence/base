@@ -25,7 +25,8 @@
 mod bearer;
 
 pub use bearer::{
-    hash_matches, load_token_hashes, require_bearer, token_hash, BearerGate, CallerToken,
+    hash_matches, load_token_hashes, require_bearer, token_hash, verify_bearer, BearerGate,
+    CallerToken,
 };
 
 use std::sync::Arc;

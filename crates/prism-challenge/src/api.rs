@@ -34,7 +34,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use submission_gating::{GatingState, GatingStore, MetagraphCache};
+use submission_gating::{infra_resubmit_allowed, GatingState, GatingStore, MetagraphCache};
 
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
@@ -42,31 +42,24 @@ use crate::CHALLENGE_ID;
 use prism_eval_store::{detail_view, eval_json, list_view};
 use prism_intake::{
     coldkey_of, json_err, map_submission_err, map_zip_err, materialize_arch, metagraph_uid, now_ms,
-    parse_submission_body, require_bearer, BearerGate,
+    parse_submission_body, require_bearer, verify_bearer, BearerGate,
 };
 use prism_pipeline::{is_automodel_request, SubmissionRequest};
 use prism_store::eval::EvalStore;
-use prism_store::{PrismStore, Stage, StoreError, SubmissionState};
+use prism_store::{FinalScore, PrismStore, Stage, StoreError, SubmissionState};
 
 /// Shared HTTP app state.
 #[derive(Debug)]
 pub struct AppState {
-    /// Store.
     pub store: Arc<dyn PrismStore>,
     /// Eval store (v3 composite runs, anchor registry, Zone B reports).
     pub eval_store: Arc<dyn EvalStore>,
     /// Current chain epoch cache (advanced by the worker loop).
     pub epoch: std::sync::atomic::AtomicU64,
-    /// Netuid.
     pub netuid: u16,
-    /// Eval backend label (`lium` / `sim`) for the status view.
     pub backend_mode: &'static str,
-    /// Max orchestrator attempts per submission (retry guard).
     pub retry_max: u32,
-    /// Submission gating (1-max). `None` disables intake gating (tests/dev).
     pub gating: Option<Arc<dyn GatingStore>>,
-    /// Cached metagraph snapshot for intake membership. `None` disables the
-    /// membership check (tests/dev).
     pub metagraph: Option<Arc<MetagraphCache>>,
     /// Operator bearer hashes. Empty → retry/admin/playground answer 503.
     pub admin_token_hashes: Vec<String>,
@@ -74,17 +67,15 @@ pub struct AppState {
     pub payer_vault: Option<std::sync::Arc<prism_lium_payer::PayerKeyVault>>,
 }
 
-/// Router over the full API surface.
 pub fn submission_router(state: Arc<AppState>) -> Router {
     let admin: BearerGate = (state.admin_token_hashes.clone().into(), "admin");
     if admin.0.is_empty() {
         tracing::warn!(
             event = "prism_admin_auth_unconfigured",
-            "no admin bearer tokens: retry + playground + artifacts answer 503"
+            "no admin bearer tokens: manual retry + playground + artifacts answer 503"
         );
     }
     let operator = Router::new()
-        .route("/v1/submissions/{id}/retry", post(post_retry))
         .route(
             "/v1/admin/playground/complete",
             prism_playground::playground_route(prism_playground::PlaygroundState {
@@ -115,8 +106,12 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/submissions", get(list_submissions))
         .route("/v1/submissions/{id}", get(get_submission))
-        .route("/v1/submissions/{id}/diff", get(get_submission_diff))
+        .route(
+            "/v1/submissions/{id}/diff",
+            prism_attribution::diff_route(Arc::clone(&state.store)),
+        )
         .route("/v1/submissions/{id}/events", get(get_events))
+        .route("/v1/submissions/{id}/retry", post(post_retry))
         // Attribution planner (2×2 matrix run plans) and the v3 read-only
         // eval surface: split into the `prism-attribution` crate for the
         // per-crate LOC cap; each route carries its own narrow state.
@@ -171,8 +166,6 @@ async fn intake_gates(
     Ok(uid)
 }
 
-/// The 1-max gating check alone (metagraph not consulted when no cache is
-/// configured, e.g. unit tests).
 async fn gate_one_max(
     st: &AppState,
     hotkey: &str,
@@ -180,7 +173,9 @@ async fn gate_one_max(
 ) -> Result<Option<u32>, Response> {
     if let Some(g) = &st.gating {
         match g.get(challenge, hotkey).await {
-            Ok(Some(row)) if row.state != GatingState::Open => {
+            Ok(Some(row))
+                if row.state != GatingState::Open && !infra_resubmit_allowed(&row, now_ms()) =>
+            {
                 return Err(json_err(
                     StatusCode::CONFLICT,
                     "submission_gated",
@@ -371,62 +366,6 @@ async fn get_submission(State(st): State<Arc<AppState>>, Path(id): Path<String>)
     }
 }
 
-/// `GET /v1/submissions/{id}/diff` — unified diff + classified diffstat.
-async fn get_submission_diff(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let row = match st.store.get(&id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return json_err(StatusCode::NOT_FOUND, "not_found", "submission not found"),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-    };
-    let Some(blob) = row.tree_blob.as_deref() else {
-        return json_err(
-            StatusCode::NOT_FOUND,
-            "no_diff",
-            "submission has no AutoModel diff artifacts",
-        );
-    };
-    let staged = match prism_tree::StagedTree::unpack(blob) {
-        Ok(t) => t,
-        Err(e) => {
-            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "tree", &e.to_string());
-        }
-    };
-    let Some((patch, diffstat)) = prism_automodel::diff_from_files(staged.files()) else {
-        return json_err(
-            StatusCode::NOT_FOUND,
-            "no_diff",
-            "submission tree lacks .prism/automodel.patch",
-        );
-    };
-    let pin_id = staged
-        .get(prism_automodel::META_BASE)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .map_or("", str::trim);
-    let files: Vec<Value> = diffstat
-        .files
-        .iter()
-        .map(|f| {
-            json!({
-                "path": f.path,
-                "added": f.added,
-                "deleted": f.deleted,
-                "class": f.class,
-            })
-        })
-        .collect();
-    Json(json!({
-        "submission_id": id,
-        "pin_id": pin_id,
-        "patch": patch,
-        "diffstat": {
-            "files": files,
-            "total_added": diffstat.total_added,
-            "total_deleted": diffstat.total_deleted,
-        },
-    }))
-    .into_response()
-}
-
 async fn get_events(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match st.store.events(&id).await {
         Ok(evs) => Json(json!({ "events": evs })).into_response(),
@@ -453,7 +392,11 @@ async fn admin_reset_gating(
 }
 
 /// `POST /v1/submissions/{id}/retry` — requeue a failed row (guard: max attempts).
-async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+async fn post_retry(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let row = match st.store.get(&id).await {
         Ok(Some(r)) => r,
         Ok(None) => return json_err(StatusCode::NOT_FOUND, "unknown_submission", &id),
@@ -466,19 +409,63 @@ async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
             &format!("status={}", row.status.as_str()),
         );
     }
-    if row.retry_count >= st.retry_max {
+    let gate_key = prism_pipeline::gating_key(row.arch_id.as_deref());
+    let mut infra = matches!(row.final_score, Some(FinalScore::NoScore(6)));
+    if infra {
+        if let Some(g) = &st.gating {
+            infra = g
+                .get(&gate_key, &row.miner_hotkey)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|gr| infra_resubmit_allowed(&gr, now_ms()));
+        }
+    }
+    if !infra {
+        if let Err(resp) = verify_bearer(&st.admin_token_hashes, "admin", &headers) {
+            return resp;
+        }
+    }
+    let miner_lium_key = headers
+        .get(prism_lium_payer::LIUM_API_KEY_HEADER)
+        .or_else(|| headers.get("X-Lium-Api-Key"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(prism_lium_payer::normalize_lium_api_key);
+    if infra
+        && row.metrics_json.is_none()
+        && prism_lium_payer::require_miner_lium(st.backend_mode)
+        && miner_lium_key.is_none()
+    {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "missing_lium_api_key",
+            "live Prism retry requires header X-Lium-Api-Key when another GPU run is needed",
+        );
+    }
+    if row.retry_count >= st.retry_max && !infra {
         return json_err(
             StatusCode::CONFLICT,
             "retry_exhausted",
             &format!("retry_count={} max={}", row.retry_count, st.retry_max),
         );
     }
-    match st.store.reset_for_retry(&id).await {
-        Ok(_row) => (
-            StatusCode::ACCEPTED,
-            Json(json!({"submission_id": id, "status": "queued"})),
-        )
-            .into_response(),
+    if infra {
+        if let Some(g) = &st.gating {
+            let _ = g.reset_open(&gate_key, &row.miner_hotkey).await;
+            let _ = g.mark_registered(&gate_key, &row.miner_hotkey, None).await;
+        }
+    }
+    match st.store.reset_for_retry(&id, true).await {
+        Ok(_) => {
+            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key) {
+                vault.insert(id.clone(), key);
+            }
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({"submission_id": id, "status": "queued"})),
+            )
+                .into_response()
+        }
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
 }
@@ -515,30 +502,21 @@ async fn get_status(State(st): State<Arc<AppState>>) -> Response {
     .into_response()
 }
 
-/// Orchestrator job view: one row per active/recent pod (for ops).
 async fn get_jobs(State(st): State<Arc<AppState>>) -> Response {
     let rows = match st.store.list(None, None, 200).await {
         Ok(v) => v,
-        Err(e) => {
-            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string());
-        }
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
-    let actionable: Vec<Value> = rows
+    let jobs: Vec<Value> = rows
         .iter()
         .filter(|r| !r.status.is_terminal() || r.pod_id.is_some())
         .take(200)
         .map(|r| {
-            json!({
-                "submission_id": r.id,
-                "miner_hotkey": r.miner_hotkey,
-                "status": r.status.as_str(),
-                "pod_id": r.pod_id,
-                "bpb": r.bpb,
-                "retry_count": r.retry_count,
-            })
+            json!({"submission_id": r.id, "miner_hotkey": r.miner_hotkey, "status": r.status.as_str(),
+                "pod_id": r.pod_id, "bpb": r.bpb, "retry_count": r.retry_count})
         })
         .collect();
-    Json(json!({"jobs": actionable})).into_response()
+    Json(json!({"jobs": jobs})).into_response()
 }
 
 async fn get_recipe() -> impl IntoResponse {
@@ -552,17 +530,12 @@ async fn get_recipe_baseline() -> impl IntoResponse {
     }))
 }
 
-/// `GET /v1/architectures` — published architecture registry (leaderboard
-/// source: per-arch best bpb across all trainers).
 async fn get_architectures(State(st): State<Arc<AppState>>) -> Response {
     match st.store.list_archs(200).await {
         Ok(rows) => Json(json!({
             "architectures": rows.iter().map(|a| json!({
-                "arch_id": a.arch_id,
-                "owner_hotkey": a.owner_hotkey,
-                "arch_digest": a.arch_digest,
-                "source_submission": a.source_submission,
-                "best_bpb": a.best_bpb,
+                "arch_id": a.arch_id, "owner_hotkey": a.owner_hotkey, "arch_digest": a.arch_digest,
+                "source_submission": a.source_submission, "best_bpb": a.best_bpb,
                 "created_at_ms": a.created_at_ms,
             })).collect::<Vec<_>>()
         }))
@@ -571,7 +544,6 @@ async fn get_architectures(State(st): State<Arc<AppState>>) -> Response {
     }
 }
 
-/// Feed cache: call this from the worker loop every tick.
 pub fn record_epoch(st: &AppState, epoch: u64) {
     st.epoch.store(epoch, std::sync::atomic::Ordering::Relaxed);
 }
@@ -581,6 +553,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use crate::NoScoreReasonCode;
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
@@ -1085,6 +1058,121 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["status"], "already-queued");
+    }
+
+    #[tokio::test]
+    async fn infra_blocked_allows_resubmit_within_window() {
+        let (st, gating) = gated_state(&[[0x11; 32]]);
+        let hk = "11".repeat(32);
+        gating.mark_registered("prism", &hk, Some(0)).await.unwrap();
+        gating
+            .set_terminal(
+                "prism",
+                &hk,
+                submission_gating::GatingState::Blocked,
+                Some("install"),
+            )
+            .await
+            .unwrap();
+        let app = submission_router(Arc::clone(&st));
+        let mut req = crate::example_valid_request();
+        req.architecture_py.push_str("\n# infra-retry\n");
+        let body = serde_json::to_vec(&req).unwrap();
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    }
+
+    #[tokio::test]
+    async fn infra_blocked_rejects_after_window() {
+        let (st, gating) = gated_state(&[[0x11; 32]]);
+        let hk = "11".repeat(32);
+        gating.mark_registered("prism", &hk, Some(0)).await.unwrap();
+        gating
+            .set_terminal(
+                "prism",
+                &hk,
+                submission_gating::GatingState::Blocked,
+                Some("install"),
+            )
+            .await
+            .unwrap();
+        assert!(gating.set_updated_at_ms(
+            "prism",
+            &hk,
+            now_ms().saturating_sub(submission_gating::INFRA_RESUBMIT_WINDOW_MS + 1),
+        ));
+        let app = submission_router(st);
+        let mut req = crate::example_valid_request();
+        req.architecture_py.push_str("\n# too-late\n");
+        let body = serde_json::to_vec(&req).unwrap();
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "submission_gated");
+    }
+
+    #[tokio::test]
+    async fn challenge_internal_retry_bypasses_retry_max_in_window() {
+        let (st, gating) = gated_state(&[[0x11; 32]]);
+        let app = submission_router(Arc::clone(&st));
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let id = v["submission_id"].as_str().unwrap().to_owned();
+        let hk = "11".repeat(32);
+        // Burn retry_count past retry_max with a ChallengeInternal terminal.
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    final_score: Some(FinalScore::NoScore(
+                        NoScoreReasonCode::ChallengeInternal as u8,
+                    )),
+                    retry_bump: st.retry_max.saturating_add(1),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        gating
+            .set_terminal(
+                "prism",
+                &hk,
+                submission_gating::GatingState::Blocked,
+                Some("install"),
+            )
+            .await
+            .unwrap();
+        let (s, v) = call(
+            app,
+            Request::post(format!("/v1/submissions/{id}/retry"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
     }
 
     #[tokio::test]

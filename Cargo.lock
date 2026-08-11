@@ -3011,6 +3011,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
+name = "lium-rent-pool"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3763,10 +3771,12 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "http-body-util",
+ "prism-automodel",
  "prism-eval-store",
  "prism-pipeline",
  "prism-recipe",
  "prism-store",
+ "prism-tree",
  "prism-zoneb",
  "serde",
  "serde_json",
@@ -3805,6 +3815,7 @@ dependencies = [
  "db",
  "hex",
  "http-body-util",
+ "lium-rent-pool",
  "prism-artifacts",
  "prism-attribution",
  "prism-automodel",
@@ -3848,12 +3859,14 @@ dependencies = [
  "clap",
  "crypto",
  "db",
+ "lium-rent-pool",
  "predicates",
  "prism-attribution",
  "prism-challenge",
  "prism-intake",
  "prism-lium",
  "prism-lium-payer",
+ "prism-pipeline",
  "prism-recipe",
  "prism-registry",
  "prism-review",
@@ -3927,9 +3940,9 @@ name = "prism-lium"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "hex",
+ "lium-rent-pool",
  "prism-artifacts",
- "prism-automodel",
+ "prism-lium-harness",
  "prism-lium-types",
  "prism-recipe",
  "prism-tree",
@@ -3941,6 +3954,17 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "prism-lium-harness"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prism-automodel",
+ "prism-lium-types",
+ "prism-recipe",
+ "prism-tree",
 ]
 
 [[package]]

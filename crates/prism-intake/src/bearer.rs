@@ -77,23 +77,42 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, Response> {
     Ok(token)
 }
 
+/// Validate a bearer header against the configured token hashes and return
+/// the caller token hash. Empty configuration stays fail-closed with 503.
+pub fn verify_bearer(
+    hashes: &[String],
+    role: &str,
+    headers: &HeaderMap,
+) -> Result<String, Response> {
+    if hashes.is_empty() {
+        let msg = format!("{role} bearer tokens are not configured");
+        return Err(json_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "auth_unconfigured",
+            &msg,
+        ));
+    }
+    let hash = token_hash(bearer_token(headers)?);
+    if !hash_matches(hashes, &hash) {
+        return Err(json_err(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bad token",
+        ));
+    }
+    Ok(hash)
+}
+
 /// Route-layer bearer check. Empty config → **503**, never open.
 pub async fn require_bearer(
     State((hashes, role)): State<BearerGate>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    if hashes.is_empty() {
-        let msg = format!("{role} bearer tokens are not configured");
-        return json_err(StatusCode::SERVICE_UNAVAILABLE, "auth_unconfigured", &msg);
-    }
-    let hash = match bearer_token(request.headers()) {
-        Ok(token) => token_hash(token),
-        Err(unauthorized) => return unauthorized,
+    let hash = match verify_bearer(&hashes, role, request.headers()) {
+        Ok(hash) => hash,
+        Err(response) => return response,
     };
-    if !hash_matches(&hashes, &hash) {
-        return json_err(StatusCode::UNAUTHORIZED, "unauthorized", "bad token");
-    }
     request.extensions_mut().insert(CallerToken(hash));
     next.run(request).await
 }

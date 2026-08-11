@@ -75,9 +75,9 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 ## 3. Data flow (one epoch)
 
 1. **Pin.** Gateway (or seal path) pins `block_hash` / metagraph root at epoch boundary.
-2. **Leaves.** Challenge backends produce challenge-signed `Score` or `NoScore` leaves for the **validator-derived** expected set (D24).
-3. **Seal.** Gateway builds `EpochBundleV1`, computes merkle root, signs the body. **Does not** put the merkle root into the on-chain weight payload (there is no field; see BUNDLE_SPEC §12 / D5).
-4. **Distribute.** Bundle served over HTTPS; validators may also **mirror** from peers (content-addressed by root).
+2. **Leaves.** Challenge backends produce challenge-signed `Score` or `NoScore` leaves for the **validator-derived** expected set (D24). Tip epochs may **supersede** a leaf when the signed `payload_digest` changes for the same `(challenge, epoch, miner)`; identical digests stay idempotent.
+3. **Seal.** Gateway builds `EpochBundleV1`, computes merkle root, signs the body. Tip reseal appends `epoch_bundle.revision` when leaves/merkle change; no-op if identical. **Does not** put the merkle root into the on-chain weight payload (there is no field; see BUNDLE_SPEC §12 / D5).
+4. **Distribute.** `GET /v1/weights/latest` serves the newest revision of the highest chain-scale sealed epoch (`sealed: true` only for Match). Validators may also **mirror** from peers (content-addressed by root).
 5. **Verify.** Each validator loads **local** `challenges.toml` + `measurements.toml` (owner-signed). Rejects leaves whose keys are not in the local trust root (D18).
 6. **Cross-check.** Hotkey-authenticated peer root exchange; minimum sample (D26). Persist signed bundle + peer statements as local evidence.
 7. **Recompute.** Integer aggregation per BUNDLE_SPEC. Compare to gateway `final_vector`.

@@ -313,11 +313,17 @@ async fn competition_credits_owner_and_challenger() {
     assert_eq!(rows.len(), 2, "one entry per submission (not collapsed)");
     let owners: BTreeMap<String, String> = store.arch_owners().await.unwrap().into_iter().collect();
     let scores = prism_registry::competition_scores(&rows, &owners);
-    // Owner credited for the arch's best (challenger's 900k); challenger
-    // credited for their own best — max aggregation, never summed.
+    // TEMP: owner-arch credit disabled — each hotkey keeps only own score.
+    // Re-enable OWNER_ARCH_CREDIT_ENABLED to restore owner=900k / chall=900k.
+    const {
+        assert!(
+            !prism_registry::OWNER_ARCH_CREDIT_ENABLED,
+            "update expectations when restoring owner-arch credit"
+        );
+    }
     assert_eq!(
         scores.get(&"aa".repeat(32)),
-        Some(&FinalScore::Score(900_000))
+        Some(&FinalScore::Score(400_000))
     );
     assert_eq!(
         scores.get(&"bb".repeat(32)),

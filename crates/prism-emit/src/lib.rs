@@ -18,15 +18,22 @@
 //!   assigned (`emitted_epoch = E`, sticky) before the submit, and the
 //!   per-netuid emit cursor advances only after the full set landed. A crash
 //!   between submit and cursor advance replays the sticky assigned set on
-//!   the next tick; gateway leaves are first-write-wins with identical
-//!   values under replay, so the retry converges. Retried/re-scored rows
-//!   re-enter the outbox (`reset_for_retry` clears the watermark).
+//!   the next tick; gateway leaves tip-supersede on digest change and treat
+//!   identical digests as 409-as-ok, so the retry converges. Retried/re-scored
+//!   rows re-enter the outbox (`reset_for_retry` clears the watermark).
 //! - **Positive scores carry forward**: after outbox assignment, a
 //!   `Score(v>0)` row keeps participating in every later epoch's
 //!   competition set until a better/valid score supersedes it via `max`.
 //!   Leaf emission then applies **WTA** ([`prism_registry::apply_wta`]) so
-//!   only the single best hotkey receives a positive Score leaf. Empty or
-//!   reject-only fresh batches therefore do not burn the prism share.
+//!   only the single best **submitter** receives a positive Score leaf.
+//!   Architecture-owner credit stays off
+//!   ([`prism_registry::OWNER_ARCH_CREDIT_ENABLED`] = `false`) — WTA follows
+//!   the miner hotkey that posted the best-BPB run. Empty or reject-only
+//!   fresh batches therefore do not burn the prism share (active carry).
+//! - **Tip refresh**: once the cursor reaches the live epoch, later ticks
+//!   re-submit the current WTA projection so a mid-epoch champion change
+//!   tip-supersedes gateway leaves (then `prod-real-seal` reseals). The
+//!   cursor does not advance again on tip refresh.
 //! - Epochs during a master outage carry no *new* outbox rows; the first
 //!   epoch after recovery still includes active positive scores plus any
 //!   backlog (the seal always pins fresh epochs — stale ones can never
@@ -106,8 +113,8 @@ impl EpochEmitter {
 
     /// Drive emission up to `current_epoch`: replay any assigned-but-
     /// incomplete epoch (crash recovery), then emit the set for
-    /// `current_epoch` unless it already landed. Returns the summary when a
-    /// new set was emitted.
+    /// `current_epoch` (first land) or tip-refresh when the cursor already
+    /// covers the tip. Returns the summary when leaves were submitted.
     ///
     /// # Errors
     /// Store / sign / submit failures (the caller retries next tick; the
@@ -126,12 +133,30 @@ impl EpochEmitter {
         }
         let done = self.store.emit_cursor(self.netuid).await?;
         match done {
-            Some(d) if d >= current_epoch => Ok(None),
+            Some(d) if d >= current_epoch => {
+                // Tip tracking: re-submit WTA so mid-epoch champion changes
+                // supersede gateway leaves. Cursor stays put.
+                self.refresh_tip(current_epoch, expected).await.map(Some)
+            }
             // First boot or catch-up after downtime: emit once at the live
             // epoch with the whole backlog; skipped gap epochs get no set
             // (seals always pin fresh epochs).
             _ => self.emit_new(current_epoch, expected).await.map(Some),
         }
+    }
+
+    /// Re-submit the tip epoch's current WTA projection without re-assigning
+    /// the outbox or advancing the emit cursor.
+    ///
+    /// # Errors
+    /// See [`EmitError`].
+    pub async fn refresh_tip(
+        &self,
+        epoch: u64,
+        expected: &ExpectedSet,
+    ) -> Result<EmitSummary, EmitError> {
+        let batch = self.store.emit_batch(self.netuid, epoch).await?;
+        self.submit_rows(epoch, batch, expected, false).await
     }
 
     /// Assign the pending batch to `epoch` and emit its set.
@@ -167,6 +192,16 @@ impl EpochEmitter {
         batch: Vec<EpochScoreRow>,
         expected: &ExpectedSet,
     ) -> Result<EmitSummary, EmitError> {
+        self.submit_rows(epoch, batch, expected, true).await
+    }
+
+    async fn submit_rows(
+        &self,
+        epoch: u64,
+        batch: Vec<EpochScoreRow>,
+        expected: &ExpectedSet,
+        advance_cursor: bool,
+    ) -> Result<EmitSummary, EmitError> {
         let n = batch.len();
         let active = self.store.active_score_rows(self.netuid).await?;
         let competition = merge_competition_rows(&batch, &active);
@@ -176,8 +211,10 @@ impl EpochEmitter {
         challenge_common::submit_signed_leaf_set(&self.gateway, &signed)
             .await
             .map_err(|e| EmitError::Submit(e.to_string()))?;
-        // Cursor advances only after the full set landed.
-        self.store.set_emit_cursor(self.netuid, epoch).await?;
+        if advance_cursor {
+            // Cursor advances only after the first full set for the epoch landed.
+            self.store.set_emit_cursor(self.netuid, epoch).await?;
+        }
         Ok(EmitSummary {
             epoch,
             leaves: signed.len(),
@@ -199,11 +236,11 @@ fn merge_competition_rows(batch: &[EpochScoreRow], active: &[EpochScoreRow]) -> 
     out
 }
 
-/// Build the signed D24 set for `epoch`: the batch competition-aggregated
-/// (owner + challenger credits, max lattice) plus `NoScore(NotAttempted)`
-/// for every expected participant without a score this epoch. Batch rows
-/// whose hotkey left the metagraph are dropped from the set (D24 forbids
-/// extra leaves) but stay assigned.
+/// Build the signed D24 set for `epoch`: competition-aggregated submitter
+/// credits (own BPB lattice → WTA; arch-owner credit disabled) plus
+/// `NoScore(NotAttempted)` for every expected participant without a score
+/// this epoch. Batch rows whose hotkey left the metagraph are dropped from
+/// the set (D24 forbids extra leaves) but stay assigned.
 pub fn build_epoch_leaves(
     secret: &[u8; KEY_LEN],
     epoch: u64,

@@ -1,19 +1,30 @@
 //! Real Lium HTTPS client + SSH-backed live eval.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use lium_rent_pool::RentPool;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
+
+fn rent_pool() -> &'static RentPool {
+    static POOL: OnceLock<RentPool> = OnceLock::new();
+    POOL.get_or_init(RentPool::new)
+}
 
 use crate::ssh::{
     parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, ssh_exec_stdin,
     ssh_exec_streaming, truncate_tail, SshTarget,
 };
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
+use prism_lium_harness::{
+    eval_assets_dir, harness_env_pairs, harness_upload_tar, random_seed_hex, EVAL_ASSETS_POD_DIR,
+    HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
+};
 use prism_lium_types::{CostGuardrailError, LiumError};
 use prism_lium_types::{
     GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
@@ -25,9 +36,6 @@ use prism_lium_types::{
 /// by the runner, so a miner cannot forge it. The harness side emits this
 /// via a bare `print` at the gate (see module docs / E5 report).
 const DEFAULT_TRAIN_DONE_MARKER: &str = "PHASE_TRAIN_DONE";
-/// Pod-side staging directory for private eval assets (the harness reads
-/// the same path via its pod-side `PRISM_EVAL_ASSETS_DIR`).
-const EVAL_ASSETS_POD_DIR: &str = "/tmp/prism_eval/eval-assets";
 
 // cu13.0.2-dinD: sshd from image init (empty startup). Other marketplace
 // images lack a stable sshd under Lium's metachar-free startup rules.
@@ -45,12 +53,14 @@ const TERMINAL_FAIL_STATUSES: &[&str] = &[
     "DELETED",
     "STOPPED",
 ];
+const RATE_LIMIT_RETRIES: u32 = 5;
+const RATE_LIMIT_BASE_MS: u64 = 2_000;
+const DEPS_INSTALL_TIMEOUT_SECS: u64 = 1_200;
 
-/// Async Lium REST client. API key only in `X-API-Key` header.
+/// Async Lium REST client (`X-API-Key`).
 pub struct LiumClient {
     http: reqwest::Client,
     base_url: String,
-    /// Stored but never Debug/Display'd.
     api_key: String,
     ssh: LiumSshConfig,
 }
@@ -66,15 +76,13 @@ impl std::fmt::Debug for LiumClient {
 }
 
 impl LiumClient {
-    /// Build a client. `api_key` must be non-empty.
-    ///
     /// # Errors
     /// Empty key or HTTP client build failure.
     pub fn new(api_key: impl Into<String>) -> Result<Self, LiumError> {
         Self::with_base_url(api_key, LIUM_API_BASE_URL)
     }
 
-    /// Build with custom base URL (tests / wiremock).
+    /// Custom base URL (tests / wiremock).
     ///
     /// # Errors
     /// Empty key or HTTP client build failure.
@@ -85,8 +93,6 @@ impl LiumClient {
         Self::with_config(api_key, base_url, LiumSshConfig::default_live())
     }
 
-    /// Build with SSH config for live eval.
-    ///
     /// # Errors
     /// Empty key or HTTP client build failure.
     pub fn with_config(
@@ -103,7 +109,6 @@ impl LiumClient {
             .map_err(|e| LiumError::Api(format!("invalid api key header: {e}")))?;
         hv.set_sensitive(true);
         headers.insert("X-API-Key", hv);
-        // Lium edge WAF returns 403 for empty/missing User-Agent.
         headers.insert(
             reqwest::header::USER_AGENT,
             HeaderValue::from_static("prism-lium/0.1 (base; +https://lium.io)"),
@@ -125,13 +130,11 @@ impl LiumClient {
         })
     }
 
-    /// Never expose key.
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
-    /// Override private key path after construction.
     pub fn set_ssh_private_key_path(&mut self, path: PathBuf) {
         self.ssh.private_key_path = Some(path);
     }
@@ -149,39 +152,63 @@ impl LiumClient {
         Ok(())
     }
 
-    async fn request_json(
+    async fn request(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value, LiumError> {
         let url = format!("{}{path}", self.base_url);
-        let mut req = self.http.request(method.clone(), &url);
-        if let Some(b) = body {
-            req = req.json(b);
+        let mut attempt = 0u32;
+        loop {
+            let mut builder = self.http.request(method.clone(), &url);
+            if let Some(b) = body {
+                builder = builder.json(b);
+            }
+            let resp = builder
+                .send()
+                .await
+                .map_err(|e| LiumError::Transport(sanitize_err(&e.to_string(), &self.api_key)))?;
+            let status = resp.status();
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| LiumError::Transport(sanitize_err(&e.to_string(), &self.api_key)))?;
+            // Rent POSTs are gated by `RentPool` — do not multi-retry (each
+            // attempt burns Lium's 60/h budget). Other endpoints keep backoff.
+            let is_rent = path.contains("/rent");
+            if status.as_u16() == 429 {
+                let secs = retry_after.or_else(|| lium_rent_pool::parse_retry_secs(&text));
+                if is_rent {
+                    rent_pool().note_429(secs.unwrap_or(5));
+                } else if attempt < RATE_LIMIT_RETRIES {
+                    attempt = attempt.saturating_add(1);
+                    let wait_ms = secs.map_or(RATE_LIMIT_BASE_MS << (attempt - 1).min(3), |s| {
+                        s.saturating_mul(1000).max(50)
+                    });
+                    warn!(%path, attempt, wait_ms, "lium 429; backing off");
+                    sleep(Duration::from_millis(wait_ms)).await;
+                    continue;
+                }
+            }
+            if !status.is_success() {
+                return Err(LiumError::Api(format!(
+                    "{method} {path} -> {status}: {}",
+                    truncate(&sanitize_err(&text, &self.api_key), 200)
+                )));
+            }
+            if text.trim().is_empty() {
+                return Ok(Value::Null);
+            }
+            return serde_json::from_str(&text).map_err(|e| LiumError::Api(format!("json: {e}")));
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| LiumError::Transport(sanitize_err(&e.to_string(), &self.api_key)))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LiumError::Transport(sanitize_err(&e.to_string(), &self.api_key)))?;
-        if !status.is_success() {
-            return Err(LiumError::Api(format!(
-                "{method} {path} -> {status}: {}",
-                truncate(&sanitize_err(&text, &self.api_key), 200)
-            )));
-        }
-        if text.trim().is_empty() {
-            return Ok(Value::Null);
-        }
-        serde_json::from_str(&text).map_err(|e| LiumError::Api(format!("json: {e}")))
     }
 
-    /// Parse executors list into offers.
     fn parse_offers(v: &Value) -> Vec<Offer> {
         v.as_array()
             .cloned()
@@ -192,27 +219,22 @@ impl LiumClient {
     }
 
     async fn list_pods_raw(&self) -> Result<Vec<Value>, LiumError> {
-        let v = self
-            .request_json(reqwest::Method::GET, "/pods", None)
-            .await?;
+        let v = self.request(reqwest::Method::GET, "/pods", None).await?;
         Ok(v.as_array()
             .cloned()
             .unwrap_or_else(|| get_array(&v, &["pods"])))
     }
 
-    /// GET /pods/{id} raw JSON.
     pub async fn get_pod_raw(&self, instance_id: &str) -> Result<Value, LiumError> {
-        self.request_json(reqwest::Method::GET, &format!("/pods/{instance_id}"), None)
+        self.request(reqwest::Method::GET, &format!("/pods/{instance_id}"), None)
             .await
     }
 
-    /// Parsed instance status.
     pub async fn status(&self, instance_id: &str) -> Result<Instance, LiumError> {
         let v = self.get_pod_raw(instance_id).await?;
         Ok(parse_instance(&v, instance_id))
     }
 
-    /// Ensure SSH public key is registered with Lium (idempotent).
     pub async fn ensure_ssh_key(
         &self,
         public_key: &str,
@@ -220,7 +242,7 @@ impl LiumClient {
     ) -> Result<Value, LiumError> {
         let normalized = public_key.trim();
         let v = self
-            .request_json(reqwest::Method::GET, "/ssh-keys", None)
+            .request(reqwest::Method::GET, "/ssh-keys", None)
             .await?;
         let keys = v
             .as_array()
@@ -239,11 +261,10 @@ impl LiumClient {
         if let Some(n) = name {
             body["name"] = Value::String(n.to_owned());
         }
-        self.request_json(reqwest::Method::POST, "/ssh-keys", Some(&body))
+        self.request(reqwest::Method::POST, "/ssh-keys", Some(&body))
             .await
     }
 
-    /// Ensure a named template exists; return its id (idempotent).
     pub async fn ensure_template(
         &self,
         name: &str,
@@ -252,7 +273,7 @@ impl LiumClient {
         startup_commands: Option<&str>,
     ) -> Result<String, LiumError> {
         let v = self
-            .request_json(reqwest::Method::GET, "/templates", None)
+            .request(reqwest::Method::GET, "/templates", None)
             .await?;
         let templates = v
             .as_array()
@@ -275,12 +296,11 @@ impl LiumClient {
         if let Some(tag) = docker_image_tag {
             body["docker_image_tag"] = serde_json::Value::String(tag.to_owned());
         }
-        // Metachar-free keep-alive; Lium rejects shell metachar startup chains.
         if let Some(cmd) = startup_commands {
             body["startup_commands"] = serde_json::Value::String(cmd.to_owned());
         }
         let created = self
-            .request_json(reqwest::Method::POST, "/templates", Some(&body))
+            .request(reqwest::Method::POST, "/templates", Some(&body))
             .await?;
         created
             .get("id")
@@ -289,7 +309,6 @@ impl LiumClient {
             .ok_or_else(|| LiumError::Api("template create missing id".into()))
     }
 
-    /// Resolve template id from spec (explicit id, name, or default e2e template).
     async fn resolve_template_id(&self, spec: &InstanceSpec) -> Result<String, LiumError> {
         if let Some(id) = &spec.template_id {
             if !id.is_empty() {
@@ -313,7 +332,7 @@ impl LiumClient {
     /// Account balance (USD) when available.
     pub async fn balance(&self) -> Result<f64, LiumError> {
         let v = self
-            .request_json(reqwest::Method::GET, "/users/me", None)
+            .request(reqwest::Method::GET, "/users/me", None)
             .await?;
         v.get("balance")
             .and_then(|x| x.as_f64())
@@ -321,7 +340,6 @@ impl LiumClient {
             .ok_or_else(|| LiumError::Api("users/me missing balance".into()))
     }
 
-    /// Poll until RUNNING (or fail).
     pub async fn wait_until_running(&self, instance_id: &str) -> Result<Instance, LiumError> {
         let timeout = Duration::from_secs(self.ssh.running_timeout_secs.max(30));
         let start = Instant::now();
@@ -421,8 +439,8 @@ impl LiumClient {
         let _running = self.wait_until_running(instance_id).await?;
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
-
         let gpu_type = self.gpu_smoke(&target, &key).await?;
+        self.ensure_python_deps(&target, &key).await?;
 
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
         let timeout_secs = train_cap_secs.saturating_add(3600);
@@ -581,7 +599,33 @@ impl LiumClient {
         Ok(())
     }
 
-    /// SSH-fetch the on-pod harness log tail (empty when missing / unreachable).
+    async fn ensure_python_deps(&self, target: &SshTarget, key: &Path) -> Result<(), LiumError> {
+        const VERIFY: &str =
+            "python3 -c 'import transformers, datasets, pyarrow; print(\"DEPS_OK\")'";
+        const INSTALL: &str = "set -e\ncommand -v pip >/dev/null 2>&1 || { apt-get update -q; DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip; }\npython3 -c 'import transformers, datasets, pyarrow' 2>/dev/null || pip install --break-system-packages --root-user-action=ignore 'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'\npython3 -c 'import transformers, datasets, pyarrow; print(\"DEPS_OK\")'\n";
+        let (a, r) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
+        let out =
+            ssh_exec_allow_fail(target, key, INSTALL, a, r, DEPS_INSTALL_TIMEOUT_SECS).await?;
+        if out.stdout.contains("DEPS_OK") {
+            return Ok(());
+        }
+        let v = ssh_exec_allow_fail(target, key, VERIFY, a.max(3), r, 120).await?;
+        if v.stdout.contains("DEPS_OK") {
+            return Ok(());
+        }
+        Err(LiumError::Exec(format!(
+            "deps install failed (code {}): {}",
+            out.returncode,
+            truncate_tail(
+                &format!(
+                    "{}\n{}\n---\n{}\n{}",
+                    out.stdout, out.stderr, v.stdout, v.stderr
+                ),
+                HARNESS_LOG_RETAIN_BYTES
+            )
+        )))
+    }
+
     async fn harvest_logs_inner(&self, instance_id: &str) -> Result<String, LiumError> {
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
@@ -609,139 +653,6 @@ impl LiumClient {
             .trim()
             .to_owned())
     }
-}
-
-/// Pod bootstrap prepended to the run command: dependency check only (the
-/// harness package + miner sources are staged separately, see below).
-/// Static and small — argv-safe under the kernel `MAX_ARG_STRLEN`.
-const HARNESS_BOOTSTRAP: &str = "set -e\ncommand -v pip >/dev/null 2>&1 || apt-get update -q; command -v pip >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip; python3 -c 'import torch' 2>/dev/null || echo 'torch stopping'; python3 -c 'import transformers' 2>/dev/null || pip install --break-system-packages --root-user-action=ignore 'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'; mkdir -p /tmp/prism_eval\n";
-
-/// Remote extract command for the harness tar (same convention as
-/// `stage_eval_assets`): fixed size regardless of payload, so the ssh argv
-/// stays tiny while the archive rides stdin. GNU tar auto-detects the
-/// uncompressed stream and creates `prismlib/`, `eval/` parents itself.
-const HARNESS_EXTRACT_CMD: &str = "set -e; mkdir -p /tmp/prism_eval; tar -x -C /tmp/prism_eval";
-
-/// Deterministic uncompressed ustar of the harness package
-/// ([`prism_recipe::HARNESS_FILES`]) plus miner sources, streamed to the pod
-/// over ssh stdin — never argv (BUG-5). See [`prism_tree::pack_harness_upload`].
-fn harness_upload_tar(
-    architecture_py: &str,
-    training_py: &str,
-    tree_blob: Option<&[u8]>,
-) -> Result<Vec<u8>, LiumError> {
-    let harness: Vec<(&str, &[u8])> = prism_recipe::HARNESS_FILES
-        .iter()
-        .map(|(p, c)| (*p, c.as_bytes()))
-        .collect();
-    let tree = match tree_blob {
-        Some(b) => Some(
-            // AutoModel slim blobs rematerialize the full applied pin tree here
-            // (DB only stores .prism/ + delta; pin lives at PRISM_AUTOMODEL_PIN_DIR).
-            prism_automodel::expand_tree_blob_for_pod(b)
-                .map_err(|e| LiumError::Exec(format!("tree blob: {e}")))?,
-        ),
-        None => None,
-    };
-    prism_tree::pack_harness_upload(
-        &harness,
-        architecture_py.as_bytes(),
-        training_py.as_bytes(),
-        tree.as_ref(),
-    )
-    .map_err(|e| LiumError::Exec(e.to_string()))
-}
-
-/// Harness env pairs for the pod run. Numeric test / eval knobs forward
-/// only when they parse as plain numerics — the remote string is shell, so
-/// anything else would be an injection vector. `PRISM_FLOW` forwards only
-/// the allowlisted tokens `v1`/`v3` (needed so pods can exercise the
-/// public_dev battery + checkpoint save without private asset packs). All
-/// other values are compile-time constants or quote-stripped.
-fn harness_env_pairs(
-    train_hours_cap: f64,
-    gpu_type: &str,
-    assets_pending: bool,
-) -> Vec<(&'static str, String)> {
-    let max_steps = prism_recipe::MAX_TRAIN_STEPS.to_string();
-    let harness_sha = prism_recipe::harness_files_sha256();
-    let mut v = vec![
-        ("PRISM_DATASET_URL", prism_recipe::DATASET_URL.to_owned()),
-        ("PRISM_DATASET_SHA256", prism_recipe::dataset_sha256()),
-        ("PRISM_MAX_TRAIN_STEPS", max_steps),
-        ("PRISM_TRAIN_HOURS_CAP", train_hours_cap.to_string()),
-        ("PRISM_GPU_TYPE", gpu_type.replace('\'', "")),
-        ("PRISM_HARNESS_FILES_SHA256", harness_sha),
-    ];
-    // Short-train / param-cap + battery compression knobs. `PRISM_TEST_EVAL_CAPS=0`
-    // keeps full G1–G8 grids (incl. G8 µP) while `PRISM_TEST_TRAIN_MINUTES`
-    // still shortens train — see harness `eval.common.tiny_caps`.
-    for key in [
-        "PRISM_TEST_TRAIN_MINUTES",
-        "PRISM_TEST_MAX_PARAMS",
-        "PRISM_TEST_EVAL_CAPS",
-        "PRISM_EVAL_N_ITEMS",
-        "PRISM_EVAL_G5_N_ITEMS",
-        "PRISM_EVAL_G1_CAP",
-        "PRISM_EVAL_G2_CAP",
-        "PRISM_EVAL_NATURAL_ITEMS",
-        "PRISM_EVAL_MIRROR_G2_CAP",
-        "PRISM_EVAL_G1_BUDGET_S",
-        "PRISM_EVAL_G2_BUDGET_S",
-        "PRISM_EVAL_G3_BUDGET_S",
-        "PRISM_EVAL_G4_BUDGET_S",
-        "PRISM_EVAL_G5_BUDGET_S",
-        "PRISM_EVAL_G7_BUDGET_S",
-        "PRISM_EVAL_G8_SWEEP_S",
-        "PRISM_EVAL_G8_SWEEP",
-        "PRISM_EVAL_MIRROR_BUDGET_S",
-        "PRISM_EVAL_G5_NATURAL_BUDGET_S",
-        "PRISM_EVAL_G5_RULER_PROBE_BUDGET_S",
-        "PRISM_EVAL_G5_BABILONG_PROBE_BUDGET_S",
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            if val.trim().parse::<f64>().is_ok() {
-                v.push((key, val.trim().to_owned()));
-            }
-        }
-    }
-    // Allowlist only: never forward arbitrary operator strings into the
-    // remote shell env (quote-injection surface).
-    if let Ok(flow) = std::env::var("PRISM_FLOW") {
-        let flow = flow.trim().to_ascii_lowercase();
-        if flow == "v1" || flow == "v3" {
-            v.push(("PRISM_FLOW", flow));
-        }
-    }
-    if assets_pending {
-        // Points the harness at the pod dir the client stages mid-run; the
-        // harness parent holds its post-train gate on `.ready` there instead
-        // of falling back to the public tier.
-        v.push(("PRISM_EVAL_ASSETS_DIR", EVAL_ASSETS_POD_DIR.to_owned()));
-    }
-    v
-}
-
-/// Master-side operator env: private eval-assets directory to stage
-/// post-train. Absent / not a directory → legacy single-shot public run.
-fn eval_assets_dir() -> Option<PathBuf> {
-    let v = std::env::var("PRISM_EVAL_ASSETS_DIR").ok()?;
-    let p = PathBuf::from(v.trim());
-    p.is_dir().then_some(p)
-}
-
-/// Fresh 128-bit hex seed (file-delivered to the pod as
-/// `eval-assets/SECRET_SEED`; never in the launch env — the v3 runner
-/// inherits the parent env for the train-phase child, so env delivery
-/// would leak the secret to miner code).
-fn random_seed_hex() -> Result<String, LiumError> {
-    use std::io::Read as _;
-    // Fixed-size read: fs::read on a char device blocks forever (no EOF).
-    let mut b = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut b))
-        .map_err(|e| LiumError::Exec(format!("entropy: {e}")))?;
-    Ok(hex::encode(b))
 }
 
 /// Parse the harness run output: `EVAL_OK` gate, `METRICS_JSON=` line, bpb
@@ -870,7 +781,7 @@ fn extract_pod_id(v: &Value) -> Option<String> {
 impl EvalJobBackend for LiumClient {
     async fn list_offers(&self, max_price_per_hour: Option<f64>) -> Result<Vec<Offer>, LiumError> {
         let v = self
-            .request_json(reqwest::Method::GET, "/executors", None)
+            .request(reqwest::Method::GET, "/executors", None)
             .await?;
         let mut offers = Self::parse_offers(&v);
         if let Some(max) = max_price_per_hour {
@@ -897,9 +808,6 @@ impl EvalJobBackend for LiumClient {
         }
 
         let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
-        // GPU pin first (RTX 5090 → ordered fallback), price only breaks ties
-        // within the same rank: cheapest-first would silently drift evals
-        // onto weaker GPUs whenever the pinned SKU is not the cheapest offer.
         let pref = GpuPreference::default_prism();
         offers.sort_by(|a, b| {
             pref.rank(&a.gpu_type)
@@ -956,15 +864,22 @@ impl EvalJobBackend for LiumClient {
             }
             let mut rented: Result<Value, LiumError> = Err(LiumError::Api("unrented".into()));
             for gcount in split_choices {
+                let body = make_body(gcount);
+                let permit = rent_pool().take().await;
                 rented = self
-                    .request_json(
+                    .request(
                         reqwest::Method::POST,
                         &format!("/executors/{}/rent", selected.id),
-                        Some(&make_body(gcount)),
+                        Some(&body),
                     )
                     .await;
                 if let Err(e) = &rented {
-                    if e.to_string().contains("splitting") {
+                    let es = e.to_string();
+                    if lium_rent_pool::is_rate_limited(&es) {
+                        permit.rate_limited(&es);
+                        break;
+                    }
+                    if es.contains("splitting") {
                         continue;
                     }
                 }
@@ -994,8 +909,11 @@ impl EvalJobBackend for LiumClient {
                     last_err = e.to_string();
                     // 429/transport can still leave a PENDING pod under our name.
                     self.reclaim_pods_named(&spec.name).await;
-                    if last_err.contains("429") || last_err.to_ascii_lowercase().contains("rate") {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    // A rent 429 consumed one of Lium's hourly calls. The pool
+                    // already recorded the cooldown; return after orphan
+                    // cleanup instead of walking more candidates.
+                    if lium_rent_pool::is_rate_limited(&last_err) {
+                        return Err(LiumError::Api(last_err));
                     }
                 }
             }
@@ -1137,6 +1055,33 @@ mod tests {
             .await;
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
         let offers = c.list_offers(Some(1.0)).await.unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn request_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/executors"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "0")
+                    .set_body_string("Too many requests"),
+            )
+            .up_to_n_times(1)
+            .expect(1..)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/executors"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "a", "gpu_type": "NVIDIA A100", "gpu_count": 1, "price_per_hour": 0.5}
+            ])))
+            .mount(&server)
+            .await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let offers = c.list_offers(None).await.unwrap();
         assert_eq!(offers.len(), 1);
         assert_eq!(offers[0].id, "a");
     }

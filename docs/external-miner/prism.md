@@ -114,15 +114,18 @@ versioned descriptor). Trust `/v1/recipe`, not marketing chart labels.
 - Your hotkey must be **registered on the subnet** (metagraph). Unknown hotkey
   → `403 hotkey_not_in_metagraph`; a fresh registration may lag the snapshot
   (`503 metagraph_unavailable` → retry shortly).
-- **One accepted submission per hotkey.** While yours is `registered` /
-  `blocked` / `rejected`, a *different* patch submission gets
+- **One accepted patch submission per hotkey.** While yours is `registered` /
+  `rejected`, or `blocked` **outside** the infra recovery window, a *different*
+  patch submission gets
   `409 submission_gated`. Re-POSTing the **identical** pin+patch is always
   safe (idempotent `200 already-queued`).
 - If your hotkey **leaves the metagraph**, the watcher reopens your slot(s)
   automatically — resubmit under your new uid.
 - Infra failures (Lium pod, review/similarity/LLM infra) **auto-retry up to 3
-  times**; cheat / rejected verdicts are terminal. Manual retry:
-  `POST /v1/submissions/{id}/retry`.
+  times**; cheat / rejected verdicts are terminal. After an infra failure
+  (`ChallengeInternal`), you may **resubmit within 30 minutes** (new POST or
+  `POST /v1/submissions/{id}/retry`). After 30 minutes the slot stays blocked
+  until your hotkey leaves the metagraph.
 
 ## Anti-copy rule (patch / delta)
 
@@ -183,12 +186,12 @@ baseline — not every past submission — and still exclude your own prior art
 LayerNorm, gated/parallel residual, …) are **not** plagiarism signals. LLM
 quality is coherence-only, not a grader.
 Public gallery/leaderboard show champions only.
-**Competition:** per epoch you are
-credited the max of (a) your own best training result and (b) for each arch you
-own, that arch's best result by *any* trainer — architecture owners are rewarded
-for architectures people win with. Emission is **winner-take-all**: only the
-single highest credit that epoch receives Prism's share (50% of the subnet);
-ties break by lexicographically smallest hotkey. Scores first land in the leaf
+**Competition (temporary):** emission uses **your own best training score
+only** — architecture-owner credit (rewarding arch owners when others train
+well on their code) is **disabled** for now so the best-BPB trainer keeps
+Prism's weights. Emission remains **winner-take-all**: only the single highest
+own score that epoch receives Prism's share (50% of the subnet); ties break by
+lexicographically smallest hotkey. Scores first land in the leaf
 set emitted at the first chain-epoch boundary **after** your run finalizes (a
 long train that crosses epochs is normal — outbox assignment is exactly once).
 Positive scores then keep participating in later epochs' competition sets until

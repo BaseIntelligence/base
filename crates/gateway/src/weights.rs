@@ -1,9 +1,11 @@
 //!
 //! Raw-weight HTTP router, verification pipeline and request/response shapes.
 //! Challenge leaves are verified against the **local** owner-signed trust root
-//! (D18 defence in depth) under domain tag `base-rawweight-v1`, then appended
-//! to an append-only store. Unique key: `(challenge_id, epoch, miner_hotkey)`.
-//! The store plane itself lives in [`crate::weights_store`].
+//! (D18 defence in depth) under domain tag `base-rawweight-v1`, then stored
+//! under unique key `(challenge_id, epoch, miner_hotkey)`. A later leaf with a
+//! different `payload_digest` tip-supersedes the prior row (202 +
+//! `superseded: true`); identical digest remains 409. The store plane itself
+//! lives in [`crate::weights_store`].
 
 use std::sync::Arc;
 
@@ -34,8 +36,11 @@ async fn post_raw_weight(
     State(st): State<GatewayState>,
     Json(req): Json<RawWeightRequest>,
 ) -> Result<(StatusCode, Json<RawWeightAccepted>), IngressError> {
-    let row = accept_raw_weight(st.challenges.as_ref(), st.weights.as_ref(), &req)?;
-    Ok((StatusCode::ACCEPTED, Json(RawWeightAccepted::from(&row))))
+    let (row, superseded) = accept_raw_weight(st.challenges.as_ref(), st.weights.as_ref(), &req)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(RawWeightAccepted::from_row(&row, superseded)),
+    ))
 }
 
 /// SCALE enum matching `BUNDLE_SPEC` §3.3 (`0 = Score`, `1 = NoScore`).
@@ -55,7 +60,10 @@ struct RawWeightBodyV1 {
     score_or_absence: ScoreOrAbsenceScale,
 }
 
-/// Verify + append a single raw-weight leaf.
+/// Verify + store a single raw-weight leaf (insert or tip supersede).
+///
+/// Returns `(row, superseded)` where `superseded` is true when an earlier
+/// leaf for the same key was replaced because `payload_digest` changed.
 ///
 /// # Errors
 ///
@@ -64,7 +72,7 @@ pub fn accept_raw_weight(
     challenges: &ChallengesBody,
     store: &dyn RawWeightStore,
     req: &RawWeightRequest,
-) -> Result<RawWeightRow, IngressError> {
+) -> Result<(RawWeightRow, bool), IngressError> {
     if req.challenge_id.is_empty() {
         return Err(IngressError::BadRequest(
             "challenge_id must be non-empty".into(),
@@ -110,11 +118,16 @@ pub fn accept_raw_weight(
     let mut digest = [0u8; 32];
     digest.copy_from_slice(&payload_digest);
 
+    let miner_hex = hex::encode(miner);
+    let superseded = store
+        .get(&req.challenge_id, req.epoch, &miner_hex)
+        .is_some_and(|prev| prev.payload_digest != digest);
+
     let row = RawWeightRow {
         id: Uuid::new_v4(),
         challenge_id: req.challenge_id.clone(),
         epoch: req.epoch,
-        miner_hotkey: hex::encode(miner),
+        miner_hotkey: miner_hex,
         kind,
         score: score_value,
         absence_reason,
@@ -124,7 +137,7 @@ pub fn accept_raw_weight(
     };
 
     match store.insert(row) {
-        Ok(stored) => Ok(stored),
+        Ok(stored) => Ok((stored, superseded)),
         Err(StoreError::Conflict { original }) => Err(IngressError::Conflict { original }),
         Err(StoreError::Backend(msg)) => Err(IngressError::Backend(msg)),
     }
@@ -207,8 +220,46 @@ mod unit_tests {
             score_or_absence: ScoreOrAbsenceWire::Score { value: 7 },
             challenge_sig: hex::encode(sig),
         };
-        let row = accept_raw_weight(&body(pk), &store, &req).unwrap();
+        let (row, superseded) = accept_raw_weight(&body(pk), &store, &req).unwrap();
         assert_eq!(row.score, Some(7));
+        assert!(!superseded);
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn unit_accept_supersedes_when_digest_changes() {
+        let (sk, pk) = kp();
+        let miner = [9u8; 32];
+        let store = MemoryRawWeightStore::new();
+        let challenges = body(pk);
+        let mk = |value: u64| {
+            let scale = RawWeightBodyV1 {
+                challenge_id: b"c1".to_vec(),
+                miner_hotkey: miner,
+                epoch: 1,
+                score_or_absence: ScoreOrAbsenceScale::Score { value },
+            };
+            let payload = scale.encode();
+            let sig = sign_raw(&sk, domain::RAW_WEIGHT, &payload).unwrap();
+            RawWeightRequest {
+                challenge_id: "c1".into(),
+                miner_hotkey: hex::encode(miner),
+                epoch: 1,
+                score_or_absence: ScoreOrAbsenceWire::Score { value },
+                challenge_sig: hex::encode(sig),
+            }
+        };
+        let (first, _) = accept_raw_weight(&challenges, &store, &mk(7)).unwrap();
+        assert_eq!(first.score, Some(7));
+        let (second, superseded) = accept_raw_weight(&challenges, &store, &mk(99)).unwrap();
+        assert!(superseded);
+        assert_eq!(second.score, Some(99));
+        assert_eq!(
+            store.get("c1", 1, &hex::encode(miner)).unwrap().score,
+            Some(99)
+        );
+        // Identical digest replay → conflict.
+        let err = accept_raw_weight(&challenges, &store, &mk(99)).unwrap_err();
+        assert!(matches!(err, IngressError::Conflict { .. }));
     }
 }
