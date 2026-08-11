@@ -103,6 +103,11 @@ services:
       - ${PACK_DIR}:/tmp/prism-eval-assets:ro
       - ${ARTIFACT_DIR}:/tmp/prism-artifacts
       - ${ROOT}/crates/prism-recipe/harness:/opt/prism/harness:ro
+      - /root/gbase/deploy/secrets/prism:/run/base/prism:ro
+      - /root/gbase/deploy/secrets/lium:/run/base/lium:ro
+      - /root/gbase/deploy/secrets/openrouter:/run/base/openrouter:ro
+      - /root/gbase/deploy/secrets/github:/run/base/github:ro
+      - /root/gbase/deploy/secrets/prism_sk:/run/base/challenge_sk:ro
     environment:
       PRISM_FORCE_SIM: "false"
       PRISM_FLOW: "v3"
@@ -114,6 +119,7 @@ services:
       PRISM_MAX_CONCURRENT_EVALS: "1"
       PRISM_TRAIN_HOURS_CAP: "6"
       PRISM_PLAYGROUND_INFER_SCRIPT: "/opt/prism/harness/playground_infer.py"
+      PRISM_ADMIN_TOKENS_FILE: "/run/base/prism/admin_tokens"
 EOF
 log "wrote $OVERRIDE"
 
