@@ -68,7 +68,7 @@ docker exec base-prism-challenge-1 env | grep -E 'PRISM_(FORCE|FLOW|TEST_|EVAL_|
 ```bash
 EVIDENCE=/tmp/prism-overnight-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$EVIDENCE"
-# Use deploy/scripts/prism-overnight-battery.sh — submits transformer_pp
+# Use deploy/scripts/prism-overnight-battery.sh — submits hybrid_delta (preferred; transformer_pp hits Copied vs published baseline)
 # baseline, writes SUMMARY.md, polls until terminal or agent wall.
 ```
 

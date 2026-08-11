@@ -173,8 +173,8 @@ done
 curl -sfS "$PRISM_URL/health" >/dev/null || { log "FAIL: prism /health"; exit 1; }
 
 # --- submit baseline ------------------------------------------------------
-ARCH="$ROOT/crates/prism-recipe/baselines/transformer_pp/architecture.py"
-TRAIN="$ROOT/crates/prism-recipe/baselines/transformer_pp/training.py"
+ARCH="$ROOT/crates/prism-recipe/baselines/hybrid_delta/architecture.py"
+TRAIN="$ROOT/crates/prism-recipe/baselines/hybrid_delta/training.py"
 BODY=$(python3 - <<PY
 import json, pathlib
 arch = pathlib.Path("$ARCH").read_text()
