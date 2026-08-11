@@ -318,7 +318,14 @@ async fn emit_and_submit_covers_expected_set() {
         summary.signed.get(&hk).map(|l| &l.score_or_absence),
         Some(prism_challenge::ScoreOrAbsence::Score { value: 500_000 })
     ));
-    // Cursor advanced; a same-epoch tick is a no-op.
+    // Cursor advanced; same-epoch tick tip-refreshes WTA (cursor stays put).
     assert_eq!(store.emit_cursor(541).await.unwrap(), Some(7));
-    assert!(orch.emitter().tick(7, &expected).await.unwrap().is_none());
+    let tip = orch
+        .emitter()
+        .tick(7, &expected)
+        .await
+        .unwrap()
+        .expect("tip refresh");
+    assert_eq!(tip.epoch, 7);
+    assert_eq!(store.emit_cursor(541).await.unwrap(), Some(7));
 }
