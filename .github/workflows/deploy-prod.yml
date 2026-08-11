@@ -413,19 +413,39 @@ jobs:
           set -euo pipefail
           export BASE_SSH_IDENTITY="$HOME/.ssh/deploy_ed25519"
           HOST="root@${{ steps.host.outputs.value }}"
+          ROLE="${{ matrix.role }}"
+          COMPOSE="docker compose -f docker-compose.yml -f deploy/compose/role-${ROLE}.yml -f deploy/compose/env-prod.yml"
           ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
             "$HOST" \
-            'cd /opt/base && docker compose -f docker-compose.yml -f deploy/compose/role-${{ matrix.role }}.yml -f deploy/compose/env-prod.yml ps --format "table {{.Service}}\t{{.Status}}"'
-          # Health probe
-          ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-            "$HOST" \
-            'for i in $(seq 1 12); do \
-               if docker exec $(docker ps -q --filter name=validator) curl -fsS -m 5 http://127.0.0.1:8080/healthz 2>/dev/null; then \
-                 echo "validator health: ok"; exit 0; \
+            "cd /opt/base && ${COMPOSE} ps --format 'table {{.Service}}\t{{.Status}}'"
+          # Master has no on-chain validator (sole submitter = validator host).
+          # Probe gateway on master; probe validator only on validator role.
+          if [[ "$ROLE" == "master" ]]; then
+            ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              "$HOST" \
+              "cd /opt/base && \
+               if ${COMPOSE} ps --status running --services 2>/dev/null | grep -qx validator; then \
+                 echo 'master smoke: ERROR validator running on master (dual submitter)'; exit 1; \
                fi; \
-               sleep 5; \
-             done; \
-             echo "validator health: FAILED"; exit 1'
+               for i in \$(seq 1 12); do \
+                 if ${COMPOSE} exec -T gateway curl -fsS -m 5 http://127.0.0.1:8080/healthz 2>/dev/null; then \
+                   echo 'gateway health: ok'; exit 0; \
+                 fi; \
+                 sleep 5; \
+               done; \
+               echo 'gateway health: FAILED'; exit 1"
+          else
+            ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              "$HOST" \
+              "cd /opt/base && \
+               for i in \$(seq 1 12); do \
+                 if ${COMPOSE} exec -T validator curl -fsS -m 5 http://127.0.0.1:8080/healthz 2>/dev/null; then \
+                   echo 'validator health: ok'; exit 0; \
+                 fi; \
+                 sleep 5; \
+               done; \
+               echo 'validator health: FAILED'; exit 1"
+          fi
 
       - name: Close firewall for this runner
         if: always() && steps.fw.outputs.ip != ''
