@@ -1,10 +1,12 @@
 //! Typed persistence for the gateway's append-only tables.
 //!
-//! `raw_weight_snapshot` and `epoch_bundle` are `SELECT`/`INSERT` only for the
-//! application role, so every helper here is an insert or a read — never an
-//! update. All uniqueness and shape invariants are enforced by the schema
-//! (`0001_init.sql`, `0002_epoch_bundle_revision.sql`); the Rust side only
-//! feeds them and interprets the conflicts they raise.
+//! `epoch_bundle` and `peer_root_statement` stay `SELECT`/`INSERT` only for
+//! the application role. `raw_weight_snapshot` inserts go through
+//! [`insert_raw_weight`] / tip supersede via the `upsert_raw_weight_tip`
+//! SECURITY DEFINER helper (no direct `UPDATE` grant on the table). Bundle
+//! reseal appends a new `epoch_bundle.revision`. Schema invariants live in
+//! `0001_init.sql`, `0002_epoch_bundle_revision.sql`,
+//! `0017_raw_weight_tip_supersede.sql`.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -67,11 +69,14 @@ pub struct RawWeightRecord {
     pub signature: Vec<u8>,
 }
 
-/// Append one raw-weight leaf.
+/// Insert or tip-supersede one raw-weight leaf.
 ///
-/// Returns `Ok(None)` when `(challenge_id, epoch, miner_hotkey)` is already
-/// stored — `raw_weight_snapshot_challenge_epoch_miner_unique` is what makes a
-/// retried submission a conflict instead of a duplicate.
+/// Returns `Ok(Some(id))` when a row was inserted or replaced because
+/// `payload_digest` changed. Returns `Ok(None)` when the unique key already
+/// holds an identical digest (idempotent replay → HTTP 409).
+///
+/// Tip supersede runs via `upsert_raw_weight_tip` so `base_app` never needs a
+/// direct `UPDATE` grant on `raw_weight_snapshot`.
 ///
 /// # Errors
 ///
@@ -81,28 +86,28 @@ pub async fn insert_raw_weight(
     pool: &PgPool,
     row: &NewRawWeight<'_>,
 ) -> Result<Option<Uuid>, DbError> {
-    let id = sqlx::query_scalar!(
-        r#"
-        INSERT INTO raw_weight_snapshot
-            (id, challenge_id, epoch, miner_hotkey, kind, score, absence_reason,
-             payload, payload_digest, signature, nonce)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        ON CONFLICT (challenge_id, epoch, miner_hotkey) DO NOTHING
-        RETURNING id
-        "#,
-        row.id,
-        row.challenge_id,
-        row.epoch,
-        row.miner_hotkey,
-        row.kind,
-        row.score,
-        row.absence_reason,
-        row.payload,
-        row.payload_digest,
-        row.signature,
-        row.nonce,
+    // Runtime query: return type is `Option<Uuid>` from the tip-supersede
+    // helper (NULL = identical digest). Avoids regenerating sqlx offline
+    // metadata for a SECURITY DEFINER function signature.
+    let id: Option<Uuid> = sqlx::query_scalar(
+        r"
+        SELECT upsert_raw_weight_tip(
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+        )
+        ",
     )
-    .fetch_optional(pool)
+    .bind(row.id)
+    .bind(row.challenge_id)
+    .bind(row.epoch)
+    .bind(row.miner_hotkey)
+    .bind(row.kind)
+    .bind(row.score)
+    .bind(row.absence_reason)
+    .bind(row.payload)
+    .bind(row.payload_digest)
+    .bind(row.signature)
+    .bind(row.nonce)
+    .fetch_one(pool)
     .await?;
     Ok(id)
 }

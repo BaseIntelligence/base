@@ -111,9 +111,9 @@ impl GatewayClient {
 
     /// POST one signed leaf. Retries 5xx and transport errors.
     ///
-    /// Idempotency: HTTP 409 (already present) is success — never submits a
-    /// conflicting `ScoreOrAbsence` for the same key from this client path;
-    /// callers must not change the leaf between retries.
+    /// Idempotency: HTTP 409 (identical digest already present) is success.
+    /// Tip re-emits with a changed score/digest return 202 (supersede) and
+    /// are also success. Callers may change tip leaves between ticks.
     ///
     /// # Errors
     ///

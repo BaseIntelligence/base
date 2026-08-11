@@ -121,40 +121,41 @@ the telemetry-hooks rule and metrics forge checks still apply. Gating:
 `prism:train:<arch_id>` as above — one accepted entry per
 `(hotkey, arch_id)`, retries same rules.
 
-**Leaf emission (epoch-close, exactly-once outbox + score carry).** A
+**Leaf emission (epoch-close, exactly-once outbox + score carry + tip refresh).** A
 submission row's acceptance epoch (`prism_submission.epoch`) is intake
-metadata only. A dedicated emitter loop (`prism-emit`, one tick per chain
-epoch) emits **one D24-complete leaf set per chain epoch**: the first tick
-that observes epoch `E` assigns every submission finalized since the
-previously emitted epoch — the outbox batch,
+metadata only. A dedicated emitter loop (`prism-emit`) emits a
+**D24-complete leaf set** for the live chain epoch: the first tick that
+observes epoch `E` assigns every submission finalized since the previously
+emitted epoch — the outbox batch,
 `kind IS NOT NULL AND emitted_epoch IS NULL` — to `E`, competition-aggregates
 that batch **unioned with every still-active positive lattice score**
 (`kind = 'score' AND score > 0`), signs the full expected set
 (`NoScore(NotAttempted)` for everyone else), submits it, and advances the
-per-netuid emit cursor (`prism_emit_cursor`, migration 0012). This fixes the
-two acceptance-epoch bugs: independent scorers finalized in the same epoch
-used to lock each other out (gateway leaves are append-only first-write-wins
-per `(challenge, epoch, hotkey)`), and a submission accepted in epoch `X` but
-finalized in `X+k` (prod trains up to 6h ≫ 72-min epochs) never scored at
-all.
+per-netuid emit cursor (`prism_emit_cursor`, migration 0012). Later ticks on
+the same tip **re-submit** the current WTA projection so a mid-epoch champion
+change tip-supersedes gateway leaves (`payload_digest` change → 202; identical
+digest → 409-as-ok). Cursor does not advance again on tip refresh. This fixes
+the acceptance-epoch bugs (a submission accepted in epoch `X` but finalized in
+`X+k` never scored) while keeping `/v1/weights/latest` aligned with live WTA
+after tip reseal. Architecture-owner credit stays off
+(`OWNER_ARCH_CREDIT_ENABLED = false`).
 
 Exactly-once **outbox assignment** per scoring run: batch assignment is sticky
-before submit, the cursor advances only after the full set landed, and a crash
-mid-submit replays the identical assigned set on the next tick
-(first-write-wins with identical values converges). After assignment, a
-positive `Score(v>0)` keeps participating in every later epoch's competition
-set until a better/valid score supersedes it via lattice `max` — so an empty
-or reject-only fresh batch does not burn the prism share. Leaf emission then
-applies **winner-take-all** (`prism_registry::apply_wta`): only the single
-highest positive credit (lexicographically smallest hotkey on ties) receives a
-positive Score leaf; every other positive credit is zeroed. `Score(0)` rejects
-and `NoScore` absences do not carry. A manually retried + re-scored row
-re-enters the outbox (`reset_for_retry` clears the watermark); its old leaf
-stays immutable history in its original epoch. Epochs during a master outage
-carry no *new* outbox rows; the first epoch after recovery still includes
-active positive scores plus any backlog (seals always pin fresh epochs —
-stale bundles can never Match on-chain). Run **exactly one** prism-challenge
-emitter instance per netuid (single master topology).
+before submit, the cursor advances only after the first full set for an epoch
+landed, and a crash mid-submit replays the identical assigned set on the next
+tick. After assignment, a positive `Score(v>0)` keeps participating in every
+later epoch's competition set until a better/valid score supersedes it via
+lattice `max` — so an empty or reject-only fresh batch does not burn the prism
+share. Leaf emission then applies **winner-take-all**
+(`prism_registry::apply_wta`): only the single highest positive credit
+(lexicographically smallest hotkey on ties) receives a positive Score leaf;
+every other positive credit is zeroed. `Score(0)` rejects and `NoScore`
+absences do not carry. A manually retried + re-scored row re-enters the outbox
+(`reset_for_retry` clears the watermark). Epochs during a master outage carry
+no *new* outbox rows; the first epoch after recovery still includes active
+positive scores plus any backlog (seals always pin fresh epochs — stale
+bundles can never Match on-chain). Run **exactly one** prism-challenge emitter
+instance per netuid (single master topology).
 
 **Competition scoring (epoch-local, SCORE_MAX lattice preserved; prism
 `SCORING_VERSION` stays 2 — the competition reallocates credits inside the

@@ -1,10 +1,11 @@
-//! Design leaf-emit scheduling (late-tempo filler + catch-up).
+//! Design leaf-emit scheduling (late-tempo filler + catch-up + tip re-emit).
 
-/// How many blocks before epoch end the NotAttempted filler may run.
+/// How many blocks before epoch end the NotAttempted filler may first run
+/// when the tip has not yet been emitted this process.
 ///
-/// Wider than the historical 48-block window so `base-real-seal` (10 min) still
-/// has time to seal after design emits, while leaving most of the epoch for
-/// `award_round` to land Score leaves first (first-write-wins).
+/// Wider than the historical 48-block window so `base-real-seal` still has
+/// time to seal after design emits. Once the tip has been emitted, every
+/// emitter tick re-emits so mid-epoch awards tip-supersede gateway leaves.
 pub const DESIGN_EMIT_LATE_BLOCKS: u64 = 96;
 
 /// Planned design leaf emission for one emitter tick.
@@ -26,8 +27,11 @@ const MAX_CATCHUP_EPOCHS: u64 = 16;
 ///   epoch 1 pins a pruned block and fails with `SubnetOwnerHotkey not found`.
 /// - Catch up `last_emitted+1` when behind (capped to [`MAX_CATCHUP_EPOCHS`])
 ///   so end-of-epoch relabel skips can recover without exceeding prune depth.
-/// - Otherwise wait until the last [`DESIGN_EMIT_LATE_BLOCKS`] of the current
-///   epoch so admin awards can submit Score leaves first.
+/// - **Tip already emitted** (`last_emitted == current`): re-emit every tick so
+///   rolling window scores tip-supersede gateway leaves (gateway accepts digest
+///   changes; identical digests stay 409-as-ok).
+/// - First tip emit in-process: wait until the last [`DESIGN_EMIT_LATE_BLOCKS`]
+///   of the current epoch unless cold-start / catch-up already covered it.
 #[must_use]
 pub fn design_emit_plan(
     last_emitted: u64,
@@ -47,8 +51,12 @@ pub fn design_emit_plan(
             pin_block: current_last_epoch_block,
         });
     }
+    // Tip tracking: re-emit current epoch every tick after the first emit.
     if last_emitted >= current_epoch {
-        return None;
+        return Some(DesignEmitPlan {
+            epoch: current_epoch,
+            pin_block: current_last_epoch_block,
+        });
     }
     // Sequential catch-up for skipped epochs (award path / boundary race).
     if last_emitted + 1 < current_epoch {
@@ -65,7 +73,7 @@ pub fn design_emit_plan(
             pin_block,
         });
     }
-    // Current epoch: late-tempo filler only.
+    // Current epoch not yet emitted this process: late-tempo filler only.
     if blocks_since_last_step.saturating_add(DESIGN_EMIT_LATE_BLOCKS) < tempo {
         return None;
     }
@@ -120,7 +128,14 @@ mod tests {
     }
 
     #[test]
-    fn emit_plan_noop_when_already_emitted_current() {
-        assert!(design_emit_plan(11, 11, 350, 360, 1000).is_none());
+    fn emit_plan_reemits_tip_when_already_emitted_current() {
+        let p = design_emit_plan(11, 11, 10, 360, 1000).unwrap();
+        assert_eq!(
+            p,
+            DesignEmitPlan {
+                epoch: 11,
+                pin_block: 1000
+            }
+        );
     }
 }

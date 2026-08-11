@@ -42,13 +42,18 @@ pub struct RawWeightRow {
     pub challenge_sig: Vec<u8>,
 }
 
-/// Append-only raw-weight persistence.
+/// Raw-weight persistence with tip supersede.
+///
+/// Unique key: `(challenge_id, epoch, miner_hotkey)`. A later leaf with a
+/// **different** `payload_digest` replaces the stored row (tip tracking). An
+/// identical digest is a conflict (idempotent replay).
 pub trait RawWeightStore: Send + Sync {
-    /// Insert a new row. Fails with [`StoreError::Conflict`] if the unique key exists.
+    /// Insert a new row, or replace when the digest changes for the same key.
     ///
     /// # Errors
     ///
-    /// [`StoreError::Conflict`] when `(challenge_id, epoch, miner_hotkey)` already stored.
+    /// [`StoreError::Conflict`] when the key exists with the **same**
+    /// `payload_digest`.
     fn insert(&self, row: RawWeightRow) -> Result<RawWeightRow, StoreError>;
 
     /// Lookup by unique key.
@@ -69,7 +74,7 @@ pub trait RawWeightStore: Send + Sync {
 /// Store insert failures.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum StoreError {
-    /// Unique key already present; original row is returned for 409 bodies.
+    /// Unique key already present with the same digest; original for 409 bodies.
     #[error("raw weight already present for challenge/epoch/miner")]
     Conflict {
         /// Unchanged original row.
@@ -80,7 +85,7 @@ pub enum StoreError {
     Backend(String),
 }
 
-/// In-memory append-only store (tests + default runtime until DB hydrate).
+/// In-memory store with tip supersede (tests + default runtime until DB hydrate).
 #[derive(Debug, Default)]
 pub struct MemoryRawWeightStore {
     rows: RwLock<BTreeMap<(String, u64, String), RawWeightRow>>,
@@ -103,9 +108,12 @@ impl RawWeightStore for MemoryRawWeightStore {
         );
         let mut guard = self.rows.write();
         if let Some(existing) = guard.get(&key) {
-            return Err(StoreError::Conflict {
-                original: Box::new(existing.clone()),
-            });
+            if existing.payload_digest == row.payload_digest {
+                return Err(StoreError::Conflict {
+                    original: Box::new(existing.clone()),
+                });
+            }
+            // Tip supersede: digest changed → replace in place.
         }
         guard.insert(key, row.clone());
         Ok(row)
@@ -181,6 +189,9 @@ pub struct RawWeightAccepted {
     /// Absence reason when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub absence_reason: Option<String>,
+    /// True when an earlier leaf for the same key was replaced (digest change).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub superseded: bool,
 }
 
 impl From<&RawWeightRow> for RawWeightAccepted {
@@ -193,7 +204,18 @@ impl From<&RawWeightRow> for RawWeightAccepted {
             kind: row.kind.clone(),
             score: row.score,
             absence_reason: row.absence_reason.clone(),
+            superseded: false,
         }
+    }
+}
+
+impl RawWeightAccepted {
+    /// Build an ack, marking tip supersede when requested.
+    #[must_use]
+    pub fn from_row(row: &RawWeightRow, superseded: bool) -> Self {
+        let mut ack = Self::from(row);
+        ack.superseded = superseded;
+        ack
     }
 }
 
@@ -209,7 +231,7 @@ pub enum IngressError {
     /// Challenge id absent from local trust root.
     #[error("challenge not registered")]
     UnknownChallenge,
-    /// Unique key already present.
+    /// Unique key already present with the same digest.
     #[error("conflict: raw weight already stored")]
     Conflict {
         /// Original row (unchanged).
