@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 prism-artifacts = { path = "../prism-artifacts" }
+prism-automodel = { path = "../prism-automodel" }
 prism-lium-types = { path = "../prism-lium-types" }
 prism-recipe = { path = "../prism-recipe" }
 prism-tree = { path = "../prism-tree" }

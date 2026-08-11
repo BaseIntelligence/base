@@ -281,11 +281,67 @@ pub fn intake_automodel_zip(zip_bytes: &[u8]) -> Result<MaterializedAutomodel, I
     materialize(&members)
 }
 
-/// Pack [`MaterializedAutomodel::files`] as a [`prism_tree::StagedTree`] blob.
+/// Pack a **slim** delivery blob for DB persistence (`.prism/` + touched files).
+///
+/// The full AutoModel pin tree exceeds `prism_submission_tree_blob_len`
+/// (~17 MiB). Pods rematerialize via [`expand_tree_blob_for_pod`] against
+/// `PRISM_AUTOMODEL_PIN_DIR` at upload time.
 pub fn pack_tree_blob(mat: &MaterializedAutomodel) -> Result<Vec<u8>, IntakeError> {
-    prism_tree::StagedTree::new(mat.files.clone(), mat.entry.clone())
+    let slim = slim_delivery_files(mat);
+    prism_tree::StagedTree::new(slim, mat.entry.clone())
         .pack()
         .map_err(|e| IntakeError::Invalid(e.to_string()))
+}
+
+/// Files persisted in `tree_blob`: meta + patch-touched paths + entry + optional toml.
+fn slim_delivery_files(mat: &MaterializedAutomodel) -> BTreeMap<String, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    for key in [META_BASE, META_PATCH, META_DIFFSTAT] {
+        if let Some(v) = mat.files.get(key) {
+            out.insert(key.to_owned(), v.clone());
+        }
+    }
+    for entry in &mat.diffstat.files {
+        if let Some(v) = mat.files.get(&entry.path) {
+            out.insert(entry.path.clone(), v.clone());
+        }
+    }
+    if let Some(v) = mat.files.get(&mat.entry) {
+        out.insert(mat.entry.clone(), v.clone());
+    }
+    if let Some(v) = mat.files.get(MEMBER_TOML) {
+        out.insert(MEMBER_TOML.to_owned(), v.clone());
+    }
+    out
+}
+
+/// Expand a stored AutoModel (or legacy) tree blob into the full pod tree.
+///
+/// When `.prism/automodel.patch` is present, re-applies onto the live pin
+/// checkout so the pod receives a complete applied AutoModel tree even though
+/// the DB only kept the slim delta.
+pub fn expand_tree_blob_for_pod(blob: &[u8]) -> Result<prism_tree::StagedTree, IntakeError> {
+    let staged =
+        prism_tree::StagedTree::unpack(blob).map_err(|e| IntakeError::Invalid(e.to_string()))?;
+    let Some(patch) = staged.get(META_PATCH) else {
+        return Ok(staged);
+    };
+    let pin_id = staged
+        .get(META_BASE)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| IntakeError::Invalid(format!("missing {META_BASE} in tree blob")))?;
+    let prism_toml = staged
+        .get(MEMBER_TOML)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map(str::to_owned);
+    let mat = materialize(&AutomodelMembers {
+        pin_id: pin_id.to_owned(),
+        patch: patch.to_vec(),
+        prism_toml,
+    })?;
+    Ok(prism_tree::StagedTree::new(mat.files, mat.entry))
 }
 
 /// Wire-facing expand result for `SubmissionRequest` fields.

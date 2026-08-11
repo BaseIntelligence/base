@@ -3929,6 +3929,7 @@ dependencies = [
  "async-trait",
  "hex",
  "prism-artifacts",
+ "prism-automodel",
  "prism-lium-types",
  "prism-recipe",
  "prism-tree",

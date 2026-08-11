@@ -636,7 +636,9 @@ fn harness_upload_tar(
         .collect();
     let tree = match tree_blob {
         Some(b) => Some(
-            prism_tree::StagedTree::unpack(b)
+            // AutoModel slim blobs rematerialize the full applied pin tree here
+            // (DB only stores .prism/ + delta; pin lives at PRISM_AUTOMODEL_PIN_DIR).
+            prism_automodel::expand_tree_blob_for_pod(b)
                 .map_err(|e| LiumError::Exec(format!("tree blob: {e}")))?,
         ),
         None => None,

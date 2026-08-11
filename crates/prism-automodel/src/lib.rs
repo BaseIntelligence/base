@@ -36,8 +36,8 @@ pub use env::{
 };
 pub use intake::{
     allow_fixture_intake, allow_legacy_intake, diff_from_files, expand_automodel,
-    extract_automodel_zip, fixture_automodel_zip, intake_automodel_zip, materialize,
-    pack_tree_blob, pin_checkout_dir, resolve_pin, submission_id_for_patch,
+    expand_tree_blob_for_pod, extract_automodel_zip, fixture_automodel_zip, intake_automodel_zip,
+    materialize, pack_tree_blob, pin_checkout_dir, resolve_pin, submission_id_for_patch,
     zip_is_automodel_layout, AutomodelMembers, ExpandedAutomodel, IntakeError,
     MaterializedAutomodel, ALLOW_LEGACY_ENV, MEMBER_BASE, MEMBER_PATCH, MEMBER_TOML, META_BASE,
     META_DIFFSTAT, META_PATCH,
