@@ -86,7 +86,11 @@ impl fmt::Debug for PayerBackendFactory {
 impl PayerBackendFactory {
     /// Live factory (default Lium base URL).
     #[must_use]
-    pub fn new(vault: Arc<PayerKeyVault>, ssh: LiumSshConfig, allow_operator_fallback: bool) -> Self {
+    pub fn new(
+        vault: Arc<PayerKeyVault>,
+        ssh: LiumSshConfig,
+        allow_operator_fallback: bool,
+    ) -> Self {
         Self {
             vault,
             ssh,
@@ -112,10 +116,7 @@ impl PayerBackendFactory {
         if self.allow_operator_fallback {
             return Ok(operator);
         }
-        Err(
-            "miner Lium API key missing for this submission — resubmit with X-Lium-Api-Key"
-                .into(),
-        )
+        Err("miner Lium API key missing for this submission — resubmit with X-Lium-Api-Key".into())
     }
 }
 

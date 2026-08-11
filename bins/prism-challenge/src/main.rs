@@ -260,9 +260,12 @@ fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
     let pk = load_ssh_public_key()
         .ok_or("live Lium requires SSH public key (LIUM_SSH_PUBLIC_KEY_FILE or default)")?;
     if let Some(api_key) = load_lium_api_key() {
-        let client =
-            LiumClient::with_config(api_key.clone(), prism_challenge::LIUM_API_BASE_URL, ssh.clone())
-                .map_err(|e| e.to_string())?;
+        let client = LiumClient::with_config(
+            api_key.clone(),
+            prism_challenge::LIUM_API_BASE_URL,
+            ssh.clone(),
+        )
+        .map_err(|e| e.to_string())?;
         return Ok((
             Arc::new(client),
             "lium".into(),
@@ -522,8 +525,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
             allow_operator_lium = allow_op,
             "miner-funded Lium enabled (X-Lium-Api-Key)"
         );
-        orchestrator =
-            orchestrator.with_payer(PayerBackendFactory::new(vault, live_ssh, allow_op));
+        orchestrator = orchestrator.with_payer(PayerBackendFactory::new(vault, live_ssh, allow_op));
     }
     if gating_enabled {
         orchestrator = orchestrator.with_gating(Arc::clone(&gating));

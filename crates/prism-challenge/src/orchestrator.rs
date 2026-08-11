@@ -240,7 +240,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         for row in stuck {
             // Harvest on-pod harness log **before** reclaim — otherwise the
             // costly long attempt leaves only `swept: stuck beyond grace`.
-            let be = self.backend_for(&row.id).unwrap_or_else(|_| Arc::clone(&self.backend));
+            let be = self
+                .backend_for(&row.id)
+                .unwrap_or_else(|_| Arc::clone(&self.backend));
             let harvested = if let Some(pod) = row.pod_id.as_deref() {
                 be.harvest_logs(pod).await.unwrap_or_default()
             } else {
@@ -787,16 +789,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         if let Err(e) = backend.terminate(&pod_id).await {
             warn!(error = %e, %pod_id, "terminate failed");
         }
-        let mut termination_verified = backend
-            .verify_terminated(&pod_id)
-            .await
-            .unwrap_or(false);
+        let mut termination_verified = backend.verify_terminated(&pod_id).await.unwrap_or(false);
         if !termination_verified {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            termination_verified = backend
-                .verify_terminated(&pod_id)
-                .await
-                .unwrap_or(false);
+            termination_verified = backend.verify_terminated(&pod_id).await.unwrap_or(false);
         }
         if let Some(p) = &self.payer {
             p.vault.remove(id);
