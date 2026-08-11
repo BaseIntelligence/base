@@ -9,16 +9,17 @@ anchor keys read the per-byte siblings (`org.g1.bits_per_byte_*`); per-token
 `g1.bpb.*` remain in the battery group view for debugging only.
 
 bpb on the harness frozen val cut (v1 semantics), bpb on multi-domain
-held-out assets + a fresh-crawl stream (private tier only — the
-unmemorizable-by-construction component), a harness-defined
-key-token-weighted variant (numeric + capitalized-initial tokens; the
-LongPPL selectivity idea with zero evaluator circularity), and a
-per-position loss decomposition (truncation-cheat signature).
+held-out assets + a fresh FineWeb dump stream (staged `public` pack —
+held-out, not secret; built from public HF, never the FineWeb-Edu train
+pin), a harness-defined key-token-weighted variant (numeric +
+capitalized-initial tokens; the LongPPL selectivity idea with zero
+evaluator circularity), and a per-position loss decomposition
+(truncation-cheat signature).
 
 Assets (JSONL, `{"text": ...}` rows):
-  $PRISM_EVAL_ASSETS_DIR/g1/domains/<name>.jsonl  (private mirrors)
-  $PRISM_EVAL_ASSETS_DIR/g1/fresh.jsonl           (fresh-crawl stream)
-  eval/public_dev/g1/domains/<name>.jsonl         (public dev anchors)
+  $PRISM_EVAL_ASSETS_DIR/g1/domains/<name>.jsonl  (staged public HF pack)
+  $PRISM_EVAL_ASSETS_DIR/g1/fresh.jsonl           (held-out FineWeb dump)
+  eval/public_dev/g1/domains/<name>.jsonl         (tiny public_dev anchors)
 With no assets at all, only the val-cut + key-token + position metrics
 are emitted (never an error).
 """
@@ -92,7 +93,7 @@ def run(model, ctx):
     for b, vals in sorted(buckets.items()):
         common.emit(out, f"g1.posloss.{b}", common.bpb(common.mean(vals)))
 
-    # 2) Multi-domain held-out (private mirrors or public dev anchors).
+    # 2) Multi-domain held-out (staged public HF pack or public_dev anchors).
     dom_names = set()
     for base in (ctx.get("eval_assets_dir"), common.PUBLIC_DEV_DIR):
         if not base:
@@ -126,11 +127,11 @@ def run(model, ctx):
         common.emit(out, "g1.bits_per_byte.multidomain", common.mean(domain_bpbyte))
     out["g1.assets.domains_present"] = float(len(domain_bpb))
 
-    # 3) Fresh-crawl stream (private tier only — no public equivalent).
-    fresh_path = None
-    if ctx.get("eval_assets_dir"):
-        p = os.path.join(str(ctx["eval_assets_dir"]), "g1", "fresh.jsonl")
-        fresh_path = p if os.path.isfile(p) else None
+    # 3) Fresh held-out FineWeb dump (any staged pack with g1/fresh.jsonl —
+    # public HF pack default; also present under optional private mirrors).
+    fresh_path = common.assets_path(ctx, "g1/fresh.jsonl")
+    # Prefer staged pack path when both staged + public_dev exist; assets_path
+    # already prefers eval_assets_dir. public_dev intentionally ships no fresh.
     if fresh_path and budget.ok():
         texts = [r.get("text", "") for r in common.load_jsonl(fresh_path, cap=cap)]
         texts = [t for t in texts if t]

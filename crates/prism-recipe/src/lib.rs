@@ -13,13 +13,15 @@
 //!
 //! The same objects are exposed to miners over `GET /v1/recipe` and
 //! `GET /v1/recipe/baseline` so they can run the harness locally before
-//! submitting. The v3 flow adds a **private eval tier**: after the train
-//! phase completes, the operator stages held-out eval assets plus a secret
-//! eval seed onto the pod (post-train, over SSH) and the battery runs
-//! against them. The private tier is fail-closed — if the assets cannot be
-//! staged or verified, the eval terminates rather than falling back to
-//! public rows. Public anchors (`eval/public_dev/`) remain published for
-//! local miner reproduction.
+//! submitting. The v3 flow adds a **staged eval pack** (default
+//! `eval_tier=public`): after the train phase completes, the operator
+//! stages held-out eval assets (built from public HF datasets) plus a
+//! generator seed onto the pod (post-train, over SSH) and the battery runs
+//! against them. Staging is fail-closed — if the assets cannot be staged
+//! or verified, the eval terminates rather than falling back to the tiny
+//! embedded `public_dev` fixtures. An optional `private` tier remains for
+//! secret contamination mirrors. Tiny public anchors (`eval/public_dev/`)
+//! remain published for local miner reproduction.
 //!
 //! The harness itself is a multi-file Python package embedded at build time
 //! ([`HARNESS_FILES`]) and streamed to the pod over SSH by `prism-lium` as
@@ -309,7 +311,10 @@ pub const NATURAL_PACK_REL: &str = "g5/natural";
 /// the assets dir — the G1/G2 mirrors are tiny by comparison — but raw
 /// documents gzip well and a default pack lands around 10 MiB, so the cap
 /// is unchanged and still refuses an assets dir that is obviously wrong.
-pub const MAX_EVAL_ASSETS_PACKED_BYTES: usize = 64 * 1024 * 1024;
+/// Raised from 64 → 256 MiB so a full public pack (G1/G2 + LongBench-v2 /
+/// HELMET natural pools) can stage without forcing tiny `public_dev`
+/// natural fixtures. Gzipped packs still land well under this in practice.
+pub const MAX_EVAL_ASSETS_PACKED_BYTES: usize = 256 * 1024 * 1024;
 
 /// Pinned pretraining shard: fineweb-edu sample-10BT, single parquet shard.
 ///

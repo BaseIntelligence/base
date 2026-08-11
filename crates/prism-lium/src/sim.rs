@@ -131,12 +131,12 @@ impl EvalJobBackend for SimLiumBackend {
             .collect();
         // Optional fake-assets mode (E5): when the operator eval-assets env
         // is set master-side, the sim mirrors the two-phase outcome
-        // (private tier) so staging control-flow is testable offline.
-        // Default stays v1-shaped.
+        // (staged `public` pack tier) so staging control-flow is testable
+        // offline. Default stays v1-shaped.
         let fake_assets = std::env::var("PRISM_EVAL_ASSETS_DIR")
             .ok()
             .is_some_and(|v| !v.trim().is_empty());
-        let note_suffix = ["", " (fake private assets staged)"][usize::from(fake_assets)];
+        let note_suffix = ["", " (fake public assets staged)"][usize::from(fake_assets)];
         Ok(RemoteExecResult {
             bpb,
             // Budget-plausible shape (not a stub): a 12M model early-stopping
@@ -161,7 +161,7 @@ impl EvalJobBackend for SimLiumBackend {
             pod_manifest: None,
             netns: None,
             harness_files_sha256: None,
-            eval_tier: fake_assets.then_some("private".into()),
+            eval_tier: fake_assets.then_some("public".into()),
             extra: std::collections::BTreeMap::new(),
         })
     }
@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // env mutation must be serialized across the awaits
-    async fn sim_fake_assets_mode_mirrors_private_tier() {
+    async fn sim_fake_assets_mode_mirrors_public_tier() {
         let _guard = crate::ASSETS_ENV_LOCK.lock().unwrap();
         let b = SimLiumBackend::new();
         std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
@@ -240,8 +240,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(r.eval_tier.as_deref(), Some("private"));
-        assert!(r.notes.contains("fake private assets"));
+        assert_eq!(r.eval_tier.as_deref(), Some("public"));
+        assert!(r.notes.contains("fake public assets"));
         std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
     }
 

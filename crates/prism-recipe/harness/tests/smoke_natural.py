@@ -112,7 +112,7 @@ def fixture_ctx(assets_dir=None, tok=None):
         "tokenizer": tok or ByteTok(),
         "device": "cpu",
         "eval_assets_dir": assets_dir,
-        "eval_tier": "private" if assets_dir else "public_dev",
+        "eval_tier": "public" if assets_dir else "public_dev",
         "eval_secret_seed": SECRET,
         "items": common.ItemRecorder(),
     }

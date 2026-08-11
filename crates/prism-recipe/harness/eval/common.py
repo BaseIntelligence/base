@@ -102,9 +102,44 @@ def resolve_secret_seed(ctx):
 
 
 def eval_tier(ctx):
+    """Resolved battery tier: `public_dev` | `public` | `private`.
+
+    - `public_dev`: embedded tiny fixtures (no staged assets dir).
+    - `public`: staged held-out pack built from **public HF** datasets
+      (default when `$PRISM_EVAL_ASSETS_DIR` is set) — full G1 domains +
+      fresh FineWeb dump + G2/G5. Not secret; just post-train staged so
+      miners cannot train on the eval rows in-process.
+    - `private`: optional contamination / secret-seed mirrors only
+      (`PRISM_EVAL_TIER=private` or pack `tier.json` with `"tier":"private"`).
+    """
     if ctx.get("eval_tier"):
         return str(ctx["eval_tier"])
-    return "private" if ctx.get("eval_assets_dir") else "public_dev"
+    return "public" if ctx.get("eval_assets_dir") else "public_dev"
+
+
+def resolve_eval_tier(assets_dir):
+    """Pick the staged-pack tier for the harness parent (main.py).
+
+    Explicit `PRISM_EVAL_TIER` wins when set to public|private|public_dev.
+    Else a pack-local `tier.json` (`{"tier": "..."}`) is honored.
+    Default for a staged assets dir is **`public`** (HF held-out pack).
+    """
+    explicit = (os.environ.get("PRISM_EVAL_TIER") or "").strip().lower()
+    if explicit in ("public", "private", "public_dev"):
+        return explicit
+    if assets_dir:
+        tier_path = os.path.join(str(assets_dir), "tier.json")
+        if os.path.isfile(tier_path):
+            try:
+                with open(tier_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                t = str((raw or {}).get("tier", "")).strip().lower()
+                if t in ("public", "private", "public_dev"):
+                    return t
+            except (OSError, ValueError, TypeError):
+                pass
+        return "public"
+    return "public_dev"
 
 
 def tiny_caps():
@@ -343,11 +378,11 @@ def score_and_record(
 
 
 def assets_path(ctx, rel):
-    """Resolve an eval asset: private mirror first, public-dev fallback.
+    """Resolve an eval asset: staged pack first, then public_dev fallback.
 
-    Private tier: `$PRISM_EVAL_ASSETS_DIR/<rel>`. Public dev tier (or
-    missing private file): `eval/public_dev/<rel>`. Returns None when the
-    file exists in neither place.
+    Staged (`public` / `private` tier): `$PRISM_EVAL_ASSETS_DIR/<rel>`.
+    Missing staged file or `public_dev` tier: `eval/public_dev/<rel>`.
+    Returns None when the file exists in neither place.
     """
     base = ctx.get("eval_assets_dir")
     if base:

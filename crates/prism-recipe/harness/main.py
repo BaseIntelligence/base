@@ -17,15 +17,16 @@ v3 flow (`PRISM_FLOW=v3`, or auto when eval assets / a secret seed are
 staged): TRAIN-phase child (`prismlib.train_v3`, saves
 `$PRISM_WORKDIR/checkpoint.pt`, no scoring) -> parent gate (process group
 hard-killed + survivor check, JIT caches reset). With
-`$PRISM_EVAL_ASSETS_DIR` set (private tier) the gate then prints the bare
-`PHASE_TRAIN_DONE` marker line (the Lium client stages the assets tar +
-`SECRET_SEED` + `.ready` on it) and holds for the `.ready` sentinel —
-fail-closed, never a silent public-tier downgrade — before spawning a
-fresh EVAL-phase child (`prismlib.eval_v3`, rebuilds the model from the
-miner's architecture.py + checkpoint, runs the G1–G8 battery + v1 bpb; the
-secret generator seed is read from the staged hex file and handed to the
-eval child via env only). Without the assets env the tier is `public_dev`
-(same battery, published dev seed). -> METRICS_JSON v2 + `flow`/
+`$PRISM_EVAL_ASSETS_DIR` set (staged pack → default `eval_tier=public`)
+the gate then prints the bare `PHASE_TRAIN_DONE` marker line (the Lium
+client stages the assets tar + `SECRET_SEED` + `.ready` on it) and holds
+for the `.ready` sentinel — fail-closed, never a silent downgrade to the
+embedded `public_dev` fixtures — before spawning a fresh EVAL-phase child
+(`prismlib.eval_v3`, rebuilds the model from the miner's architecture.py +
+checkpoint, runs the G1–G8 battery + v1 bpb; the generator seed is read
+from the staged hex file and handed to the eval child via env only).
+Without the assets env the tier is `public_dev` (same battery, published
+dev seed / tiny fixtures). -> METRICS_JSON v2 + `flow`/
 `eval_tier`/`gate`/`battery`/`items`. The v1 path is byte-identical in
 behavior.
 
@@ -220,15 +221,15 @@ def _cap_exceeded_out(payload, manifest, t_start):
 
 
 def _await_eval_assets(assets_dir):
-    """Hold the post-train gate until the master stages private eval assets.
+    """Hold the post-train gate until the master stages the eval-assets pack.
 
     Emits the bare train-done marker (exact raw line — the Lium client
     matches it to trigger staging over a second SSH channel), then polls for
     the `.ready` sentinel. Fail-closed: no `.ready` within `ASSETS_WAIT_S`
-    is terminal, never a public-tier downgrade. Returns the staged
-    `SECRET_SEED` (128-bit hex file) as a decimal string for the eval
-    child's `PRISM_EVAL_SECRET_SEED` env — file-only delivery keeps the
-    train-phase child from ever inheriting it.
+    is terminal, never a silent downgrade to embedded `public_dev` fixtures.
+    Returns the staged `SECRET_SEED` (128-bit hex file) as a decimal string
+    for the eval child's `PRISM_EVAL_SECRET_SEED` env — file-only delivery
+    keeps the train-phase child from ever inheriting it.
     """
     print(TRAIN_DONE_MARKER, flush=True)
     ready = os.path.join(assets_dir, ".ready")
@@ -242,7 +243,7 @@ def _await_eval_assets(assets_dir):
                 ),
             )
         time.sleep(1.0)
-    log(f"eval assets staged (.ready) — private tier in {assets_dir}")
+    log(f"eval assets staged (.ready) — pack ready in {assets_dir}")
     try:
         with open(os.path.join(assets_dir, "SECRET_SEED"), "r", encoding="utf-8") as f:
             hex_seed = f.read().strip()
@@ -297,11 +298,14 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
     assets_dir = os.environ.get("PRISM_EVAL_ASSETS_DIR", "").strip() or None
     staged_seed = None
     if assets_dir:
-        # Private tier (E5): the train-phase process group is dead; announce
-        # train-done so the master stages the assets + SECRET_SEED, then
-        # hold on `.ready` (fail-closed — never a silent public downgrade).
+        # Staged pack (default eval_tier=public from HF held-out assets):
+        # train-phase process group is dead; announce train-done so the
+        # master stages the assets + SECRET_SEED, then hold on `.ready`
+        # (fail-closed — never a silent downgrade to public_dev fixtures).
         staged_seed = _await_eval_assets(assets_dir)
-    eval_tier = "private" if assets_dir else "public_dev"
+    from eval import common as eval_common
+
+    eval_tier = eval_common.resolve_eval_tier(assets_dir)
 
     eval_ctx = dict(ctx)
     eval_ctx.update(

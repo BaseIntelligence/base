@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
-"""Build a private PRISM eval-assets pack from Hugging Face sources.
+"""Build a **public** PRISM eval-assets pack from Hugging Face sources.
 
-Operator-side only — never commit the resulting JSONL. Layout matches
-`crates/prism-recipe/harness/eval/public_dev/README.md`.
+Operator-side only — never commit the resulting JSONL. These are held-out
+eval sets built from **public** HF datasets (FineMath, WikiText/Paloma,
+codeparrot/stack-smol, FineWeb dump for fresh, official G2 val splits,
+LongBench-v2 + HELMET for G5 natural). They are not secret; staging them
+post-train only prevents in-process train contamination.
+
+Default `eval_tier` for a staged pack is `public`. Optional
+`PRISM_EVAL_TIER=private` / pack `tier.json` keeps the contamination-mirror
+ceremony for operators who still want secret seeds.
 
 Env:
   PRISM_EVAL_ASSETS_DIR  output root (default /tmp/prism-eval-assets)
+  PACK_TIER              written to tier.json (default public)
   G1_N                   docs per G1 domain / fresh (default 800)
   G2_N                   max items per G2 task (default 400)
   G5_FILLER_DOCS         PG-19 docs for babilong filler (default 8)
   G5_QA_N                SQuAD rows for ruler_qa (default 200)
   SKIP_G5                if 1, skip G5 assets
+  SKIP_G5_NATURAL        if 1, skip LongBench/HELMET natural pack
+  G5_NATURAL_SRC         optional existing g5/natural dir to copy
+  MAX_PACKED_MIB         packed tar.gz cap check (default 256)
 """
 from __future__ import annotations
 
@@ -29,9 +40,15 @@ G2_N = int(os.environ.get("G2_N", "400"))
 G5_FILLER_DOCS = int(os.environ.get("G5_FILLER_DOCS", "8"))
 G5_QA_N = int(os.environ.get("G5_QA_N", "200"))
 SKIP_G5 = os.environ.get("SKIP_G5", "0") == "1"
+SKIP_G5_NATURAL = os.environ.get("SKIP_G5_NATURAL", "0") == "1"
+G5_NATURAL_SRC = os.environ.get("G5_NATURAL_SRC", "").strip()
+PACK_TIER = (os.environ.get("PACK_TIER") or "public").strip().lower()
+MAX_PACKED_MIB = int(os.environ.get("MAX_PACKED_MIB", "256"))
 MAX_TEXT = int(os.environ.get("MAX_TEXT_CHARS", "2048"))
 MIN_TEXT = int(os.environ.get("MIN_TEXT_CHARS", "64"))
 SEED = int(os.environ.get("PACK_SEED", "20260809"))
+HERE = Path(__file__).resolve().parent
+PUBLIC_DEV_NATURAL = HERE / "public_dev" / "g5" / "natural"
 
 rng = random.Random(SEED)
 manifest: list[dict[str, Any]] = []
@@ -677,26 +694,86 @@ def build_g5() -> None:
     except Exception as exc:  # noqa: BLE001
         log(f"  ruler_qa FAILED: {exc}")
 
-    # Copy public_dev natural fixtures as a private-tier starting pack
-    # (full HELMET natural-pack exceeds MAX_EVAL_ASSETS_PACKED_BYTES=64MiB).
+    if SKIP_G5_NATURAL:
+        log("  SKIP_G5_NATURAL=1 — omitting LongBench/HELMET natural pools")
+        return
     try:
         import shutil
 
-        src = Path(
-            "/tmp/gbase-prism-e13/crates/prism-recipe/harness/eval/public_dev/g5/natural"
-        )
-        if src.is_dir():
-            dst = OUT / "g5/natural"
-            dst.mkdir(parents=True, exist_ok=True)
-            for f in src.iterdir():
-                if f.is_file() and f.name != "README.md":
-                    shutil.copy2(f, dst / f.name)
-            log("  copied public_dev g5/natural fixtures (HELMET full pack skipped — 64MiB cap)")
+        dst = OUT / "g5/natural"
+        src: Path | None = None
+        note = ""
+        if G5_NATURAL_SRC:
+            cand = Path(G5_NATURAL_SRC)
+            if cand.is_dir() and (cand / "natural_mcq.jsonl").is_file():
+                src = cand
+                note = f"copied from G5_NATURAL_SRC={cand}"
+        if src is None:
+            # Prefer a previously built operator pack under common paths.
+            for cand in (
+                Path("/tmp/natural-packs/g5/natural"),
+                Path.home() / "prism-eval-assets" / "g5" / "natural",
+            ):
+                if cand.is_dir() and (cand / "natural_mcq.jsonl").is_file():
+                    # Skip tiny public_dev smoke fixtures (≤8 rows).
+                    n = sum(1 for _ in (cand / "natural_mcq.jsonl").open())
+                    if n >= 16:
+                        src = cand
+                        note = f"copied existing natural pack ({n} mcq rows) from {cand}"
+                        break
+        if src is None:
+            # Try xtask natural-pack when a repo checkout is available.
+            repo = HERE.parents[3]  # .../crates/prism-recipe/harness/eval → repo root
+            xtask_ok = (repo / "xtask" / "src" / "natural_pack.rs").is_file()
+            if xtask_ok:
+                log("  invoking cargo run -p xtask -- natural-pack …")
+                import subprocess
+
+                cache = Path(os.environ.get("PRISM_NATURAL_CACHE", "/tmp/natural-cache"))
+                cmd = [
+                    "cargo",
+                    "run",
+                    "-q",
+                    "-p",
+                    "xtask",
+                    "--",
+                    "natural-pack",
+                    "--out",
+                    str(OUT),
+                    "--cache",
+                    str(cache),
+                    "--mcq-pool",
+                    os.environ.get("G5_MCQ_POOL", "64"),
+                    "--rag-per-cell",
+                    os.environ.get("G5_RAG_PER_CELL", "12"),
+                ]
+                if os.environ.get("PRISM_NATURAL_OFFLINE", "0") == "1":
+                    cmd.append("--offline")
+                try:
+                    subprocess.run(cmd, cwd=str(repo), check=True, timeout=7200)
+                    if (dst / "natural_mcq.jsonl").is_file():
+                        src = dst
+                        note = "built via xtask natural-pack (LongBench-v2 + HELMET)"
+                except Exception as exc:  # noqa: BLE001
+                    log(f"  xtask natural-pack FAILED: {exc}")
+        if src is None and PUBLIC_DEV_NATURAL.is_dir():
+            src = PUBLIC_DEV_NATURAL
+            note = "fallback: public_dev tiny natural fixtures (run xtask natural-pack for full G5)"
+        if src is None:
+            log("  natural pack SKIPPED — no source available")
+            return
+        if src.resolve() != dst.resolve():
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        mcq = dst / "natural_mcq.jsonl"
+        if mcq.is_file():
+            log(f"  natural: {note}")
             record(
                 "g5.natural",
-                dst / "natural_mcq.jsonl",
-                dataset="public_dev fixtures (LongBench-v2 tiny)",
-                note="full xtask natural-pack / HELMET omitted (packed-bytes cap)",
+                mcq,
+                dataset="zai-org/LongBench-v2 + princeton-nlp/HELMET (public)",
+                note=note,
             )
     except Exception as exc:  # noqa: BLE001
         log(f"  natural copy FAILED: {exc}")
@@ -705,15 +782,17 @@ def build_g5() -> None:
 def write_manifest() -> None:
     md = OUT / "MANIFEST.md"
     lines = [
-        "# PRISM private eval-assets pack",
+        "# PRISM public eval-assets pack (HF held-out)",
         "",
         f"- Built: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         f"- Out: `{OUT}`",
         f"- Pack seed: `{SEED}`",
+        f"- Pack tier: `{PACK_TIER}` (default public — not secret)",
         f"- G1_N={G1_N} G2_N={G2_N}",
         "",
-        "**Contamination note:** G1 fresh uses `HuggingFaceFW/fineweb` CC-MAIN-2025-* dumps, "
-        "not `HuggingFaceFW/fineweb-edu@sample/10BT` (train pin).",
+        "**Held-out note:** G1 fresh uses `HuggingFaceFW/fineweb` CC-MAIN-2025-* dumps, "
+        "**not** `HuggingFaceFW/fineweb-edu@sample/10BT` (train pin). Benchmarks are public HF "
+        "datasets; staging post-train only blocks in-process contamination.",
         "",
         "| Slot | Path | Rows | Bytes | Dataset | Split | License |",
         "|------|------|------|-------|---------|-------|---------|",
@@ -738,11 +817,18 @@ def write_manifest() -> None:
     lines.append("")
     md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    log(f"Wrote {md}")
+    (OUT / "tier.json").write_text(
+        json.dumps({"tier": PACK_TIER, "kind": "hf_held_out_public"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    log(f"Wrote {md} + tier.json ({PACK_TIER})")
 
 
 def main() -> int:
     t0 = time.time()
+    if PACK_TIER not in ("public", "private"):
+        log(f"ERROR: PACK_TIER must be public|private, got {PACK_TIER!r}")
+        return 2
     OUT.mkdir(parents=True, exist_ok=True)
     # Clean previous pack content (keep dir).
     for sub in ("g1", "g2", "g5"):
@@ -751,7 +837,7 @@ def main() -> int:
             import shutil
 
             shutil.rmtree(p)
-    for f in ("MANIFEST.md", "manifest.json"):
+    for f in ("MANIFEST.md", "manifest.json", "tier.json"):
         (OUT / f).unlink(missing_ok=True)
 
     build_g1_prose()
@@ -763,12 +849,13 @@ def main() -> int:
     build_g5()
     write_manifest()
 
-    # Packed size check vs recipe cap (64 MiB).
+    # Packed size check vs recipe cap (default 256 MiB).
     import subprocess
 
     tar = subprocess.check_output(["tar", "-cz", "-C", str(OUT), "."])
-    log(f"Packed tar.gz size: {len(tar)} bytes (cap 64 MiB = {64*1024*1024})")
-    if len(tar) > 64 * 1024 * 1024:
+    cap = MAX_PACKED_MIB * 1024 * 1024
+    log(f"Packed tar.gz size: {len(tar)} bytes (cap {MAX_PACKED_MIB} MiB = {cap})")
+    if len(tar) > cap:
         log("ERROR: pack exceeds MAX_EVAL_ASSETS_PACKED_BYTES")
         return 2
     log(f"Done in {time.time()-t0:.1f}s → {OUT}")

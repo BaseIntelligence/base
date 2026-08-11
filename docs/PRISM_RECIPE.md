@@ -157,7 +157,7 @@ code inside an `unshare --net` subprocess) runs two fresh phases:
 | Phase | Env | What happens |
 |-------|-----|--------------|
 | `train` | `PRISM_PHASE=train` | contract checks → `build_model` (**350M param cap**: breach → terminal `CAP_EXCEEDED` payload, `Score(0)`) → seeded train stream (authoritative token counter) → G6 probe curve → checkpoint |
-| (gate) | — | parent prints `PHASE_TRAIN_DONE`, then holds on `$PRISM_EVAL_ASSETS_DIR/.ready`; the operator stages private eval assets + the secret seed **post-train only** (fail-closed: no `.ready` → error, never a silent public downgrade) |
+| (gate) | — | parent prints `PHASE_TRAIN_DONE`, then holds on `$PRISM_EVAL_ASSETS_DIR/.ready`; the operator stages the public HF held-out pack (default `eval_tier=public`) + generator seed **post-train only** (fail-closed: no `.ready` → error, never a silent downgrade to embedded `public_dev`) |
 | `eval` | `PRISM_PHASE=eval`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED` (env only, never on disk) | fresh subprocess → frozen-val bpb + the **G1–G8 battery** (`eval/` package: intrinsic, downstream, recall, reasoning, long-context, curve, inference, stability) → `METRICS_JSON` v2 |
 
 **METRICS_JSON v2** (`metrics_version: 2`): every v1 key (`bpb`,
@@ -169,7 +169,7 @@ frozen-val anchor), `tokenizer` (resolved spec, § *Tokenizer*),
 (miner-returned flat scalar dict — the **Zone B** self-report source,
 sanitized master-side, never scored), `pod_manifest` (nvidia-smi -q +
 netns facts), `netns`, `harness_files_sha256`, and on v3 runs `flow`,
-`eval_tier` (`"private"` | `"public_dev"`), `gate`, `battery`, `items`.
+`eval_tier` (`"public"` | `"private"` | `"public_dev"`), `gate`, `battery`, `items`.
 Cap breach: `cap_exceeded: true` + `n_params` with the `CAP_EXCEEDED`
 terminal line instead of `EVAL_OK`.
 

@@ -527,9 +527,12 @@ impl LiumClient {
                 "eval assets configured but harness never emitted the train-done marker — refusing public-tier result under PRISM_EVAL_ASSETS_DIR".into(),
             ));
         }
-        if staged && res.eval_tier.as_deref() != Some("private") {
+        // Staged packs default to `public` (HF held-out). `private` remains
+        // valid for optional contamination / secret-seed mirrors.
+        let tier_ok = matches!(res.eval_tier.as_deref(), Some("public") | Some("private"));
+        if staged && !tier_ok {
             return Err(LiumError::Exec(format!(
-                "eval assets staged but harness reported eval_tier={:?} (want \"private\")",
+                "eval assets staged but harness reported eval_tier={:?} (want \"public\"|\"private\")",
                 res.eval_tier
             )));
         }
@@ -1359,9 +1362,9 @@ mod tests {
 
     #[test]
     fn parse_metrics_output_gates_eval_ok_and_bpb() {
-        let good = "noise\nMETRICS_JSON={\"bpb\":2.5,\"tokens_seen\":1,\"wall_clock_seconds\":1.0,\"gpu_type\":null,\"notes\":\"n\",\"eval_tier\":\"private\"}\nEVAL_OK\n";
+        let good = "noise\nMETRICS_JSON={\"bpb\":2.5,\"tokens_seen\":1,\"wall_clock_seconds\":1.0,\"gpu_type\":null,\"notes\":\"n\",\"eval_tier\":\"public\"}\nEVAL_OK\n";
         let v = parse_metrics_output(good, 0, "").unwrap();
-        assert_eq!(v.eval_tier.as_deref(), Some("private"));
+        assert_eq!(v.eval_tier.as_deref(), Some("public"));
         assert!(parse_metrics_output("no ok line", 1, "boom")
             .unwrap_err()
             .to_string()

@@ -241,19 +241,24 @@ swappable for attribution, gated on a hidden-shape correctness suite).
 `prismlib/`, miner code in an `unshare --net` subprocess) runs two fresh
 subprocesses: `phase=train` trains and checkpoints, prints the
 `PHASE_TRAIN_DONE` marker, and the parent then holds on
-`$PRISM_EVAL_ASSETS_DIR/.ready` — the operator stages private eval assets
-plus the secret generator seed **only after** the train phase completes
-(over SSH on real Lium; a local dir on Sim). The eval phase starts as a
-fresh subprocess with `PRISM_EVAL_SECRET_SEED` in env only (never on disk;
-unset immediately after reading). No `.ready` within the wait budget →
-fail-closed error, **never** a silent downgrade to public anchors. Relevant
-env: `PRISM_PHASE`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED`.
+`$PRISM_EVAL_ASSETS_DIR/.ready` — the operator stages the **public HF
+held-out pack** (or optional private contamination mirrors) plus a
+generator seed **only after** the train phase completes (over SSH on real
+Lium; a local dir on Sim). The eval phase starts as a fresh subprocess with
+`PRISM_EVAL_SECRET_SEED` in env only (never on disk; unset immediately after
+reading). No `.ready` within the wait budget → fail-closed error, **never**
+a silent downgrade to embedded `public_dev` fixtures. Relevant env:
+`PRISM_PHASE`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED`,
+`PRISM_EVAL_TIER`.
 
-**Private tier (fail-closed).** With staged assets the battery realizes the
-`private` tier (held-out multi-domain bpb + fresh-crawl stream — the
-unmemorizable-by-construction component); without them it runs the
-`public_dev` tier on the published anchor family. The realized tier is
-recorded on the run (`eval_tier`).
+**Eval tiers (fail-closed staging).** With staged assets the battery
+defaults to `eval_tier=public` (full G1 domains + fresh FineWeb dump + G2/G5
+from public HF — held-out, not secret; build via
+`harness/eval/build_public_pack.py`). Optional `PRISM_EVAL_TIER=private`
+keeps secret contamination mirrors. Without staged assets the run uses
+`public_dev` (tiny embedded fixtures). The realized tier is recorded on the
+run (`eval_tier`). Overnight operator recipe:
+[`docs/runbooks/prism-overnight-battery.md`](runbooks/prism-overnight-battery.md).
 
 **The G1–G8 battery** (harness `eval/` package, all organizer-measured —
 Zone A `org.*` metrics):
