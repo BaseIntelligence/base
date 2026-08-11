@@ -30,9 +30,7 @@ use prism_challenge::{
     MemoryPrismStore, Orchestrator, OrchestratorConfig, PrismStore, CHALLENGE_ID, SCORING_VERSION,
 };
 use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
-use prism_lium_payer::{
-    allow_operator_lium_fallback, PayerBackendFactory, PayerKeyVault,
-};
+use prism_lium_payer::{allow_operator_lium_fallback, PayerBackendFactory, PayerKeyVault};
 use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
 use submission_gating::{
     watch_once, GatingStore, MemoryGatingStore, MetagraphCache, PgGatingStore,

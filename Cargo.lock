@@ -3798,6 +3798,7 @@ dependencies = [
  "prism-eval-store",
  "prism-intake",
  "prism-lium",
+ "prism-lium-payer",
  "prism-pipeline",
  "prism-playground",
  "prism-recipe",
@@ -3835,6 +3836,7 @@ dependencies = [
  "prism-challenge",
  "prism-intake",
  "prism-lium",
+ "prism-lium-payer",
  "prism-recipe",
  "prism-registry",
  "prism-review",
@@ -3920,6 +3922,13 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "prism-lium-payer"
+version = "0.1.0"
+dependencies = [
+ "prism-lium",
 ]
 
 [[package]]
