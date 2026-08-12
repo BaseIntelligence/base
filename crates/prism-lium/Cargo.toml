@@ -10,15 +10,18 @@ publish = false
 
 [dependencies]
 lium-rent-pool = { path = "../lium-rent-pool" }
+prism-artifacts = { path = "../prism-artifacts" }
+prism-lium-harness = { path = "../prism-lium-harness" }
+prism-lium-types = { path = "../prism-lium-types" }
 prism-recipe = { path = "../prism-recipe" }
+prism-tree = { path = "../prism-tree" }
 async-trait = "0.1"
-hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "process"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "process", "io-util"] }
 tracing = "0.1"
 
 [dev-dependencies]

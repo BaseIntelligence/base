@@ -1,0 +1,22 @@
+[package]
+name = "prism-tree"
+description = "PRISM miner source-tree delivery: caps, manifest, content-addressed tar blob, deterministic pod staging layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

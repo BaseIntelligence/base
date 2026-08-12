@@ -9,13 +9,19 @@ Telemetry hook contract (recipe >= 1.1.0): the harness provides a
 `report(loss=..., step=..., grad_norm=..., layer_stats=...)`
 periodically and `finish_evaluation()` to end the eval early — the harness
 scores the in-memory model either way.
+
+Tokenizer contract (recipe >= 1.3.0): use `ctx["tokenizer"]`. It is the
+tokenizer *this submission* declared (`tokenizer/` files or a
+`build_tokenizer(ctx)` hook) or the pinned fallback when it declares none,
+as here. Never `from_pretrained` a name yourself: the training subprocess has
+no network, and the eval phase re-resolves the same tokenizer from the
+submission.
 """
 
 import time
 
 import pyarrow.parquet as pq
 import torch
-from transformers import GPT2TokenizerFast
 
 try:
     import prism_telemetry
@@ -39,16 +45,25 @@ def _texts(path, n):
     return xs[:n]
 
 
+def _tokenizer(ctx):
+    """`ctx["tokenizer"]`, or the contract's pinned fallback (old harness)."""
+    tok = ctx.get("tokenizer")
+    if tok is None:
+        from prismlib.tokenizer import load_default
+
+        tok = load_default()
+    if getattr(tok, "pad_token", None) is None and getattr(tok, "eos_token", None) is not None:
+        tok.pad_token = tok.eos_token
+    return tok
+
+
 def train(model, ctx):
     """Recipe contract entrypoint: returns a metrics dict (val is harness-side)."""
     device = ctx["device"]
     torch.manual_seed(int(ctx["seed"]))
     guard = ctx.get("guard", lambda: None)
 
-    tok = GPT2TokenizerFast.from_pretrained("gpt2")
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
-
+    tok = _tokenizer(ctx)
     texts = _texts(ctx["dataset_path"], int(ctx.get("train_rows", 2048)))
     block = model.block if hasattr(model, "block") else 512
 

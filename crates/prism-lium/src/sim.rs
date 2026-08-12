@@ -6,9 +6,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use crate::error::{CostGuardrailError, LiumError};
-use crate::types::{Instance, InstanceSpec, Offer, RemoteExecResult};
 use crate::{EvalJobBackend, MIN_LIFETIME_HOURS};
+use prism_lium_types::{CostGuardrailError, LiumError};
+use prism_lium_types::{Instance, InstanceSpec, Offer, RemoteExecResult};
 
 /// In-memory sim backend for CI / e2e without billable Lium.
 pub struct SimLiumBackend {
@@ -46,21 +46,16 @@ impl SimLiumBackend {
 #[async_trait]
 impl EvalJobBackend for SimLiumBackend {
     async fn list_offers(&self, max_price_per_hour: Option<f64>) -> Result<Vec<Offer>, LiumError> {
+        let mk = |id: &str, gpu: &str, price: f64| Offer {
+            id: id.into(),
+            gpu_type: gpu.into(),
+            gpu_count: 1,
+            price_per_hour: price,
+            provider: "sim".into(),
+        };
         let mut offers = vec![
-            Offer {
-                id: "sim-blackwell".into(),
-                gpu_type: "NVIDIA RTX BLACKWELL B200".into(),
-                gpu_count: 1,
-                price_per_hour: 1.2,
-                provider: "sim".into(),
-            },
-            Offer {
-                id: "sim-a100".into(),
-                gpu_type: "NVIDIA A100-SXM4-80GB".into(),
-                gpu_count: 1,
-                price_per_hour: 0.5,
-                provider: "sim".into(),
-            },
+            mk("sim-blackwell", "NVIDIA RTX BLACKWELL B200", 1.2),
+            mk("sim-a100", "NVIDIA A100-SXM4-80GB", 0.5),
         ];
         if let Some(max) = max_price_per_hour {
             offers.retain(|o| o.price_per_hour <= max);
@@ -109,11 +104,15 @@ impl EvalJobBackend for SimLiumBackend {
         _instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
         // Deterministic fake BPB from code hash: lower is better quality for PRISM.
         let mut h = Sha256::new();
         h.update(architecture_py.as_bytes());
         h.update(training_py.as_bytes());
+        if let Some(b) = tree_blob {
+            h.update(b);
+        }
         let dig = h.finalize();
         let n = u64::from_be_bytes(dig[0..8].try_into().unwrap_or([0; 8]));
         // Map to BPB in (1.0, 5.0)
@@ -122,7 +121,7 @@ impl EvalJobBackend for SimLiumBackend {
         // telemetry plumbing (store rows, site-api series) as real Lium runs.
         let start = bpb + 2.0;
         let loss_series = (1..=5u64)
-            .map(|step| crate::types::TelemetryPoint {
+            .map(|step| prism_lium_types::TelemetryPoint {
                 step,
                 loss: start - (start - bpb) * (step as f64 / 5.0),
                 grad_norm: Some(1.0 / step as f64),
@@ -130,6 +129,14 @@ impl EvalJobBackend for SimLiumBackend {
                 layer_stats: None,
             })
             .collect();
+        // Optional fake-assets mode (E5): when the operator eval-assets env
+        // is set master-side, the sim mirrors the two-phase outcome
+        // (staged `public` pack tier) so staging control-flow is testable
+        // offline. Default stays v1-shaped.
+        let fake_assets = std::env::var("PRISM_EVAL_ASSETS_DIR")
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty());
+        let note_suffix = ["", " (fake public assets staged)"][usize::from(fake_assets)];
         Ok(RemoteExecResult {
             bpb,
             // Budget-plausible shape (not a stub): a 12M model early-stopping
@@ -138,15 +145,35 @@ impl EvalJobBackend for SimLiumBackend {
             tokens_seen: 1_048_576,
             wall_clock_seconds: 780.0,
             gpu_type: Some("SIM".into()),
-            notes: "sim-eval".into(),
+            notes: format!("sim-eval{note_suffix}"),
             n_params: Some(12_000_000),
             val_rows: Some(256),
-            telemetry: Some(crate::types::EvalTelemetry {
+            telemetry: Some(prism_lium_types::EvalTelemetry {
                 loss_series,
                 finish_reason: Some("finish_evaluation".into()),
                 report_count: 5,
             }),
+            // Sim stays v1-shaped: v2 fields are exercised by the receipt
+            // parsing tests and real Lium runs, not the offline backend.
+            metrics_version: None,
+            tokens_seen_source: None,
+            probe_curve: None,
+            pod_manifest: None,
+            netns: None,
+            harness_files_sha256: None,
+            eval_tier: fake_assets.then_some("public".into()),
+            extra: std::collections::BTreeMap::new(),
         })
+    }
+
+    async fn harvest_artifacts(
+        &self,
+        _instance_id: &str,
+        dest_dir: &std::path::Path,
+        seed: &[u8],
+        _n_params: Option<u64>,
+    ) -> Result<std::path::PathBuf, LiumError> {
+        prism_artifacts::write_sim_checkpoint(dest_dir, seed)
     }
 }
 
@@ -173,12 +200,49 @@ mod tests {
         let inst = b.provision(&spec).await.unwrap();
         assert!(!b.verify_terminated(&inst.id).await.unwrap());
         let r = b
-            .exec_eval(&inst.id, "def build_model(c): pass", "def train(m,c): pass")
+            .exec_eval(
+                &inst.id,
+                "def build_model(c): pass",
+                "def train(m,c): pass",
+                None,
+            )
             .await
             .unwrap();
         assert!(r.bpb > 1.0);
         b.terminate(&inst.id).await.unwrap();
         assert!(b.verify_terminated(&inst.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env mutation must be serialized across the awaits
+    async fn sim_fake_assets_mode_mirrors_public_tier() {
+        let _guard = crate::ASSETS_ENV_LOCK.lock().unwrap();
+        let b = SimLiumBackend::new();
+        std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
+        let r = b
+            .exec_eval(
+                "pod",
+                "def build_model(c): pass",
+                "def train(m,c): pass",
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(r.eval_tier.is_none());
+        assert_eq!(r.notes, "sim-eval");
+        std::env::set_var("PRISM_EVAL_ASSETS_DIR", "/tmp/sim-assets");
+        let r = b
+            .exec_eval(
+                "pod",
+                "def build_model(c): pass",
+                "def train(m,c): pass",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.eval_tier.as_deref(), Some("public"));
+        assert!(r.notes.contains("fake public assets"));
+        std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
     }
 
     #[tokio::test]

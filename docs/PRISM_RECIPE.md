@@ -1,11 +1,201 @@
-# PRISM recipe v1.0.2 — `prism-recipe-v1`
+# PRISM recipe v2.0.0 — AutoModel base + miner git diffs
 
-The official execution contract every miner submission is verified inside.
-Miners ship **two scripts only** (`architecture.py` + `training.py`); the
-harness and data pin are operator-owned. No third source file, no offline
-weights, no network reach at pod runtime beyond the pinned dataset pull.
+**Live contract:** recipe **`2.0.0`**. Miners submit a **unified diff against a
+pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) checkout** —
+not a free-form `architecture.py` / `training.py` project. Megatron-Bridge is
+**out of scope**. Legacy recipe **1.x** two-script / source-tree / training-only
+layouts are **rejected on live** once 2.0 is enabled (`400 recipe_version` /
+`unsupported_layout`). Local Sim may keep a tiny fixture patch for CI.
 
-## Contract
+Caps, FineWeb dataset pin, telemetry, two-phase train/eval, and the G1–G8
+battery from 1.4 remain operator-owned unless a later bump says otherwise.
+
+**Harness staging (pod).** Operator harness (`prismlib/automodel.py`) materialises
+the pin + applied tree under `$PRISM_WORKDIR/automodel/` and invokes the train
+entry (default `nemo_automodel/recipes/llm/train_ft.py`, overridable via
+`prism.toml`). Env contract shared with crate `prism-automodel`:
+`PRISM_AUTOMODEL_APPLIED_DIR` (preferred), or `PRISM_AUTOMODEL_PIN_DIR` +
+`PRISM_AUTOMODEL_PATCH_PATH`, plus `PRISM_AUTOMODEL_BASE` / optional
+`PRISM_AUTOMODEL_PRISM_TOML`. CI/Sim uses `PRISM_AUTOMODEL_FIXTURE=1` with the
+tiny `FIXTURE_PIN` + `happy.patch` — fixture markers are **not** proof of a
+real NVIDIA AutoModel train.
+
+Historical 1.x contract text is preserved below under
+[*Legacy recipe 1.x*](#legacy-recipe-1x-historical--rejected-on-live-under-20)
+for leaf/audit continuity.
+
+---
+
+## Recipe 2.0.0 — product contract
+
+```text
+pinned AutoModel commit ──┐
+                          ├─► git apply (fail-closed) ─► materialized tree
+miner unified diff ───────┘         │
+                                    ├─► diff view + agentic (delta-focused)
+                                    └─► Lium pod train / eval (harness wrap)
+```
+
+1. **Operator pin** — recipe freezes AutoModel at a tagged git commit plus a
+   content-addressed archive hash (tarball staged like today’s FineWeb pin).
+2. **Miner submit** — ZIP (or JSON equivalent) with `automodel.base` +
+   `automodel.patch` (+ optional `prism.toml`).
+3. **Apply fail-closed** — master applies the patch onto a clean pin checkout;
+   reject on conflict / path escape / binary blobs / oversized diff.
+4. **Visibility** — persist full unified diff, `diffstat`, and file
+   classification (`arch` / `trainer` / `data` / `other`); expose
+   `GET /v1/submissions/{id}/diff` (site complete-view panel).
+5. **Allowed novelty** — new model modules / configs under the AutoModel
+   layout are OK. Trainer edits OK but **high scrutiny**.
+6. **Cheat focus on the delta** — agentic + AST primarily on diff hunks and
+   touched files (not the whole AutoModel tree). Harness gates remain:
+   netns, telemetry hooks, budget, causal screen, no eval-asset reads in train.
+7. **Harness wrap** — pod still owns dataset pin, `prism_telemetry`,
+   wall-clock/step caps, eval battery. Miner code must call into AutoModel’s
+   train entry under those constraints (thin operator adapter — not miner-owned).
+
+### AutoModel pin metadata (apply-lib fields)
+
+Operator freeze writes these fields into the recipe descriptor (surfaced on
+`GET /v1/recipe` as `automodel_*` keys). Live pin identity is frozen in
+`crates/prism-automodel` (`AUTOMODEL_PIN`) including the content SHA of the
+staged checkout.
+
+| Field (JSON on `/v1/recipe`) | Type | Live / notes |
+|------------------------------|------|----------------|
+| `automodel_pin_id` | string | `automodel@v0.5.0` — tag-shaped id miners must echo in `automodel.base` |
+| `automodel_repo_url` | string | `https://github.com/NVIDIA-NeMo/Automodel` |
+| `automodel_git_ref` | string | `v0.5.0` (informational tag label) |
+| `automodel_git_commit` | 40-hex | `d02f49cb314554715aabb97e8dba6599c9f6e9e0` — exact commit the pin checkout must match |
+| `automodel_content_sha256` | 64-hex | SHA-256 of the staged pin tree (`tree_content_sha256`; `.git`/dotfiles skipped) |
+| archive name (ops only) | string | suggested `automodel@v0.5.0.tar.zst` (or `.tar.gz`) under the operator pin store |
+
+**Operator staging (required on live):** set `PRISM_AUTOMODEL_PIN_DIR` to a
+clean checkout of `automodel_git_commit`. Use
+`deploy/scripts/stage-automodel-pin.sh` (clone + hash verify). Intake
+fail-closes when the dir is missing or the content SHA mismatches.
+
+**CI / Sim fixture (not live):** pin id `automodel@fixture-v1` + vendored tree
+`crates/prism-automodel/fixtures/automodel-pin/` + `fixtures/patches/happy.patch`.
+Accepted **only** when `PRISM_AUTOMODEL_FIXTURE=1`. Fixture markers are not
+proof of a real NVIDIA AutoModel train.
+
+**Example shape (live constants):**
+
+```text
+automodel_pin_id         = automodel@v0.5.0
+automodel_repo_url       = https://github.com/NVIDIA-NeMo/Automodel
+automodel_git_ref        = v0.5.0
+automodel_git_commit     = d02f49cb314554715aabb97e8dba6599c9f6e9e0
+automodel_content_sha256 = f8af64ef572e2e3634dcbae7b351fdcd3c8d458caf2fe974aff26d301a11d838
+```
+
+Rules:
+
+- Submit `automodel.base` **must equal** the recipe’s current
+  `automodel_pin_id` (byte-identical ASCII, no whitespace). Mismatch →
+  intake reject (`pin`).
+- `submission_id` hashes **`pin_id` + `0x00` + patch bytes** (not ephemeral
+  keys).
+- Apply-lib resolves the live pin on production; the CI fixture pin requires
+  `PRISM_AUTOMODEL_FIXTURE=1`. Live always verifies `content_sha256` against
+  `PRISM_AUTOMODEL_PIN_DIR` before `git apply`.
+- Local/CI fixture env must not be set on live hosts.
+
+### Submission ZIP layout (recipe ≥ 2.0.0)
+
+Preferred: `application/zip` (or JSON with the same members / `zip_base64`).
+
+```text
+automodel.base          # required — single-line pin id (ASCII), must match recipe pin_id
+automodel.patch         # required — unified diff vs that pin (git diff / format-patch style)
+prism.toml              # optional — entry / recipe knobs (train script path, model config)
+```
+
+| Member | Required | Notes |
+|--------|----------|-------|
+| `automodel.base` | yes | Exact recipe `automodel_pin_id` (live: `automodel@v0.5.0`; CI fixture: `automodel@fixture-v1`). Trailing newline OK; no other files aliased to this name. |
+| `automodel.patch` | yes | Text unified diff against the pin tree. No binary blobs; size budgets enforced in intake (fail-closed). |
+| `prism.toml` | no | Optional knobs: `entry` / train script path under the applied tree, model config path. Unknown keys ignored or rejected per intake strictness. |
+
+**Not accepted on live (recipe ≥ 2.0.0):**
+
+- Two-script ZIPs (`architecture.py` + `training.py`)
+- Recipe 1.3+ source-tree ZIPs (`train.py` / `kernels/` / … without AutoModel members)
+- Training-only `training.py` + `arch_id` / `X-Prism-Arch-Id`
+- Megatron-Bridge or any non-AutoModel framework tree
+
+Those layouts return **`400 unsupported_layout`** (or **`400 recipe_version`**
+when the advertised recipe is ≥ 2.0.0 and the payload declares/implies 1.x).
+
+### Miner workflow (normative)
+
+1. Clone the pin: checkout `automodel_git_commit` from `automodel_repo_url`
+   (or extract the staged archive and verify `automodel_content_sha256` once
+   set).
+2. Edit under the AutoModel layout (new modules / configs OK).
+3. Produce a unified diff: `git diff <automodel_git_commit>` (or equivalent
+   `git format-patch` series folded into one `automodel.patch`).
+4. Pack ZIP with `automodel.base` = recipe `automodel_pin_id`,
+   `automodel.patch`, optional `prism.toml`.
+5. `POST /v1/submissions` with miner hotkey + **`X-Lium-Api-Key`** (BYOK;
+   unchanged from 1.x live).
+
+### Apply / reject (fail-closed)
+
+Master applies `automodel.patch` onto a clean pin checkout. Reject when:
+
+| Condition | Typical code / note |
+|-----------|---------------------|
+| Patch does not apply cleanly | patch apply failure (conflict / missing context) |
+| Path escape / touches outside allowlisted roots | hard reject |
+| Binary blobs in patch | hard reject |
+| Oversized diff / too many files | hard reject (budgets in intake) |
+| Wrong / unknown `automodel.base` | pin mismatch |
+| Legacy 1.x layout | `unsupported_layout` / `recipe_version` |
+| Removes or disables telemetry / introduces network exfil / eval-set leakage | anti-cheat hard reject |
+
+### Caps that carry forward (unchanged unless bumped)
+
+| Cap | Value |
+|-----|-------|
+| Train wall clock | 6.0 h per submission |
+| Pod lifetime | 7.0 h (train + bootstrap margin) |
+| Hard step cap | 20 000 (config may only lower) |
+| Model parameters | ≤ **350 000 000** |
+| Dataset pin | FineWeb-Edu shard below (*Pinned dataset*) |
+| GPU funding | Miner `X-Lium-Api-Key` on live |
+
+### Recipe pin hex
+
+`recipe_pin_hex()` remains SHA-256 over the versioned descriptor (URL, dataset
+pin, AutoModel pin fields, budget, caps, harness bytes, recipe version) —
+surfaced on `GET /v1/recipe` and `GET /v1/status`. Any change to these
+parameters **must** bump the recipe version string so old leaves stay
+unambiguous.
+
+---
+
+## Legacy recipe 1.x (historical — rejected on live under 2.0)
+
+> The sections below document harness **`RECIPE_VERSION 1.4.0`** and earlier
+> miner layouts (`architecture.py` + `training.py`, source-tree ZIP,
+> training-only + `arch_id`). They remain for audit / leaf interpretation.
+> **Do not submit 1.x layouts to live once recipe 2.0.0 is advertised.**
+
+# PRISM recipe v1.0.2 — `prism-recipe-v1` (harness `RECIPE_VERSION 1.4.0`)
+
+The official execution contract every miner submission was verified inside
+under 1.x. Miners shipped **two scripts only** (`architecture.py` +
+`training.py`) — or, since recipe **1.3.0**, a **source-tree ZIP** (see
+*Source-tree submissions* below); the harness and data pin are
+operator-owned. No offline weights, no network reach at pod runtime beyond
+the pinned dataset pull. Recipe **1.4.0** made the tokenizer miner-chosen
+and replaced the G5 long-context scored path with community protocols +
+natural documents under a **pretrain-only** rule (base LM completion /
+few-shot; no IFT, chat templates, or LLM judges on ranked metrics).
+
+## Contract (1.x)
 
 ```python
 # architecture.py
@@ -43,6 +233,9 @@ The harness captures the series into `METRICS_JSON.telemetry.loss_series`
 contract violation**: review fails the submission
 (`missing_telemetry_hooks` cheat code, zero score, terminal — no retry).
 
+Under 2.0 the same telemetry contract is enforced via the harness wrap around
+the AutoModel entry (miner patches must not remove or disable hooks).
+
 ## Causal next-token contract
 
 Val scoring is next-token CE → BPB on a frozen cut. Architectures that densify
@@ -52,6 +245,57 @@ position `t` read the label at `t+1` — that is a hard cheat
 (`non_causal_label_leak`), caught by the pre-pod static screen before Lium
 rent. Channel mixers and masked causal attention / causal conv remain allowed.
 
+## Tokenizer (submitted, not imposed)
+
+The tokenizer is **part of the submission**. The harness resolves it once per
+phase and hands it to miner code as `ctx["tokenizer"]`, with its vocab at
+`ctx["vocab_size"]` (size your embedding from that key, not from a constant).
+Resolution order — first match wins, always offline:
+
+| Order | Declaration | Notes |
+|-------|-------------|-------|
+| 1 | `tokenizer/` files in a source-tree ZIP | staged under `submission/tokenizer/` on the pod and loaded with `AutoTokenizer.from_pretrained(dir, local_files_only=True)`; ≤ 12 files, ≤ 8 MiB total (admits a real ~1.4 MiB HF `tokenizer.json`), extensions `json/txt/model/vocab/merges/bpe` |
+| 2 | `def build_tokenizer(ctx)` in `architecture.py` | code hook path. Must sit beside `build_model`: the eval phase imports that module only, so a hook in `training.py` is a hard intake and in-pod error, never a silent fallback. Gets a ctx without harness internals; build/train/wrap whatever you like, offline |
+| 3 | pinned fallback `gpt2` | what pre-1.4 submissions already got — a **default**, not a rule. Warmed into the pod HF cache by the parent before the netns child starts |
+
+The miner subprocess runs under `unshare --net`: a tokenizer that would need a
+download fails closed with a clear error instead of stalling inside
+`transformers`. Never call `from_pretrained("<hub id>")` yourself.
+
+Every resolved tokenizer is validated before your code sees it — callable,
+`decode`, vocab in `[256, 262144]`, all probe ids inside that vocab, exact
+encode/decode roundtrip on an ASCII probe — and fingerprinted (sha256 over
+the ids of a fixed probe corpus). The train phase stores that fingerprint in
+the checkpoint; the eval phase re-resolves the tokenizer and refuses to score
+a run whose tokenizer does not reconstruct identically. `METRICS_JSON` carries
+the resulting spec under `tokenizer`
+(`{source, id, class, vocab_size, probe_tokens, fingerprint}`).
+
+Minimal interface a tokenizer must satisfy (a byte-level tokenizer in ~30
+lines qualifies):
+
+```python
+tok(text, add_special_tokens=False)["input_ids"] -> list[int]
+tok.decode(ids) -> str                # roundtrips plain ASCII
+len(tok) or tok.vocab_size -> int     # 256 .. 262144
+tok.eos_token_id -> int | None        # document separator in the train stream
+```
+
+**Fairness.** Different vocabularies change how text is split, not the unit of
+comparison: the tokenizer-neutral number is **bits per byte** — total bits
+over the UTF-8 bytes of the scored region — reported as `bits_per_byte` in
+`METRICS_JSON` and as `g1.bits_per_byte.*` beside every `g1.bpb.*` key in the
+battery group view. Scored G1 composite anchors are `org.g1.bits_per_byte_*`
+(roll-up maps those internals). Historical per-token `g1.bpb.*` stays in the
+group view for debugging; leaf v2 `bpb` is still bits/token. Fill measured
+`reference` values with `harness/eval/calibrate_anchors.py` after E6 baseline
+GPU runs. Long-context length targets are counted in tokens of the submitted
+tokenizer.
+
+> **2.0 note:** tokenizer resolution under AutoModel patches is harness-defined
+> (offline HF / AutoModel paths inside the applied tree). Do not assume the
+> 1.x `build_tokenizer` / `tokenizer/` ZIP rules still apply as intake layout.
+
 ## Training-only submissions (recipe 1.2.0)
 
 Instead of shipping both scripts, a miner may submit `training.py` +
@@ -59,6 +303,116 @@ Instead of shipping both scripts, a miner may submit `training.py` +
 [`PRISM.md`](PRISM.md) § Architecture registry + competition). The master
 pulls `architecture.py` from the registry; the same harness contract applies
 unchanged. Published archs: `GET /v1/architectures`.
+
+> **2.0 conflict:** live 2.0 rejects this layout (`unsupported_layout`). A
+> 2.0-native architecture-competition model (if any) is **not** specified in
+> this freeze — see open conflicts in the rollout plan.
+
+## Source-tree submissions (recipe 1.3.0 — v3)
+
+A miner may submit the full program as a ZIP instead of two scripts:
+`zip_base64` in the JSON intake body, or `application/zip` with the
+`X-Miner-Hotkey` header (source-tree ZIPs are rejected on the raw-zip path
+with a pointer to `zip_base64`, which validates and retains the full tree).
+
+Layout:
+
+```text
+prism.toml            # optional manifest: entry = "train.py" (default entry;
+                      #   `training.py` keeps the legacy two-script layout valid)
+architecture.py       # seam: def build_model(ctx)
+train.py              # seam: def train(model, ctx) (or training.py)
+count_params.py       # optional static parameter-count check (prints one int)
+kernels/<op>.py       # optional custom ops per KERNEL_INTERFACE.md
+tokenizer/*.json      # tokenizer files (see Tokenizer above; staged on the pod)
+vendor.lock           # optional vendored-dependency hash lock
+```
+
+The validated tree is persisted as a content-addressed USTAR blob and
+staged onto the Lium pod under `submission/` (tar-over-SSH-stdin; never
+base64-in-argv). Seam projections remain in the DB for copy-gate /
+similarity; the harness loads the real tree so sibling imports
+(`import kernels`) and `tokenizer/` resolve.
+
+Validation at intake (`prism_recipe::zip_submit`): file count / per-file /
+total-size budgets (128 files, 4 MiB/file, 16 MiB total), UTF-8 seam
+projections (`architecture.py` must define
+`build_model(`, the entry must define `train(`), tokenizer declaration rules
+(§ *Tokenizer*), and a **banned-pattern scan** (prebuilt binaries, `ctypes`,
+network/process/threads escapes, …) —
+one shared list with the harness-side `prismlib/cheatguard.py` AST audit,
+which re-screens the tree in-pod before train and again post-eval. The
+canonical tree sha-256 is recorded; `kernels/` trees are attribution- and
+hidden-shape-suite eligible.
+
+## Two-phase pod flow + eval battery (recipe 1.3.0 — v3)
+
+The multi-file harness (`main.py` entrypoint + `prismlib/` modules, miner
+code inside an `unshare --net` subprocess) runs two fresh phases:
+
+| Phase | Env | What happens |
+|-------|-----|--------------|
+| `train` | `PRISM_PHASE=train` | contract checks → `build_model` (**350M param cap**: breach → terminal `CAP_EXCEEDED` payload, `Score(0)`) → seeded train stream (authoritative token counter) → G6 probe curve → checkpoint |
+| (gate) | — | parent prints `PHASE_TRAIN_DONE`, then holds on `$PRISM_EVAL_ASSETS_DIR/.ready`; the operator stages the public HF held-out pack (default `eval_tier=public`) + generator seed **post-train only** (fail-closed: no `.ready` → error, never a silent downgrade to embedded `public_dev`) |
+| `eval` | `PRISM_PHASE=eval`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED` (env only, never on disk) | fresh subprocess → frozen-val bpb + the **G1–G8 battery** (`eval/` package: intrinsic, downstream, recall, reasoning, long-context, curve, inference, stability) → `METRICS_JSON` v2 |
+
+**METRICS_JSON v2** (`metrics_version: 2`): every v1 key (`bpb`,
+`tokens_seen`, `wall_clock_seconds`, `gpu_type`, `notes`, `val_rows`,
+`n_params`, `recipe`, `telemetry`) plus `bits_per_byte` (tokenizer-neutral
+frozen-val anchor), `tokenizer` (resolved spec, § *Tokenizer*),
+`tokens_seen_source`
+(`"train_stream"` | `"legacy"`), `probe_curve` (G6), `train_metrics`
+(miner-returned flat scalar dict — the **Zone B** self-report source,
+sanitized master-side, never scored), `pod_manifest` (nvidia-smi -q +
+netns facts), `netns`, `harness_files_sha256`, and on v3 runs `flow`,
+`eval_tier` (`"public"` | `"private"` | `"public_dev"`), `gate`, `battery`, `items`.
+Cap breach: `cap_exceeded: true` + `n_params` with the `CAP_EXCEEDED`
+terminal line instead of `EVAL_OK`.
+
+**`battery` (v3 composite contract)**: an object with four members —
+`groups` (nested per-group debug view `{status, module, metrics}` with
+internal `gN.family.tag` keys), `metrics` (the **flat canonical map** the
+composite ingests: `org.<group>.<name>` → bare float or
+`{value, clusters}` where `clusters` are per-template means — the units of
+randomization for the clustered bootstrap; a metric that was never
+measured is **absent**, never fabricated), `mirrors` (contamination-gap
+pairs `[{group, metric, public, mirror}]` for `g2`/`g4`: the same metric
+scored on the public dev-seed/asset family vs the private mirror family;
+in the `public_dev` tier no private assets exist so each pair is
+degenerate — gap 0, honestly labelled), and `tier` (echoes `eval_tier`).
+`eval/rollup.py` is the single reconciliation point between internal
+metric names and the anchor set's `org.*` keys
+(`crates/prism-recipe/anchors/v0.json`); ingestion
+(`prism-eval-store/src/finalize.rs`) requires the flat map and skips the
+composite when it is absent (fail-closed in composite mode).
+
+**G5 long-context (recipe ≥ 1.4.0, pretrain-only).** Ranked metrics come
+from RULER + BABILong + LongBench-v2 MCQ + HELMET RAG few-shot base —
+short EM / choice logprob only. Length grids are in tokens of
+`ctx["tokenizer"]` (4k–32k; 64k on RULER `niah_mk`+`vt`). Canonical keys:
+`org.g5.ruler_acc` (0.35), `org.g5.babilong_acc` (0.25),
+`org.g5.natural_mcq_acc` (0.15), `org.g5.helmet_rag_acc` (0.15),
+`org.g5.lstar` (0.10). L* is the highest length L on pooled
+RULER+BABILong `L{N}.acc` means with `acc(L) ≥ 0.9×acc(L_min)` and
+`acc(L) ≥ 0.25` (else `0`), normalized as `efficiency_log_ratio` over
+`[4096, 65536]`. Natural slices participate in the G5 mirror gap. Open-gen
+sum/cite, chat, and judge protocols stay out of the ranked path.
+
+## Reference baselines (recipe 1.3.0 — v3 anchors)
+
+Two reference submissions ship in-repo (`crates/prism-recipe/baselines/`,
+embedded as `prism_recipe::baselines`): **Transformer++**
+(`transformer_pp`: modern GPT at the 350M cap) and **hybrid delta**
+(`hybrid_delta`: 3:1 gated delta-net/attention hybrid). Each tree carries
+`architecture.py` + `training.py` (contract-satisfying), `count_params.py`
+(prints the static parameter count as a single integer), and `NOTES.md`.
+They are the reference points the v3 anchor set (`anchors/v0.json`,
+currently placeholder) is measured against before any
+`PRISM_SCORING_MODE=composite` flip, and the attribution reference family.
+
+> **2.0 note:** 1.x baselines are not AutoModel patch fixtures. CI will ship a
+> separate fixture patch that applies cleanly to the 2.0 pin (apply-lib /
+> ci-docs todos).
 
 ## Pinned dataset
 
@@ -81,7 +435,7 @@ score.
 | Train wall clock | 6.0 h per submission |
 | Pod lifetime | 7.0 h (train + bootstrap margin) |
 | Hard step cap | 20 000 (config may only lower) |
-| Source size | 128 KiB per script |
+| Source size | 128 KiB per script (two-script intake); tree budgets per `zip_submit` |
 | Model parameters | ≤ **350 000 000** after `build_model` (`MAX_PARAMS`) |
 | `train_rows` (descriptor) | **2048** — baseline / default cut advertised on `GET /v1/recipe` |
 | `val_rows` | **256** — frozen val cut scored by the harness (not miner-chosen) |
@@ -108,7 +462,11 @@ currently echoes `TRAIN_ROWS` (2048) even when telemetry `layer_stats.tokens`
 shows billions. Changing that field would alter the recipe pin (harness bytes
 are hashed) — coordinate a version bump if/when fixing it.
 
-## Recipe pin
+Caps are **unchanged** in v3 (350M params, 6h). The parameter-cap breach
+semantics changed in 1.3.0: it is a terminal `Score(0)` (`CAP_EXCEEDED`),
+not an infra retry.
+
+## Recipe pin (1.x descriptor)
 
 `recipe_pin_hex()` = SHA-256 over the versioned descriptor (URL, dataset pin,
 budget, caps, harness bytes, recipe version) — surfaced on `GET /v1/recipe`
@@ -160,3 +518,12 @@ legitimate. Verdicts: `Original` / `Suspicious` / `Copied`, with a similarity
 score and evidence line — all stored append-only in `prism_stage_event`.
 Generic modern-LM components (RMSNorm, RoPE, SwiGLU, …) must not appear as
 copy evidence; parsers coerce those false positives to `Original`.
+
+> **2.0:** copy / similarity use a **patch fingerprint** (`patch_sha256` in the
+> store architecture surface) plus **touched-file AST** (concatenated post-apply
+> `.py` bodies), not the whole AutoModel tree. Agentic primaries are
+> `.prism/automodel.patch`, `.prism/diffstat.json`, `.prism/review_brief.md`,
+> and touched paths only. Trainer/data-class edits get higher scrutiny in the
+> brief + domain rules; static screens hard-reject telemetry disable, network
+> exfil, and eval-set leakage patterns in added hunk lines. Harness gates
+> (netns, telemetry wrap, budget, causal screen) stay unchanged.

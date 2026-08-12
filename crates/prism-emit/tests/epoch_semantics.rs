@@ -70,6 +70,7 @@ fn scored_row(id: &str, hotkey: &str, accept_epoch: u64, score: FinalScore) -> S
         status: Stage::Terminated,
         architecture_py: "a".into(),
         training_py: "t".into(),
+        tree_blob: None,
         label: None,
         pod_id: None,
         pod_provider: None,

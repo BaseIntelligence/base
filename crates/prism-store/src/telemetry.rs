@@ -5,9 +5,9 @@
 //! challenge the same way `prism_stage_event` is.
 
 use db::PgPool;
-use prism_lium::TelemetryPoint;
+use prism_lium_types::TelemetryPoint;
 
-use crate::store::StoreError;
+use prism_store_types::StoreError;
 
 /// Replace the whole series for one submission (idempotent re-score/retry).
 ///
@@ -46,19 +46,6 @@ pub async fn replace_telemetry(
             .map_err(|e| StoreError::Backend(e.to_string()))?;
     }
     tx.commit()
-        .await
-        .map_err(|e| StoreError::Backend(e.to_string()))?;
-    Ok(())
-}
-
-/// Delete the series for one submission (retry reset path).
-///
-/// # Errors
-/// SQL error.
-pub async fn delete_telemetry(pool: &PgPool, submission_id: &str) -> Result<(), StoreError> {
-    sqlx::query("DELETE FROM prism_telemetry WHERE submission_id = $1")
-        .bind(submission_id)
-        .execute(pool)
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
     Ok(())

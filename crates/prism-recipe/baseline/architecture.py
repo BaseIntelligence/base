@@ -41,6 +41,11 @@ class TinyGPT(nn.Module):
 
 
 def build_model(ctx):
-    """Recipe contract entrypoint. ctx carries device/seed/caps (unused here)."""
+    """Recipe contract entrypoint. ctx carries device/seed/caps.
+
+    `ctx["vocab_size"]` is the vocab of the tokenizer the harness resolved for
+    this submission (recipe >= 1.3.0) — size embeddings from it rather than
+    assuming the pinned fallback's 50257.
+    """
     torch.manual_seed(int(ctx.get("seed", 0)))
-    return TinyGPT()
+    return TinyGPT(vocab=int(ctx.get("vocab_size", 50257)))

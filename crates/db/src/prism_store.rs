@@ -30,6 +30,8 @@ pub struct PrismSubmissionRow {
     pub architecture_py: String,
     /// training.py.
     pub training_py: String,
+    /// Packed source-tree blob (migration 0018); null for two-script rows.
+    pub tree_blob: Option<Vec<u8>>,
     /// Pod id.
     pub pod_id: Option<String>,
     /// Pod provider.
@@ -75,6 +77,8 @@ pub struct NewPrismSubmission<'a> {
     pub architecture_py: &'a str,
     /// training.py.
     pub training_py: &'a str,
+    /// Packed source-tree blob.
+    pub tree_blob: Option<&'a [u8]>,
 }
 
 /// Stage event entry.
@@ -90,8 +94,8 @@ pub struct NewPrismStageEvent<'a> {
 
 /// Column list shared by all row reads.
 const COLS: &str = "id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, \
-    architecture_py, training_py, pod_id, pod_provider, receipt_json, metrics_json, bpb, \
-    review_json, similarity_json, kind, score, absence_reason, retry_count, error_detail";
+    architecture_py, training_py, tree_blob, pod_id, pod_provider, receipt_json, metrics_json, \
+    bpb, review_json, similarity_json, kind, score, absence_reason, retry_count, error_detail";
 
 /// Insert the queued row.
 ///
@@ -103,8 +107,9 @@ pub async fn insert_prism_submission(
 ) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO prism_submission \
-         (id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, architecture_py, training_py) \
-         VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8)",
+         (id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, architecture_py, \
+          training_py, tree_blob) \
+         VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9)",
     )
     .bind(n.id)
     .bind(n.miner_hotkey)
@@ -114,15 +119,13 @@ pub async fn insert_prism_submission(
     .bind(n.label)
     .bind(n.architecture_py)
     .bind(n.training_py)
+    .bind(n.tree_blob)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-/// Fetch one row.
-///
-/// `query_as` (not the macro) because the workspace denies `sqlx prepare` on
-/// flaky networks: this file uses the runtime-checked lane like `miner_endpoint`.
+/// Fetch one row (`query_as` runtime-checked lane; no sqlx prepare).
 ///
 /// # Errors
 /// SQL error.
@@ -221,7 +224,9 @@ pub async fn update_prism_submission(
     Ok(row)
 }
 
-/// Reset a row for retry: clears exec/score fields and re-queues.
+/// Reset a row for retry: clears review/score fields and re-queues.
+/// Completed measurements are retained for post-run review retries; rows
+/// without metrics drop stale pod/exec fields and re-provision cleanly.
 /// When `bump_retry`, increments `retry_count` (manual/auto infra). When
 /// false, keeps attempts (Lium 429 autonomous requeue — do not burn budget).
 ///
@@ -234,8 +239,11 @@ pub async fn reset_prism_submission_for_retry(
 ) -> Result<PrismSubmissionRow, DbError> {
     let q = format!(
         "UPDATE prism_submission SET \
-            status = 'queued', pod_id = NULL, pod_provider = NULL, \
-            receipt_json = NULL, metrics_json = NULL, bpb = NULL, \
+            status = 'queued', \
+            pod_id = CASE WHEN metrics_json IS NULL THEN NULL ELSE pod_id END, \
+            pod_provider = CASE WHEN metrics_json IS NULL THEN NULL ELSE pod_provider END, \
+            receipt_json = CASE WHEN metrics_json IS NULL THEN NULL ELSE receipt_json END, \
+            bpb = CASE WHEN metrics_json IS NULL THEN NULL ELSE bpb END, \
             review_json = NULL, similarity_json = NULL, \
             kind = NULL, score = NULL, absence_reason = NULL, emitted_epoch = NULL, \
             error_detail = NULL, \

@@ -13,6 +13,7 @@ base64 = "0.22"
 bundle = { path = "../bundle" }
 challenge-agentic = { path = "../challenge-agentic" }
 hex = "0.4"
+prism-automodel = { path = "../prism-automodel" }
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }
 prism-recipe = { path = "../prism-recipe" }
@@ -26,6 +27,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

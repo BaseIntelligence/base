@@ -26,10 +26,11 @@ use challenge_agentic::{AgenticBackend, OpenRouterAgent, SimAgent};
 use challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
 use prism_challenge::{
-    submission_router, AppState, DbPrismStore, MemoryPrismStore, Orchestrator, OrchestratorConfig,
-    PrismStore, CHALLENGE_ID, SCORING_VERSION,
+    submission_router, AppState, DbEvalStore, DbPrismStore, EvalStore, MemoryEvalStore,
+    MemoryPrismStore, Orchestrator, OrchestratorConfig, PrismStore, CHALLENGE_ID, SCORING_VERSION,
 };
 use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
+use prism_lium_payer::{allow_operator_lium_fallback, PayerBackendFactory, PayerKeyVault};
 use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
 use submission_gating::{
     watch_once, GatingStore, MemoryGatingStore, MetagraphCache, PgGatingStore,
@@ -106,6 +107,9 @@ struct Cli {
         global = true
     )]
     gating_watch_secs: u64,
+    /// Operator bearer tokens file. Unset → retry/admin/playground answer 503.
+    #[arg(long, env = "PRISM_ADMIN_TOKENS_FILE", global = true)]
+    admin_tokens_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -209,13 +213,15 @@ fn load_ssh_public_key() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-type BackendBundle = (Arc<dyn EvalJobBackend>, String, Vec<String>, f64);
+type BackendBundle = (
+    Arc<dyn EvalJobBackend>,
+    String,
+    Vec<String>,
+    LiumSshConfig,
+    Option<String>,
+);
 
-fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
-    if force_sim || load_lium_api_key().is_none() {
-        return Ok((Arc::new(SimLiumBackend::new()), "sim".into(), vec![], 0.0));
-    }
-    let api_key = load_lium_api_key().ok_or_else(|| "LIUM_API_KEY missing".to_string())?;
+fn live_ssh_config() -> LiumSshConfig {
     let mut ssh = LiumSshConfig::default_live();
     if let Ok(v) = std::env::var("PRISM_SSH_ATTEMPTS") {
         ssh.ssh_attempts = v.parse().unwrap_or(ssh.ssh_attempts);
@@ -234,15 +240,47 @@ fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
             ssh.private_key_path = Some(default);
         }
     }
-    let client = LiumClient::with_config(api_key, prism_challenge::LIUM_API_BASE_URL, ssh)
-        .map_err(|e| e.to_string())?;
+    ssh
+}
+
+fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
+    let ssh = live_ssh_config();
+    // Live path: SSH must exist so miner-funded pods can still be operated by master.
+    // Operator LIUM_API_KEY is optional when miners bring X-Lium-Api-Key (BYOK).
+    if force_sim {
+        return Ok((
+            Arc::new(SimLiumBackend::new()),
+            "sim".into(),
+            vec![],
+            ssh,
+            None,
+        ));
+    }
     let pk = load_ssh_public_key()
         .ok_or("live Lium requires SSH public key (LIUM_SSH_PUBLIC_KEY_FILE or default)")?;
+    if let Some(api_key) = load_lium_api_key() {
+        let client = LiumClient::with_config(
+            api_key.clone(),
+            prism_challenge::LIUM_API_BASE_URL,
+            ssh.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok((
+            Arc::new(client),
+            "lium".into(),
+            vec![pk],
+            ssh,
+            Some(api_key),
+        ));
+    }
+    // Miner-BYOK only: placeholder backend is unused when the vault supplies a key.
+    tracing::info!("lium mode: miner-funded only (no operator LIUM_API_KEY)");
     Ok((
-        Arc::new(client),
+        Arc::new(SimLiumBackend::new()),
         "lium".into(),
         vec![pk],
-        1.0, // not used by orchestrator.
+        ssh,
+        None,
     ))
 }
 
@@ -278,7 +316,13 @@ pub(crate) fn build_agentic() -> (Arc<dyn AgenticBackend>, &'static str) {
     (Arc::new(SimAgent::new()), "sim")
 }
 
-async fn build_store() -> (Arc<dyn PrismStore>, Arc<dyn GatingStore>, String) {
+#[allow(clippy::type_complexity)]
+async fn build_store() -> (
+    Arc<dyn PrismStore>,
+    Arc<dyn GatingStore>,
+    Arc<dyn EvalStore>,
+    String,
+) {
     if let Ok(url) = std::env::var("BASE_DATABASE_URL") {
         if !url.trim().is_empty() {
             let pool = match db::connect(&url).await {
@@ -294,7 +338,8 @@ async fn build_store() -> (Arc<dyn PrismStore>, Arc<dyn GatingStore>, String) {
             }
             return (
                 Arc::new(DbPrismStore::new(pool.clone())),
-                Arc::new(PgGatingStore::new(pool)) as Arc<dyn GatingStore>,
+                Arc::new(PgGatingStore::new(pool.clone())) as Arc<dyn GatingStore>,
+                Arc::new(DbEvalStore::new(pool)) as Arc<dyn EvalStore>,
                 "postgres".into(),
             );
         }
@@ -302,6 +347,7 @@ async fn build_store() -> (Arc<dyn PrismStore>, Arc<dyn GatingStore>, String) {
     (
         Arc::new(MemoryPrismStore::new()),
         Arc::new(MemoryGatingStore::new()) as Arc<dyn GatingStore>,
+        Arc::new(MemoryEvalStore::new()) as Arc<dyn EvalStore>,
         "memory".into(),
     )
 }
@@ -362,6 +408,48 @@ fn build_topmodel() -> Option<Arc<prism_registry::TopModelPublisher>> {
     p
 }
 
+fn orchestrator_config(
+    cli: &Cli,
+    ssh_pks: Vec<String>,
+    stage_delay: Duration,
+) -> OrchestratorConfig {
+    OrchestratorConfig {
+        netuid: cli.netuid,
+        max_price_per_hour: 2.5,
+        max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
+        ssh_public_keys: ssh_pks,
+        image_digest: None,
+        claim_poll: Duration::from_millis(750),
+        emit_poll: Duration::from_secs(15),
+        max_attempts: MAX_ATTEMPTS,
+        similarity_corpus_limit: 6,
+        // > wait_running(15m) + train(6h) + ssh margin(~65m) ≈ 7h20m.
+        stuck_grace_secs: 10 * 3600,
+        stage_delay,
+        auto_retry_max: cli.auto_retry_max,
+        // scoring_mode from PRISM_SCORING_MODE (default shadow).
+        ..Default::default()
+    }
+}
+
+fn attach_miner_payer(
+    orch: Orchestrator<chain_live::LiveChainClient>,
+    vault: Option<Arc<PayerKeyVault>>,
+    live_ssh: LiumSshConfig,
+    has_operator_key: bool,
+) -> Orchestrator<chain_live::LiveChainClient> {
+    let Some(vault) = vault else {
+        return orch;
+    };
+    // Never fall back to Sim when "allow operator" is set without a real key.
+    let allow_op = allow_operator_lium_fallback() && has_operator_key;
+    tracing::info!(
+        allow_operator_lium = allow_op,
+        "miner-funded Lium enabled (X-Lium-Api-Key)"
+    );
+    orch.with_payer(PayerBackendFactory::new(vault, live_ssh, allow_op))
+}
+
 #[allow(clippy::too_many_lines)]
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let path = resolve_sk_path(cli.challenge_sk_file.as_ref())?;
@@ -369,10 +457,10 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         return Err(format!("challenge secret file missing: {}", path.display()));
     }
     let sk = load_challenge_secret(&path).map_err(|e| e.to_string())?;
-    let (backend, backend_mode, ssh_pks, _) = build_backend(cli.force_sim)?;
+    let (backend, backend_mode, ssh_pks, live_ssh, operator_key) = build_backend(cli.force_sim)?;
     let (reviewer, reviewer_mode) = build_reviewer();
     let (agentic, agentic_mode) = build_agentic();
-    let (store, gating, store_mode) = build_store().await;
+    let (store, gating, eval_store, store_mode) = build_store().await;
     // BASE_SUBMISSION_GATING=0 disables intake gating (local dev only).
     let gating_enabled = !matches!(std::env::var("BASE_SUBMISSION_GATING").as_deref(), Ok("0"));
     if !gating_enabled {
@@ -388,9 +476,11 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
 
     // Metagraph cache + watcher feed the intake membership check.
     let metagraph = Arc::new(MetagraphCache::new());
+    let payer_vault = (backend_mode == "lium").then(|| Arc::new(PayerKeyVault::new()));
 
     let state = Arc::new(AppState {
         store: Arc::clone(&store),
+        eval_store: Arc::clone(&eval_store),
         epoch: AtomicU64::new(0),
         netuid: cli.netuid,
         backend_mode: Box::leak(
@@ -399,8 +489,17 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         retry_max: MAX_ATTEMPTS,
         gating: gating_enabled.then(|| Arc::clone(&gating)),
         metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
+        admin_token_hashes: prism_intake::load_token_hashes(cli.admin_tokens_file.as_deref()),
+        payer_vault: payer_vault.clone(),
     });
-    let app = submission_router(Arc::clone(&state));
+    // Zone B miner self-report intake: split into `prism-attribution` for
+    // the per-crate LOC cap (same pattern as the attribution planner,
+    // which mounts inside `submission_router`); own state, no bearer at
+    // this layer — front at the gateway where the deployment needs it.
+    let app = submission_router(Arc::clone(&state)).route(
+        "/v1/submissions/{id}/zone-b",
+        prism_attribution::zone_b_route(Arc::clone(&store), Arc::clone(&eval_store)),
+    );
 
     // Chain (for epoch/E): live only when endpoint configured; otherwise a
     // fixed epoch-0 (local sim posture documented in PRISM.md).
@@ -420,21 +519,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
             "prism sim stage delay enabled (local evidence only)"
         );
     }
-    let oc = OrchestratorConfig {
-        netuid: cli.netuid,
-        max_price_per_hour: 2.5,
-        max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
-        ssh_public_keys: ssh_pks,
-        image_digest: None,
-        claim_poll: Duration::from_millis(750),
-        emit_poll: Duration::from_secs(15),
-        max_attempts: MAX_ATTEMPTS,
-        similarity_corpus_limit: 6,
-        // > wait_running(15m) + train(6h) + ssh margin(~65m) ≈ 7h20m.
-        stuck_grace_secs: 10 * 3600,
-        stage_delay,
-        auto_retry_max: cli.auto_retry_max,
-    };
+    let oc = orchestrator_config(&cli, ssh_pks, stage_delay);
     let topmodel = build_topmodel();
     let mut orchestrator = Orchestrator::new(
         oc,
@@ -446,7 +531,12 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         Arc::new(chain),
         sk,
     )
-    .with_topmodel(topmodel);
+    .with_topmodel(topmodel)
+    // v3: persist the METRICS_JSON v2 battery + compute the composite
+    // (scoring mode from PRISM_SCORING_MODE; default shadow keeps the v2
+    // score bit-identical).
+    .with_eval_store(Some(eval_store));
+    orchestrator = attach_miner_payer(orchestrator, payer_vault, live_ssh, operator_key.is_some());
     if gating_enabled {
         orchestrator = orchestrator.with_gating(Arc::clone(&gating));
         spawn_gating_watcher(

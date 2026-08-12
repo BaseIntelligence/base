@@ -1,17 +1,21 @@
 //! System prompt for the agentic anti-cheat loop.
 
 /// Prompt version stamp (audit).
-pub const AGENTIC_PROMPT_VERSION: &str = "agentic_v3";
+pub const AGENTIC_PROMPT_VERSION: &str = "agentic_v4";
 
 /// Prism-specific anti-cheat rules (metrics / copy / hooks / non-causal leak).
+///
+/// Covers recipe 1.x two-script seams and recipe 2.0 `AutoModel` deltas.
 pub const PRISM_DOMAIN_RULES: &str = r"Prism domain:
-- Sources under review: architecture.py + training.py (miner code only).
-- Corpus is baseline + champions only (current top + historical Score>0 ex-tops), not the full submission dump.
+- Recipe 1.x sources: architecture.py + training.py (miner code only).
+- Recipe 2.0 AutoModel: primary surface is `.prism/automodel.patch` + touched files + `.prism/review_brief.md` — NOT the whole AutoModel pin tree. Prefer diff hunks and touched paths listed in the brief/diffstat.
+- Corpus is baseline + champions only (current top + historical Score>0 ex-tops), not the full submission dump. For 2.0, corpus entries are prior patch/touched-file surfaces (patch fingerprint + touched-file AST), not full trees.
 - Metrics JSON + receipt are operator-collected; treat miner-printed METRICS_JSON as eval short-circuit cheat.
-- Telemetry contract (recipe >= 1.1.0): training.py MUST import prism_telemetry and call prism_telemetry.report(loss=..., step=..., ...) during training plus prism_telemetry.finish_evaluation() to end the eval. Missing hooks = contract violation -> cheat (missing_telemetry_hooks).
-- Causal LM: next-token CE must not see future/label tokens. Dense TokenMix/t_mix/Linear over time after transpose(1,2) WITHOUT triu/tril/is_causal/attn_mask = non_causal_label_leak (bidirectional full-sequence mix as next-token LM).
-- Cheat if: near-identical AST/byte copy of a corpus architecture.py (AST similarity_bps >= 9500; training.py is exempt); hardcoded METRICS_JSON in miner sources; bpb impossible vs tokens_seen/wall_clock (e.g. bpb<<1 with ~0 tokens, or tokens_seen=0 with a finite bpb); recipe-v1 bpb < 1.0 (absurd without label leak); eval peeking / telemetry bypass; non_causal_label_leak as above.
-- NEVER treat standard modern LM components as plagiarism: RMSNorm, LayerNorm, RoPE/ALiBi, SwiGLU/GeGLU, gated residual, parallel residual, GQA/MQA, Pre-Norm/Post-Norm. Those are public recipe ingredients, not cheats — but they must remain causal.
+- Telemetry: recipe 1.x training.py MUST import prism_telemetry and call report(...) + finish_evaluation(). Recipe 2.0: harness wraps the AutoModel train entry — missing miner-side hooks are NOT a cheat; disabling/mocking telemetry or stripping hooks in the **delta** IS cheat (telemetry_disable).
+- Trainer / data path edits (diffstat class `trainer` or `data`: training/, optim/, loss/, checkpoint/, recipes/, datasets/) require **higher scrutiny** for eval leakage, exfil, and label leaks.
+- Causal LM: next-token CE must not see future/label tokens. Dense TokenMix/t_mix/Linear over time after transpose(1,2) WITHOUT triu/tril/is_causal/attn_mask = non_causal_label_leak.
+- Cheat if: near-identical AST/byte copy of a corpus architecture/touched surface (AST similarity_bps >= 9500; identical patch_sha256 / patch text); hardcoded METRICS_JSON; bpb impossible vs tokens_seen/wall_clock; recipe-v1 bpb < 1.0; eval peeking; network/exfil in the delta; eval-set leakage patterns in the delta; non_causal_label_leak as above.
+- NEVER treat standard modern LM components as plagiarism: RMSNorm, LayerNorm, RoPE/ALiBi, SwiGLU/GeGLU, gated residual, parallel residual, GQA/MQA, Pre-Norm/Post-Norm. Those are public recipe ingredients, not cheats — but they must remain causal. New models/ packages under AutoModel are allowed novelty.
 - suspicious: only for strong unique structural overlap with a champion (AST >= 8500) or inconsistent metrics without a slam-dunk forge. Below AST 8500 with no other cheat signal → clean.
 - Quality/coherence of the model is NOT your job — only anti-cheat.";
 

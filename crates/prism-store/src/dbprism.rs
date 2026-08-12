@@ -3,13 +3,14 @@
 use async_trait::async_trait;
 use db::prism_store as dbs;
 use db::PgPool;
-use prism_lium::EvalReceipt;
+use prism_lium_types::EvalReceipt;
 use prism_review::{ReviewVerdict, SimilarityKind, SimilarityVerdict};
 
 use crate::arch;
-use crate::store::{
-    ArchitectureRecord, EpochScoreRow, FinalScore, PrismStore, PublishArchOutcome, Stage,
-    StageEvent, StatePatch, StoreError, SubmissionState, TopModelPublication,
+use crate::store::PrismStore;
+use prism_store_types::{
+    ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome, Stage, StageEvent,
+    StatePatch, StoreError, SubmissionState, TopModelPublication,
 };
 
 /// SQL-backed production store.
@@ -64,6 +65,7 @@ fn row_to_state(r: dbs::PrismSubmissionRow) -> SubmissionState {
         status,
         architecture_py: r.architecture_py,
         training_py: r.training_py,
+        tree_blob: r.tree_blob,
         label: r.label,
         pod_id: r.pod_id,
         pod_provider: r.pod_provider,
@@ -181,6 +183,7 @@ impl PrismStore for DbPrismStore {
                 label: row.label.as_deref(),
                 architecture_py: &row.architecture_py,
                 training_py: &row.training_py,
+                tree_blob: row.tree_blob.as_deref(),
             },
         )
         .await
@@ -289,9 +292,6 @@ impl PrismStore for DbPrismStore {
         let row = dbs::reset_prism_submission_for_retry(&self.pool, id, bump_retry)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
-        if let Err(e) = crate::telemetry::delete_telemetry(&self.pool, id).await {
-            tracing::warn!(submission_id = %id, error = %e, "prism telemetry delete failed");
-        }
         dbs::insert_prism_stage_event(
             &self.pool,
             &dbs::NewPrismStageEvent {
@@ -345,7 +345,10 @@ impl PrismStore for DbPrismStore {
             .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
-    async fn telemetry(&self, id: &str) -> Result<Vec<prism_lium::TelemetryPoint>, StoreError> {
+    async fn telemetry(
+        &self,
+        id: &str,
+    ) -> Result<Vec<prism_lium_types::TelemetryPoint>, StoreError> {
         crate::telemetry::telemetry_for(&self.pool, id).await
     }
 
@@ -421,6 +424,10 @@ impl PrismStore for DbPrismStore {
 
     async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError> {
         arch::last_publication_bpb(&self.pool).await
+    }
+
+    async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError> {
+        arch::last_publication(&self.pool).await
     }
 
     async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError> {

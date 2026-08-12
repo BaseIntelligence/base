@@ -42,6 +42,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
 
+pub mod leaf_emit;
+pub mod submit;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

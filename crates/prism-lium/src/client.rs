@@ -16,14 +16,29 @@ fn rent_pool() -> &'static RentPool {
     POOL.get_or_init(RentPool::new)
 }
 
-use crate::error::{CostGuardrailError, LiumError};
 use crate::ssh::{
-    parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, truncate_tail, SshTarget,
+    parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, ssh_exec_stdin,
+    ssh_exec_streaming, truncate_tail, SshTarget,
 };
-use crate::types::{GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
+use prism_lium_harness::{
+    eval_assets_dir, harness_env_pairs, harness_upload_tar, random_seed_hex, EVAL_ASSETS_POD_DIR,
+    HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
+};
+use prism_lium_types::{CostGuardrailError, LiumError};
+use prism_lium_types::{
+    GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
+};
 
-/// `daturaai/*-dind` cuda13.0.2 — sshd from image init (empty startup).
+/// Parent-emitted marker line: the train-phase process group is dead and
+/// the parent gate is (about to be) waiting for eval assets. Matched as an
+/// exact raw line — miner stdout is relayed with an `[harness] v3| ` prefix
+/// by the runner, so a miner cannot forge it. The harness side emits this
+/// via a bare `print` at the gate (see module docs / E5 report).
+const DEFAULT_TRAIN_DONE_MARKER: &str = "PHASE_TRAIN_DONE";
+
+// cu13.0.2-dinD: sshd from image init (empty startup). Other marketplace
+// images lack a stable sshd under Lium's metachar-free startup rules.
 const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
 const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda13.0.2-devel-ubuntu24.04-dind";
 const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9";
@@ -195,27 +210,19 @@ impl LiumClient {
     }
 
     fn parse_offers(v: &Value) -> Vec<Offer> {
-        let items = v
-            .as_array()
+        v.as_array()
             .cloned()
-            .or_else(|| v.get("executors").and_then(|x| x.as_array().cloned()))
-            .or_else(|| v.get("data").and_then(|x| x.as_array().cloned()))
-            .unwrap_or_default();
-        let mut out = Vec::new();
-        for item in items {
-            if let Some(o) = parse_one_offer(&item) {
-                out.push(o);
-            }
-        }
-        out
+            .unwrap_or_else(|| get_array(v, &["executors", "data"]))
+            .iter()
+            .filter_map(parse_one_offer)
+            .collect()
     }
 
     async fn list_pods_raw(&self) -> Result<Vec<Value>, LiumError> {
         let v = self.request(reqwest::Method::GET, "/pods", None).await?;
         Ok(v.as_array()
             .cloned()
-            .or_else(|| v.get("pods").and_then(|x| x.as_array().cloned()))
-            .unwrap_or_default())
+            .unwrap_or_else(|| get_array(&v, &["pods"])))
     }
 
     pub async fn get_pod_raw(&self, instance_id: &str) -> Result<Value, LiumError> {
@@ -240,17 +247,15 @@ impl LiumClient {
         let keys = v
             .as_array()
             .cloned()
-            .or_else(|| v.get("ssh_keys").and_then(|x| x.as_array().cloned()))
-            .unwrap_or_default();
-        for key in keys {
-            let pk = key
-                .get("public_key")
+            .unwrap_or_else(|| get_array(&v, &["ssh_keys"]));
+        if let Some(key) = keys.iter().find(|k| {
+            k.get("public_key")
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
-                .trim();
-            if pk == normalized {
-                return Ok(key);
-            }
+                .trim()
+                == normalized
+        }) {
+            return Ok(key.clone());
         }
         let mut body = serde_json::json!({ "public_key": public_key });
         if let Some(n) = name {
@@ -273,12 +278,10 @@ impl LiumClient {
         let templates = v
             .as_array()
             .cloned()
-            .or_else(|| v.get("templates").and_then(|x| x.as_array().cloned()))
-            .unwrap_or_default();
+            .unwrap_or_else(|| get_array(&v, &["templates"]));
         for tmpl in templates {
-            let n = tmpl.get("name").and_then(|x| x.as_str()).unwrap_or("");
-            if n == name {
-                if let Some(id) = tmpl.get("id").and_then(|x| x.as_str()) {
+            if get_str(&tmpl, &["name"]) == Some(name) {
+                if let Some(id) = get_str(&tmpl, &["id"]) {
                     return Ok(id.to_owned());
                 }
             }
@@ -333,11 +336,7 @@ impl LiumClient {
             .await?;
         v.get("balance")
             .and_then(|x| x.as_f64())
-            .or_else(|| {
-                v.get("balance")
-                    .and_then(|x| x.as_str())
-                    .and_then(|s| s.parse().ok())
-            })
+            .or_else(|| get_str(&v, &["balance"]).and_then(|s| s.parse().ok()))
             .ok_or_else(|| LiumError::Api("users/me missing balance".into()))
     }
 
@@ -370,12 +369,27 @@ impl LiumClient {
         }
     }
 
-    async fn cleanup_after_rent(&self, pod_id: Option<&str>) {
-        if let Some(id) = pod_id {
-            if let Err(e) = self.terminate(id).await {
-                warn!(error = %e, "lium cleanup terminate failed");
-            }
-            let _ = self.verify_terminated(id).await;
+    async fn cleanup_after_rent(&self, id: &str) {
+        if let Err(e) = self.terminate(id).await {
+            warn!(error = %e, pod_id = %id, "lium cleanup terminate failed");
+        }
+        let _ = self.verify_terminated(id).await;
+    }
+
+    async fn find_pod_id_by_name(&self, name: &str) -> Option<String> {
+        self.list_pods_raw().await.ok()?.into_iter().find_map(|p| {
+            (get_str(&p, &["pod_name", "name"]).unwrap_or("") == name)
+                .then(|| get_str(&p, &["id"]).map(str::to_owned))?
+        })
+    }
+
+    /// Terminate every pod still listed under `name` (429/orphan storms).
+    async fn reclaim_pods_named(&self, name: &str) {
+        for _ in 0..8 {
+            let Some(id) = self.find_pod_id_by_name(name).await else {
+                return;
+            };
+            self.cleanup_after_rent(&id).await;
         }
     }
 
@@ -392,11 +406,35 @@ impl LiumClient {
         })
     }
 
+    /// Live recipe eval: wait RUNNING → SSH nvidia-smi → stage the harness
+    /// package ([`prism_recipe::HARNESS_FILES`]) + miner sources as a tar
+    /// over ssh stdin → run `main.py` → parse `METRICS_JSON` (v1 and v2
+    /// payloads both accepted).
+    ///
+    /// The harness trains the miner's code on the pinned fineweb-edu shard and
+    /// scores the frozen val cut; no metric comes from hashing sources.
+    ///
+    /// **Two-phase (private tier)**: when the master-side
+    /// `PRISM_EVAL_ASSETS_DIR` env points at the operator's private
+    /// eval-assets directory, the run switches to the streaming flow in
+    /// [`Self::exec_eval_two_phase`]: harness output is consumed line-by-line
+    /// and on the parent-emitted train-done marker
+    /// ([`DEFAULT_TRAIN_DONE_MARKER`], exact raw line — unforgeable by the
+    /// miner) the client (a) streams the assets tar into
+    /// [`EVAL_ASSETS_POD_DIR`] over a second ssh channel, (b) writes
+    /// `SECRET_SEED` (fresh 128-bit hex, file-only — env delivery would leak
+    /// it to the train-phase child via inherited env), and (c) touches
+    /// `.ready`. The harness env names the pod assets dir
+    /// (`PRISM_EVAL_ASSETS_DIR`) so its post-train gate holds for `.ready`
+    /// instead of falling back. A run that completes without staging while
+    /// assets were configured is refused (fail-closed against a silent
+    /// public-tier downgrade).
     async fn exec_eval_live(
         &self,
         instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
         let _running = self.wait_until_running(instance_id).await?;
         let target = self.resolve_ssh_target(instance_id).await?;
@@ -404,95 +442,161 @@ impl LiumClient {
         let gpu_type = self.gpu_smoke(&target, &key).await?;
         self.ensure_python_deps(&target, &key).await?;
 
-        let arch_b64 = base64_encode(architecture_py.as_bytes());
-        let train_b64 = base64_encode(training_py.as_bytes());
-        let harness_b64 = base64_encode(prism_recipe::HARNESS_PY.as_bytes());
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
-        let remote = format!(
-            "set -e
-mkdir -p /tmp/prism_eval
-echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
-echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
-echo '{train_b64}' | base64 -d > /tmp/prism_eval/training.py
-cd /tmp/prism_eval
-set +e
-PRISM_DATASET_URL='{dataset_url}' \
-PRISM_DATASET_SHA256='{dataset_sha}' \
-PRISM_MAX_TRAIN_STEPS='{steps}' \
-PRISM_TRAIN_HOURS_CAP='{train_hours}' \
-PRISM_GPU_TYPE='{gpu_type}' \
-{test_env}timeout --kill-after=60 {timeout_secs} python3 prism_harness.py \
-  > /tmp/prism_eval/harness.log 2>&1
-ec=$?
-set -e
-tail -c 524288 /tmp/prism_eval/harness.log || true
-exit $ec\n",
-            harness_b64 = harness_b64,
-            arch_b64 = arch_b64,
-            train_b64 = train_b64,
-            dataset_url = prism_recipe::DATASET_URL,
-            dataset_sha = prism_recipe::dataset_sha256(),
-            steps = prism_recipe::MAX_TRAIN_STEPS,
-            train_hours = self.ssh.train_hours_cap,
-            gpu_type = gpu_type.replace('\'', ""),
-            test_env = test_mode_env(),
-            timeout_secs = train_cap_secs.saturating_add(3600),
-        );
+        let timeout_secs = train_cap_secs.saturating_add(3600);
+        // Stage the harness tar over ssh stdin before the run: argv-embedded
+        // base64 payloads exceeded MAX_ARG_STRLEN at local spawn (BUG-5).
+        let tar = harness_upload_tar(architecture_py, training_py, tree_blob)?;
+        let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
+        ssh_exec_stdin(&target, &key, HARNESS_EXTRACT_CMD, &tar, att, rty, 300).await?;
+        let assets = eval_assets_dir();
+        let pairs = harness_env_pairs(self.ssh.train_hours_cap, &gpu_type, assets.is_some());
+        #[allow(clippy::format_collect)]
+        let env: String = pairs
+            .iter()
+            .map(|(k, v)| format!("{k}='{v}' \\\n"))
+            .collect();
+        let remote =
+            format!("{HARNESS_BOOTSTRAP}cd /tmp/prism_eval\n{env}timeout --kill-after=60 {timeout_secs} python3 main.py");
 
-        let out = match ssh_exec_allow_fail(
+        self.exec_eval_stream(
+            instance_id,
             &target,
             &key,
             &remote,
-            1,
-            self.ssh.ssh_retry_secs,
+            assets.as_deref(),
             train_cap_secs.saturating_add(3900),
         )
         .await
-        {
-            Ok(o) => o,
-            Err(e) => {
-                let harvested = self
-                    .harvest_logs_inner(instance_id)
-                    .await
-                    .unwrap_or_default();
-                return Err(LiumError::Exec(format!(
-                    "harness transport: {e}; harvested: {}",
-                    truncate_tail(&harvested, HARNESS_LOG_RETAIN_BYTES)
-                )));
+    }
+
+    /// Stream the harness run line-by-line (stderr merged remote-side with
+    /// `2>&1`). With `assets` (private tier), the parent-emitted train-done
+    /// marker triggers [`Self::stage_eval_assets`] over a second ssh channel
+    /// while the train-phase process group is dead. Fail-closed: a run that
+    /// completes without staging while assets were configured, or that then
+    /// reports a non-private tier, is rejected.
+    async fn exec_eval_stream(
+        &self,
+        instance_id: &str,
+        target: &SshTarget,
+        key: &Path,
+        remote: &str,
+        assets: Option<&Path>,
+        timeout_secs: u64,
+    ) -> Result<RemoteExecResult, LiumError> {
+        let marker = std::env::var("PRISM_TRAIN_DONE_MARKER")
+            .unwrap_or_else(|_| DEFAULT_TRAIN_DONE_MARKER.to_owned());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // Miner stdout is relayed with an `[harness] v3| ` prefix, so only an
+        // exact raw line (parent-emitted) trips staging — never miner output.
+        let mut on_line = move |line: &str| {
+            if assets.is_some() && line.trim_end() == marker {
+                let _ = tx.send(());
             }
         };
-        if !out.stdout.contains("EVAL_OK") {
-            let mut detail = out.stdout.clone();
-            if !out.stderr.is_empty() {
-                detail.push_str("\n--- stderr ---\n");
-                detail.push_str(&out.stderr);
+        let remote = format!("{remote} 2>&1");
+        let run = ssh_exec_streaming(target, key, &remote, timeout_secs, &mut on_line);
+        tokio::pin!(run);
+        let mut staged = false;
+        let out = loop {
+            tokio::select! {
+                _ = rx.recv(), if !staged => {
+                    if let Some(a) = assets {
+                        self.stage_eval_assets(target, key, a).await?;
+                        staged = true;
+                        info!("eval assets staged post-train (seed written, .ready touched)");
+                    }
+                }
+                r = &mut run => match r {
+                    Ok(o) => break o,
+                    Err(e) => {
+                        // Session timed out / dropped — a second ssh pulls the
+                        // on-pod log so the fatal tail survives the dead pipe.
+                        let h = self.harvest_logs_inner(instance_id).await.unwrap_or_default();
+                        return Err(LiumError::Exec(if h.trim().is_empty() {
+                            format!("harness transport: {e}")
+                        } else {
+                            format!("harness transport: {e}; harvested: {h}")
+                        }));
+                    }
+                },
             }
-            if detail.trim().is_empty() {
-                detail = self
-                    .harvest_logs_inner(instance_id)
-                    .await
-                    .unwrap_or_default();
-            }
-            return Err(LiumError::Exec(format!(
-                "harness failed (code {}): {}",
-                out.returncode,
-                truncate_tail(&detail, HARNESS_LOG_RETAIN_BYTES)
-            )));
-        }
-        let line = out
+        };
+        let tail: String = out
             .stdout
             .lines()
-            .find(|l| l.starts_with("METRICS_JSON="))
-            .ok_or_else(|| LiumError::Exec("harness EVAL_OK without METRICS_JSON".into()))?;
-        let v: RemoteExecResult = serde_json::from_str(&line["METRICS_JSON=".len()..])
-            .map_err(|e| LiumError::Exec(format!("metrics json: {e}")))?;
-        if !v.bpb.is_finite() || v.bpb <= 0.0 {
+            .rev()
+            .take(40)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Nothing came back over the channel: fall back to the on-pod log so the
+        // failure detail is not an empty string.
+        let tail = if tail.trim().is_empty() {
+            self.harvest_logs_inner(instance_id)
+                .await
+                .unwrap_or_default()
+        } else {
+            tail
+        };
+        let res = parse_metrics_output(&out.stdout, out.returncode, &tail)?;
+        if assets.is_some() && !staged {
+            return Err(LiumError::Exec(
+                "eval assets configured but harness never emitted the train-done marker — refusing public-tier result under PRISM_EVAL_ASSETS_DIR".into(),
+            ));
+        }
+        // Staged packs default to `public` (HF held-out). `private` remains
+        // valid for optional contamination / secret-seed mirrors.
+        let tier_ok = matches!(res.eval_tier.as_deref(), Some("public" | "private"));
+        if staged && !tier_ok {
             return Err(LiumError::Exec(format!(
-                "harness bpb not finite: {}",
-                v.bpb
+                "eval assets staged but harness reported eval_tier={:?} (want \"public\"|\"private\")",
+                res.eval_tier
             )));
         }
-        Ok(v)
+        Ok(res)
+    }
+
+    /// Stage the operator assets into the pod workdir post-train in a single
+    /// ssh round-trip: the tar stream goes over stdin while the remote
+    /// command extracts it, writes the client-generated `SECRET_SEED`, and
+    /// finally touches `.ready` (last — the harness gate treats `.ready` as
+    /// the go signal; `set -e` keeps a partial stage from ever touching it).
+    ///
+    /// The whole assets tree rides along, so the G5 natural-document packs
+    /// under [`prism_recipe::NATURAL_PACK_REL`] reach the pod on this same
+    /// path with no transport of their own; they are the largest thing in
+    /// the tree, which is what [`prism_recipe::MAX_EVAL_ASSETS_PACKED_BYTES`]
+    /// is measured against.
+    async fn stage_eval_assets(
+        &self,
+        target: &SshTarget,
+        key: &Path,
+        assets: &Path,
+    ) -> Result<(), LiumError> {
+        let tar = tokio::process::Command::new("tar")
+            .args(["-cz", "-C"])
+            .arg(assets)
+            .arg(".")
+            .output()
+            .await
+            .map_err(|e| LiumError::Exec(format!("tar assets: {e}")))?;
+        if !tar.status.success() {
+            return Err(LiumError::Exec(format!(
+                "tar assets: {}",
+                truncate(&String::from_utf8_lossy(&tar.stderr), 200)
+            )));
+        }
+        if tar.stdout.len() > prism_recipe::MAX_EVAL_ASSETS_PACKED_BYTES {
+            return Err(LiumError::Exec("eval assets exceed the packed cap".into()));
+        }
+        let seed = random_seed_hex()?;
+        let cmd = format!(
+            "set -e; d={EVAL_ASSETS_POD_DIR}; mkdir -p $d; tar -xz -C $d; printf '%s' '{seed}' > $d/SECRET_SEED; touch $d/.ready"
+        );
+        let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
+        ssh_exec_stdin(target, key, &cmd, &tar.stdout, att, rty, 300).await?;
+        Ok(())
     }
 
     async fn ensure_python_deps(&self, target: &SshTarget, key: &Path) -> Result<(), LiumError> {
@@ -533,15 +637,8 @@ exit $ec\n",
     }
 
     async fn gpu_smoke(&self, target: &SshTarget, key: &Path) -> Result<String, LiumError> {
-        let smoke = ssh_exec(
-            target,
-            key,
-            "nvidia-smi -L && echo SMOKE_OK",
-            self.ssh.ssh_attempts,
-            self.ssh.ssh_retry_secs,
-            60,
-        )
-        .await?;
+        let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
+        let smoke = ssh_exec(target, key, "nvidia-smi -L && echo SMOKE_OK", att, rty, 60).await?;
         if !smoke.stdout.contains("SMOKE_OK") {
             return Err(LiumError::Exec(format!(
                 "nvidia-smi smoke failed: {}",
@@ -558,59 +655,61 @@ exit $ec\n",
     }
 }
 
-/// Forward numeric-only `PRISM_TEST_*` env into the remote harness shell.
-fn test_mode_env() -> String {
-    use std::fmt::Write as _;
-    let mut out = String::new();
-    if let Ok(v) = std::env::var("PRISM_TEST_TRAIN_MINUTES") {
-        if v.trim().parse::<f64>().is_ok() {
-            let _ = writeln!(out, "PRISM_TEST_TRAIN_MINUTES='{}' \\", v.trim());
-        }
+/// Parse the harness run output: `EVAL_OK` gate, `METRICS_JSON=` line, bpb
+/// sanity. `stderr_tail` feeds the failure message (legacy path: ssh
+/// stderr; detached path: the run-log tail).
+fn parse_metrics_output(
+    stdout: &str,
+    returncode: i32,
+    stderr_tail: &str,
+) -> Result<RemoteExecResult, LiumError> {
+    // Miner-attributable param-cap breach: the harness emits the exact
+    // `CAP_EXCEEDED` line + a minimal METRICS_JSON (bpb sentinel 0) instead
+    // of measuring. Not EVAL_OK — but a valid terminal parse.
+    if !stdout.contains("EVAL_OK") && !stdout.contains("CAP_EXCEEDED") {
+        return Err(LiumError::Exec(format!(
+            "harness failed (code {}): {}",
+            returncode,
+            truncate(stderr_tail, 4000)
+        )));
     }
-    if let Ok(v) = std::env::var("PRISM_TEST_MAX_PARAMS") {
-        if v.trim().parse::<u64>().is_ok() {
-            let _ = writeln!(out, "PRISM_TEST_MAX_PARAMS='{}' \\", v.trim());
-        }
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("METRICS_JSON="))
+        .ok_or_else(|| LiumError::Exec("harness EVAL_OK without METRICS_JSON".into()))?;
+    let v: RemoteExecResult = serde_json::from_str(&line["METRICS_JSON=".len()..])
+        .map_err(|e| LiumError::Exec(format!("metrics json: {e}")))?;
+    // Terminal cap payload: skip the bpb gate (sentinel 0 by design).
+    if v.extra.get("cap_exceeded").and_then(Value::as_bool) == Some(true) {
+        return Ok(v);
     }
-    out
+    if !v.bpb.is_finite() || v.bpb <= 0.0 {
+        return Err(LiumError::Exec(format!(
+            "harness bpb not finite: {}",
+            v.bpb
+        )));
+    }
+    Ok(v)
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(T[((n >> 18) & 63) as usize] as char);
-        out.push(T[((n >> 12) & 63) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(T[((n >> 6) & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(T[(n & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
+/// First string value found at any of `keys` (top-level object lookups).
+fn get_str<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| v.get(k).and_then(|x| x.as_str()))
+}
+
+/// First array found at any of `keys` (bare arrays pass through at call sites).
+fn get_array(v: &Value, keys: &[&str]) -> Vec<Value> {
+    keys.iter()
+        .find_map(|k| v.get(k).and_then(|x| x.as_array()))
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn parse_one_offer(item: &Value) -> Option<Offer> {
-    let id = item
-        .get("id")
-        .or_else(|| item.get("executor_id"))
-        .and_then(|x| x.as_str())?
-        .to_owned();
-    let gpu_type = item
-        .get("gpu_type")
-        .or_else(|| item.get("gpu_name"))
-        .or_else(|| item.get("machine_name"))
-        .or_else(|| item.pointer("/machine/gpu_type"))
-        .and_then(|x| x.as_str())
+    let id = get_str(item, &["id", "executor_id"])?.to_owned();
+    // Live API uses machine_name + price_per_gpu (not gpu_type / price_per_hour).
+    let gpu_type = get_str(item, &["gpu_type", "gpu_name", "machine_name"])
+        .or_else(|| item.pointer("/machine/gpu_type").and_then(|x| x.as_str()))
         .unwrap_or("UNKNOWN")
         .to_owned();
     let gpu_count = item
@@ -626,10 +725,7 @@ fn parse_one_offer(item: &Value) -> Option<Offer> {
         .or_else(|| item.pointer("/price/per_gpu_hour"))
         .and_then(|x| x.as_f64())
         .or_else(|| {
-            item.get("price_per_hour")
-                .or_else(|| item.get("price_per_gpu"))
-                .and_then(|x| x.as_str())
-                .and_then(|s| s.parse().ok())
+            get_str(item, &["price_per_hour", "price_per_gpu"]).and_then(|s| s.parse().ok())
         })
         .unwrap_or(f64::MAX);
     Some(Offer {
@@ -642,41 +738,27 @@ fn parse_one_offer(item: &Value) -> Option<Offer> {
 }
 
 fn parse_instance(v: &Value, fallback_id: &str) -> Instance {
-    let id = v
-        .get("id")
-        .or_else(|| v.get("pod_id"))
-        .and_then(|x| x.as_str())
-        .unwrap_or(fallback_id)
-        .to_owned();
-    let status = v
-        .get("status")
-        .or_else(|| v.get("state"))
-        .and_then(|x| x.as_str())
-        .unwrap_or("UNKNOWN")
-        .to_owned();
-    let gpu_type = v
-        .get("gpu_type")
-        .or_else(|| v.pointer("/executor/gpu_type"))
-        .and_then(|x| x.as_str())
-        .map(str::to_owned);
-    let ssh_connect_cmd = v
-        .get("ssh_connect_cmd")
-        .and_then(|x| x.as_str())
-        .map(str::to_owned);
     Instance {
-        id,
-        status,
+        id: get_str(v, &["id", "pod_id"])
+            .unwrap_or(fallback_id)
+            .to_owned(),
+        status: get_str(v, &["status", "state"])
+            .unwrap_or("UNKNOWN")
+            .to_owned(),
         provider: "lium".into(),
-        gpu_type,
-        ssh_connect_cmd,
+        gpu_type: get_str(v, &["gpu_type"])
+            .or_else(|| v.pointer("/executor/gpu_type").and_then(|x| x.as_str()))
+            .map(str::to_owned),
+        ssh_connect_cmd: get_str(v, &["ssh_connect_cmd"]).map(str::to_owned),
     }
 }
 
 fn sanitize_err(msg: &str, key: &str) -> String {
     if key.is_empty() {
-        return msg.to_owned();
+        msg.to_owned()
+    } else {
+        msg.replace(key, "<redacted>")
     }
-    msg.replace(key, "<redacted>")
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -795,7 +877,7 @@ impl EvalJobBackend for LiumClient {
                     let es = e.to_string();
                     if lium_rent_pool::is_rate_limited(&es) {
                         permit.rate_limited(&es);
-                        return Err(LiumError::Api(es));
+                        break;
                     }
                     if es.contains("splitting") {
                         continue;
@@ -803,46 +885,40 @@ impl EvalJobBackend for LiumClient {
                 }
                 break;
             }
-            let mut pod_id: Option<String> = None;
             match rented {
                 Ok(v) => {
-                    pod_id = extract_pod_id(&v);
-                    if pod_id.is_none() {
-                        if let Ok(pods) = self.list_pods_raw().await {
-                            for p in pods {
-                                let name = p
-                                    .get("pod_name")
-                                    .or_else(|| p.get("name"))
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("");
-                                if name == spec.name {
-                                    if let Some(id) = p.get("id").and_then(|x| x.as_str()) {
-                                        pod_id = Some(id.to_owned());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let Some(id) = pod_id.clone() else {
+                    let id = match extract_pod_id(&v) {
+                        Some(id) => Some(id),
+                        None => self.find_pod_id_by_name(&spec.name).await,
+                    };
+                    let Some(id) = id else {
                         last_err = "could not determine provisioned pod id from rent".into();
-                        self.cleanup_after_rent(None).await;
+                        self.reclaim_pods_named(&spec.name).await;
                         continue;
                     };
                     match self.wait_until_running(&id).await {
                         Ok(inst) => return Ok(inst),
                         Err(e) => {
                             last_err = format!("offer {} wait_running: {e}", selected.id);
-                            self.cleanup_after_rent(Some(&id)).await;
+                            self.cleanup_after_rent(&id).await;
+                            self.reclaim_pods_named(&spec.name).await;
                         }
                     }
                 }
                 Err(e) => {
                     last_err = e.to_string();
-                    self.cleanup_after_rent(pod_id.as_deref()).await;
+                    // 429/transport can still leave a PENDING pod under our name.
+                    self.reclaim_pods_named(&spec.name).await;
+                    // A rent 429 consumed one of Lium's hourly calls. The pool
+                    // already recorded the cooldown; return after orphan
+                    // cleanup instead of walking more candidates.
+                    if lium_rent_pool::is_rate_limited(&last_err) {
+                        return Err(LiumError::Api(last_err));
+                    }
                 }
             }
         }
+        self.reclaim_pods_named(&spec.name).await;
         if last_err == "no offer tried" {
             return Err(CostGuardrailError::NoCapacity.into());
         }
@@ -867,13 +943,11 @@ impl EvalJobBackend for LiumClient {
     }
 
     async fn verify_terminated(&self, instance_id: &str) -> Result<bool, LiumError> {
-        let pods = self.list_pods_raw().await?;
-        for p in pods {
-            if p.get("id").and_then(|x| x.as_str()) == Some(instance_id) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(!self
+            .list_pods_raw()
+            .await?
+            .iter()
+            .any(|p| p.get("id").and_then(|x| x.as_str()) == Some(instance_id)))
     }
 
     async fn exec_eval(
@@ -881,13 +955,39 @@ impl EvalJobBackend for LiumClient {
         instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
-        self.exec_eval_live(instance_id, architecture_py, training_py)
+        self.exec_eval_live(instance_id, architecture_py, training_py, tree_blob)
             .await
     }
 
     async fn harvest_logs(&self, instance_id: &str) -> Result<String, LiumError> {
         self.harvest_logs_inner(instance_id).await
+    }
+
+    async fn harvest_artifacts(
+        &self,
+        instance_id: &str,
+        dest_dir: &Path,
+        _seed: &[u8],
+        n_params: Option<u64>,
+    ) -> Result<PathBuf, LiumError> {
+        let submission_id = dest_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| LiumError::Integrity("park dir missing submission_id".into()))?;
+        let target = self.resolve_ssh_target(instance_id).await?;
+        let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
+        crate::artifacts::harvest_checkpoint_ssh(
+            &target,
+            &key,
+            dest_dir,
+            submission_id,
+            self.ssh.ssh_attempts,
+            self.ssh.ssh_retry_secs,
+            n_params,
+        )
+        .await
     }
 }
 
@@ -896,6 +996,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use crate::ASSETS_ENV_LOCK;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1087,19 +1188,159 @@ mod tests {
         assert_eq!(inst.id, "pod-h100");
     }
 
+    #[tokio::test]
+    async fn provision_reclaims_orphan_pod_on_429() {
+        // Rent 429 must still terminate any PENDING pod under our name
+        // (dd4343ae backoff alone left orphans billing).
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([{
+                "id": "only",
+                "gpu_type": "NVIDIA GeForce RTX 5090",
+                "gpu_count": 1,
+                "price_per_hour": 1.0
+            }]),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/executors/only/rent"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/pods"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "orphan-1", "pod_name": "x", "status": "PENDING"}
+            ])))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/pods"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        let _delete = Mock::given(method("DELETE"))
+            .and(path("/pods/orphan-1"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount_as_scoped(&server)
+            .await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let err = c.provision(&provision_spec()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("429")
+                || err.to_string().to_ascii_lowercase().contains("rate"),
+            "got {err}"
+        );
+    }
+
     #[test]
-    fn test_mode_env_forwards_numeric_values_only() {
+    fn harness_env_pairs_forward_numeric_test_values_only() {
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15");
         std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
-        let out = test_mode_env();
-        assert!(out.contains("PRISM_TEST_TRAIN_MINUTES='15'"), "{out}");
-        assert!(out.contains("PRISM_TEST_MAX_PARAMS='2000000'"), "{out}");
+        std::env::set_var("PRISM_TEST_EVAL_CAPS", "0");
+        std::env::set_var("PRISM_EVAL_G5_N_ITEMS", "1");
+        std::env::set_var("PRISM_FLOW", "v3");
+        let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_TEST_TRAIN_MINUTES" && v == "15"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_TEST_MAX_PARAMS" && v == "2000000"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_TEST_EVAL_CAPS" && v == "0"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_EVAL_G5_N_ITEMS" && v == "1"));
+        assert!(pairs.iter().any(|(k, v)| *k == "PRISM_FLOW" && v == "v3"));
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15'; rm -rf /; '");
-        let out = test_mode_env();
-        assert!(!out.contains("rm -rf"), "{out}");
+        let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
+        assert!(!pairs.iter().any(|(_, v)| v.contains("rm -rf")));
+        // Reject non-allowlisted flow tokens (injection / typo surface).
+        std::env::set_var("PRISM_FLOW", "v3; rm -rf /");
+        let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
+        assert!(!pairs.iter().any(|(k, _)| *k == "PRISM_FLOW"));
         std::env::remove_var("PRISM_TEST_TRAIN_MINUTES");
         std::env::remove_var("PRISM_TEST_MAX_PARAMS");
-        assert!(test_mode_env().is_empty());
+        std::env::remove_var("PRISM_TEST_EVAL_CAPS");
+        std::env::remove_var("PRISM_EVAL_G5_N_ITEMS");
+        std::env::remove_var("PRISM_FLOW");
+        let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090' OR '1", false);
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_GPU_TYPE" && v == "NVIDIA GeForce RTX 5090 OR 1"));
+        // assets_pending advertises the pod dir; the default omits it.
+        assert!(!pairs.iter().any(|(k, _)| *k == "PRISM_EVAL_ASSETS_DIR"));
+        let pairs = harness_env_pairs(6.0, "SIM", true);
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_EVAL_ASSETS_DIR" && v == "/tmp/prism_eval/eval-assets"));
+    }
+
+    #[test]
+    fn train_done_marker_match_is_exact_line_only() {
+        // Miner stdout is relayed with the `[harness] v3| ` prefix, so a
+        // forged marker inside miner output must NOT match.
+        let m = DEFAULT_TRAIN_DONE_MARKER;
+        assert!("[harness] v3| PHASE_TRAIN_DONE".trim_end() != m);
+        assert!(" PHASE_TRAIN_DONE".trim_end() != m);
+        assert_eq!("PHASE_TRAIN_DONE".trim_end(), m);
+        assert_eq!("PHASE_TRAIN_DONE\r".trim_end(), m);
+    }
+
+    #[test]
+    fn eval_assets_dir_requires_existing_dir() {
+        let _guard = ASSETS_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
+        assert!(eval_assets_dir().is_none());
+        std::env::set_var("PRISM_EVAL_ASSETS_DIR", "/definitely/not/a/dir");
+        assert!(eval_assets_dir().is_none());
+        let dir = std::env::temp_dir().join(format!("prism-assets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PRISM_EVAL_ASSETS_DIR", &dir);
+        assert_eq!(eval_assets_dir().as_deref(), Some(dir.as_path()));
+        std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_metrics_output_gates_eval_ok_and_bpb() {
+        let good = "noise\nMETRICS_JSON={\"bpb\":2.5,\"tokens_seen\":1,\"wall_clock_seconds\":1.0,\"gpu_type\":null,\"notes\":\"n\",\"eval_tier\":\"public\"}\nEVAL_OK\n";
+        let v = parse_metrics_output(good, 0, "").unwrap();
+        assert_eq!(v.eval_tier.as_deref(), Some("public"));
+        assert!(parse_metrics_output("no ok line", 1, "boom")
+            .unwrap_err()
+            .to_string()
+            .contains("harness failed"));
+        let bad = "METRICS_JSON={\"bpb\":-1.0,\"tokens_seen\":1,\"wall_clock_seconds\":1.0,\"gpu_type\":null,\"notes\":\"n\"}\nEVAL_OK\n";
+        assert!(parse_metrics_output(bad, 0, "")
+            .unwrap_err()
+            .to_string()
+            .contains("not finite"));
+    }
+
+    #[test]
+    fn parse_metrics_output_accepts_cap_exceeded_terminal() {
+        // No EVAL_OK; the exact CAP_EXCEEDED line + JSON flag skip the bpb
+        // gate (the cap payload carries a bpb sentinel 0 by design).
+        let out = "noise\nMETRICS_JSON={\"bpb\":0.0,\"tokens_seen\":0,\"wall_clock_seconds\":3.0,\"gpu_type\":null,\"notes\":\"parameter cap exceeded\",\"n_params\":999000000,\"cap_exceeded\":true}\nCAP_EXCEEDED\n";
+        let v = parse_metrics_output(out, 3, "").unwrap();
+        assert_eq!(
+            v.extra.get("cap_exceeded").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(v.n_params, Some(999_000_000));
+        // The bare line without the JSON flag is not a terminal parse: it
+        // falls through to the bpb gate and is rejected (forge/incomplete).
+        let missing_flag = "METRICS_JSON={\"bpb\":0.0,\"tokens_seen\":0,\"wall_clock_seconds\":3.0,\"gpu_type\":null,\"notes\":\"n\"}\nCAP_EXCEEDED\n";
+        assert!(parse_metrics_output(missing_flag, 3, "")
+            .unwrap_err()
+            .to_string()
+            .contains("not finite"));
     }
 
     #[test]
@@ -1110,9 +1351,160 @@ mod tests {
         assert!(s.contains("<redacted>"));
     }
 
+    /// Minimal ustar reader for assertions: validates magic + checksum per
+    /// header and returns the regular-file entries `(path, contents)`.
+    fn parse_tar_files(tar: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut off = 0;
+        while off + 512 <= tar.len() {
+            let h = &tar[off..off + 512];
+            if h.iter().all(|&b| b == 0) {
+                break;
+            }
+            assert_eq!(&h[257..262], b"ustar", "bad ustar magic");
+            let sum: usize = h
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| {
+                    if (148..156).contains(&i) {
+                        32
+                    } else {
+                        b as usize
+                    }
+                })
+                .sum();
+            let stored =
+                usize::from_str_radix(std::str::from_utf8(&h[148..154]).unwrap(), 8).unwrap();
+            assert_eq!(stored, sum, "ustar checksum mismatch");
+            let end = h[..100].iter().position(|&b| b == 0).unwrap_or(100);
+            let name = std::str::from_utf8(&h[..end]).unwrap().to_owned();
+            let size = usize::from_str_radix(
+                std::str::from_utf8(&h[124..135])
+                    .unwrap()
+                    .trim_end_matches('\0'),
+                8,
+            )
+            .unwrap();
+            assert_eq!(h[156], b'0', "only regular files are archived");
+            off += 512;
+            out.push((name, tar[off..off + size].to_vec()));
+            off += size.div_ceil(512) * 512;
+        }
+        out
+    }
+
     #[test]
-    fn base64_roundtrip_smoke() {
-        let s = base64_encode(b"hello");
-        assert_eq!(s, "aGVsbG8=");
+    fn harness_upload_tar_has_exact_files_with_identical_contents() {
+        let files = parse_tar_files(&harness_upload_tar("# arch", "# train", None).unwrap());
+        let got: std::collections::BTreeMap<&str, &[u8]> = files
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_slice()))
+            .collect();
+        assert_eq!(got.len(), prism_recipe::HARNESS_FILES.len() + 2);
+        for (path, contents) in prism_recipe::HARNESS_FILES {
+            assert_eq!(
+                got.get(path).copied(),
+                Some(contents.as_bytes()),
+                "tar entry {path} mismatch"
+            );
+        }
+        assert_eq!(
+            got.get("architecture.py").copied(),
+            Some(b"# arch".as_slice())
+        );
+        assert_eq!(got.get("training.py").copied(), Some(b"# train".as_slice()));
+        // Pod layout anchors at the workdir root (byte-identical to the old
+        // base64 upload): entrypoint + package dirs + banned-pattern list.
+        assert!(got.contains_key("main.py"));
+        assert!(got.contains_key("cheatguard_patterns.json"));
+        assert!(got.keys().any(|p| p.starts_with("prismlib/")));
+        assert!(got.keys().any(|p| p.starts_with("eval/")));
+    }
+
+    #[test]
+    fn natural_packs_ride_the_post_train_assets_stage() {
+        // `stage_eval_assets` tars the operator assets dir wholesale, so the
+        // G5 natural packs need no transport of their own — but they must be
+        // addressed relative to that dir, and the on-pod adapter has to
+        // resolve the very same relative path.
+        let rel = std::path::Path::new(prism_recipe::NATURAL_PACK_REL);
+        assert!(rel.is_relative(), "pack path must be assets-dir relative");
+        let staged = std::path::Path::new(EVAL_ASSETS_POD_DIR).join(rel);
+        assert!(staged.starts_with(EVAL_ASSETS_POD_DIR));
+        // The harness resolves the same relative path on the pod.
+        let adapter = prism_recipe::HARNESS_FILES
+            .iter()
+            .find(|(p, _)| *p == "eval/natural_docs.py")
+            .map(|(_, c)| *c)
+            .expect("natural_docs.py is part of the harness package");
+        assert!(adapter.contains(prism_recipe::NATURAL_PACK_REL));
+    }
+
+    #[test]
+    fn harness_upload_tar_is_byte_deterministic() {
+        let a = harness_upload_tar("arch", "train", None).unwrap();
+        let b = harness_upload_tar("arch", "train", None).unwrap();
+        assert_eq!(a, b, "two builds must produce identical bytes");
+        assert!(a.len() > 100_000, "the real harness set is large");
+    }
+
+    #[test]
+    fn harness_upload_tar_stages_full_source_tree_under_submission() {
+        let mut files = std::collections::BTreeMap::new();
+        files.insert("architecture.py".into(), b"import kernels\n".to_vec());
+        files.insert(
+            "training.py".into(),
+            b"def train(m,c):\n    return {}\n".to_vec(),
+        );
+        files.insert(
+            "kernels/flash.py".into(),
+            b"def attend():\n    return 1\n".to_vec(),
+        );
+        files.insert("tokenizer/tokenizer.json".into(), b"{}".to_vec());
+        let blob = prism_tree::StagedTree::new(files, "training.py".into())
+            .pack()
+            .unwrap();
+        let tar = harness_upload_tar("ignored", "ignored", Some(&blob)).unwrap();
+        let got = parse_tar_files(&tar);
+        let names: std::collections::BTreeSet<_> = got.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(names.contains("submission/kernels/flash.py"));
+        assert!(names.contains("submission/tokenizer/tokenizer.json"));
+        assert!(names.contains("main.py"));
+        assert!(!names.contains("architecture.py"));
+    }
+
+    #[test]
+    fn ssh_argv_stays_small_regardless_of_harness_size() {
+        // BUG-5 regression: the harness payload (~240 KB as base64) blew the
+        // 128 KB MAX_ARG_STRLEN when embedded in the remote command. It must
+        // ride ssh stdin as a tar; argv holds only fixed-size commands.
+        use std::fmt::Write as _;
+        assert!(HARNESS_EXTRACT_CMD.len() < 1024);
+        let mut env = String::new();
+        for (k, v) in harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", true) {
+            let _ = writeln!(env, "{k}='{v}' \\");
+        }
+        let remote = format!(
+            "{HARNESS_BOOTSTRAP}cd /tmp/prism_eval\n{env}timeout --kill-after=60 25200 python3 main.py"
+        );
+        assert!(
+            remote.len() < 8 * 1024,
+            "run argv is {} bytes",
+            remote.len()
+        );
+        assert!(!remote.contains("base64"), "no payload embedding in argv");
+        // The stdin payload scales with miner size; argv never does.
+        let big = harness_upload_tar(&"a".repeat(200_000), &"t".repeat(200_000), None).unwrap();
+        assert!(big.len() > 400_000);
+        assert!(HARNESS_EXTRACT_CMD.len() < 1024);
+    }
+
+    #[test]
+    fn random_seed_hex_reads_exactly_16_bytes() {
+        // Regression: fs::read("/dev/urandom") blocks forever on a char
+        // device (no EOF) — the seed path must complete with 16 bytes.
+        let s = random_seed_hex().unwrap();
+        assert_eq!(s.len(), 32);
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

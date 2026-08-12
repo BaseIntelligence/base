@@ -186,7 +186,7 @@ async fn live_rent_ssh_eval_terminate() {
     let train = "def train(model, ctx):\n    return {'loss': 1.0}\n";
 
     let eval_result = {
-        let r = client.exec_eval(&pod_id, arch, train).await;
+        let r = client.exec_eval(&pod_id, arch, train, None).await;
         // Always terminate in finally
         let term = client.terminate(&pod_id).await;
         let mut verified = client.verify_terminated(&pod_id).await.unwrap_or(false);

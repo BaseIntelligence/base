@@ -1,0 +1,8 @@
+{"prompt": "Question: What do people typically use to write on paper?\nAnswer:", "choices": [" a pen", " a spoon", " a shoe", " a cloud"], "gold": 0}
+{"prompt": "Question: Which of these would you most likely find in a refrigerator?\nAnswer:", "choices": [" milk", " coal", " sand", " nails"], "gold": 0}
+{"prompt": "Question: What is the main purpose of a seatbelt in a car?\nAnswer:", "choices": [" to keep passengers safely restrained", " to keep the seats warm", " to hold groceries in place", " to improve the radio signal"], "gold": 0}
+{"prompt": "Question: Where does rain come from?\nAnswer:", "choices": [" clouds", " the moon", " volcanoes", " the ocean floor"], "gold": 0}
+{"prompt": "Question: Which tool would a carpenter most likely use to join two boards?\nAnswer:", "choices": [" a hammer and nails", " a paintbrush", " a thermometer", " a telescope"], "gold": 0}
+{"prompt": "Question: What happens to water when it is left in a freezer?\nAnswer:", "choices": [" it turns to ice", " it turns to steam", " it disappears", " it turns to milk"], "gold": 0}
+{"prompt": "Question: Which sense do people mainly use to enjoy music?\nAnswer:", "choices": [" hearing", " smell", " touch", " taste"], "gold": 0}
+{"prompt": "Question: What do bees collect from flowers to make honey?\nAnswer:", "choices": [" nectar", " leaves", " bark", " seeds"], "gold": 0}

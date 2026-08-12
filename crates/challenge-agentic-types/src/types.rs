@@ -67,6 +67,10 @@ pub enum CheatCode {
     MissingTelemetryHooks,
     /// Non-causal time-axis mix (`TokenMix` / dense `Linear`) ⇒ label leak.
     NonCausalLabelLeak,
+    /// Fallback for reviewer-emitted codes outside the normative taxonomy:
+    /// parsing coerces unknown strings here (never a parse error) and notes
+    /// the raw code in the rationale. Non-AST; the verdict is preserved.
+    Other,
 }
 
 /// One prior corpus submission for AST nearest-neighbor tools.

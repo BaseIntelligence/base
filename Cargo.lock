@@ -759,6 +759,7 @@ name = "challenge-agentic"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "challenge-agentic-types",
  "challenge-ast",
  "hex",
  "reqwest 0.12.28",
@@ -769,6 +770,15 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "challenge-agentic-types"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3740,6 +3750,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-artifacts"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "prism-lium-types",
+ "prism-store",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
+name = "prism-attribution"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "http-body-util",
+ "prism-automodel",
+ "prism-eval-store",
+ "prism-pipeline",
+ "prism-recipe",
+ "prism-store",
+ "prism-tree",
+ "prism-zoneb",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "zip",
+]
+
+[[package]]
+name = "prism-automodel"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prism-tree",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "zip",
+]
+
+[[package]]
 name = "prism-challenge"
 version = "0.1.0"
 dependencies = [
@@ -3756,14 +3816,22 @@ dependencies = [
  "hex",
  "http-body-util",
  "lium-rent-pool",
+ "prism-artifacts",
+ "prism-attribution",
+ "prism-automodel",
  "prism-challenge-task",
  "prism-emit",
+ "prism-eval-store",
+ "prism-intake",
  "prism-lium",
+ "prism-lium-payer",
  "prism-pipeline",
+ "prism-playground",
  "prism-recipe",
  "prism-registry",
  "prism-review",
  "prism-store",
+ "prism-tree",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3775,6 +3843,7 @@ dependencies = [
  "tower",
  "tracing",
  "trustroot",
+ "zip",
 ]
 
 [[package]]
@@ -3792,8 +3861,11 @@ dependencies = [
  "db",
  "lium-rent-pool",
  "predicates",
+ "prism-attribution",
  "prism-challenge",
+ "prism-intake",
  "prism-lium",
+ "prism-lium-payer",
  "prism-pipeline",
  "prism-recipe",
  "prism-registry",
@@ -3827,13 +3899,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-eval-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "db",
+ "hex",
+ "prism-pipeline",
+ "prism-recipe",
+ "prism-store",
+ "prism-zoneb",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "prism-intake"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "crypto",
+ "hex",
+ "prism-pipeline",
+ "prism-recipe",
+ "prism-store",
+ "serde_json",
+ "sha2 0.10.9",
+ "submission-gating",
+]
+
+[[package]]
 name = "prism-lium"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "hex",
  "lium-rent-pool",
+ "prism-artifacts",
+ "prism-lium-harness",
+ "prism-lium-types",
  "prism-recipe",
+ "prism-tree",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3845,6 +3957,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-lium-harness"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prism-automodel",
+ "prism-lium-types",
+ "prism-recipe",
+ "prism-tree",
+]
+
+[[package]]
+name = "prism-lium-payer"
+version = "0.1.0"
+dependencies = [
+ "prism-lium",
+]
+
+[[package]]
+name = "prism-lium-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prism-recipe",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "prism-pipeline"
 version = "0.1.0"
 dependencies = [
@@ -3852,6 +3994,7 @@ dependencies = [
  "bundle",
  "challenge-agentic",
  "hex",
+ "prism-automodel",
  "prism-challenge-task",
  "prism-lium",
  "prism-recipe",
@@ -3862,6 +4005,21 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "zip",
+]
+
+[[package]]
+name = "prism-playground"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "prism-artifacts",
+ "prism-intake",
+ "prism-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3869,6 +4027,8 @@ name = "prism-recipe"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "prism-automodel",
+ "prism-tree",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3881,11 +4041,14 @@ name = "prism-registry"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
+ "prism-artifacts",
  "prism-pipeline",
  "prism-store",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -3914,14 +4077,50 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "db",
- "prism-lium",
+ "prism-lium-types",
  "prism-review",
+ "prism-store-types",
+ "prism-zoneb",
  "serde",
  "serde_json",
  "sqlx",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "prism-store-types"
+version = "0.1.0"
+dependencies = [
+ "prism-lium-types",
+ "prism-review",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "prism-tree"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "prism-zoneb"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

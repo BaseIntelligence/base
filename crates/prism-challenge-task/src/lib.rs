@@ -31,6 +31,16 @@ pub const CHALLENGE_ID_BYTES: &[u8] = b"prism";
 /// under their version tag.
 pub const SCORING_VERSION: u16 = 2;
 
+/// v3 composite scoring version (G1–G8 weighted geometric mean with
+/// lexicographic gates, clustered-bootstrap LCB lattice).
+///
+/// **Not live**: v2 remains the live default until the anchor set is
+/// calibrated on the reference baselines and governance flips
+/// `PRISM_SCORING_MODE` from `shadow` to `composite`. Only rows scored under
+/// composite mode carry this version tag; the bundle `protocol_version`
+/// stays 1.
+pub const SCORING_VERSION_V3: u16 = 3;
+
 /// Domain tag for PRISM task id digests.
 pub const TASK_ID_DOMAIN: &[u8] = b"base-prism-task-id-v1";
 

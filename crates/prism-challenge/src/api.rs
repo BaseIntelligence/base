@@ -1,11 +1,34 @@
-//! Public PRISM HTTP API (miners + operators). Routes: health, submissions
-//! (+ precheck / retry / events), status, jobs, recipe, architectures.
-//! Epoch at accept is the last chain read (never guessed).
+//! Public PRISM HTTP API (miners + operators).
+//!
+//! | Route | Purpose |
+//! |-------|---------|
+//! | `GET  /health` | liveness |
+//! | `POST /v1/submissions` | accept AutoModel patch ZIP (recipe ≥ 2.0) |
+//! | `POST /v1/submissions/precheck` | advisory copy-gate (quota 3/coldkey/UTC day) |
+//! | `GET  /v1/submissions` | list (`status` / `miner` filter, limit) |
+//! | `GET  /v1/submissions/{id}` | full detail + event timeline + `eval` |
+//! | `GET  /v1/submissions/{id}/diff` | unified diff + diffstat (recipe ≥ 2.0) |
+//! | `GET  /v1/submissions/{id}/events` | journal only |
+//! | `POST /v1/submissions/{id}/attribution` | 2×2 attribution run plans (JSON) |
+//! | `POST /v1/submissions/{id}/zone-b` | Zone B self-report intake (mounted by the service bin from `prism-attribution`) |
+//! | `GET  /v1/submissions/{id}/metrics?zone=a\|b` | Zone A rows / Zone B chain |
+//! | `GET  /v1/submissions/{id}/inference` | Battery inference traces (+ playground journal) |
+//! | `GET  /v1/anchors` | anchor-set registry with status |
+//! | `GET  /v1/preregistration` | anchor pre-registration hash-commits |
+//! | `GET  /v1/status` | queue sizes + backend + recipe pin |
+//! | `GET  /v1/jobs` | orchestrator jobs view (active/last per pod) |
+//! | `GET  /v1/recipe` | recipe descriptor (full data contract) |
+//! | `GET  /v1/recipe/baseline` | baseline sources pairs |
+//!
+//! The API never blocks on the chain: acceptance timestamps the chain epoch
+//! read at boot loop; if that read fails the epoch stays at the last known
+//! value (still `>= 0`), never guessed.
 
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -16,39 +39,111 @@ use submission_gating::{infra_resubmit_allowed, GatingState, GatingStore, Metagr
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
 use crate::CHALLENGE_ID;
-use prism_pipeline::{
-    ephemeral_candidate, evaluate_copy_precheck, precheck_json, precheck_quota_exceeded_json,
-    precheck_skipped, quota_identity, quota_view, utc_day, SubmissionError, SubmissionRequest,
-    PRECHECK_DAILY_LIMIT,
+use prism_eval_store::{detail_view, eval_json, list_view};
+use prism_intake::{
+    coldkey_of, json_err, map_submission_err, map_zip_err, materialize_arch, metagraph_uid, now_ms,
+    parse_submission_body, require_bearer, verify_bearer, BearerGate,
 };
+use prism_pipeline::{is_automodel_request, SubmissionRequest};
+use prism_store::eval::EvalStore;
 use prism_store::{FinalScore, PrismStore, Stage, StoreError, SubmissionState};
 
 /// Shared HTTP app state.
 #[derive(Debug)]
 pub struct AppState {
     pub store: Arc<dyn PrismStore>,
+    /// Eval store (v3 composite runs, anchor registry, Zone B reports).
+    pub eval_store: Arc<dyn EvalStore>,
+    /// Current chain epoch cache (advanced by the worker loop).
     pub epoch: std::sync::atomic::AtomicU64,
     pub netuid: u16,
     pub backend_mode: &'static str,
     pub retry_max: u32,
     pub gating: Option<Arc<dyn GatingStore>>,
     pub metagraph: Option<Arc<MetagraphCache>>,
+    /// Operator bearer hashes. Empty → retry/admin/playground answer 503.
+    pub admin_token_hashes: Vec<String>,
+    /// Miner Lium API keys (BYOK). `None` → Sim / operator-only billing.
+    pub payer_vault: Option<std::sync::Arc<prism_lium_payer::PayerKeyVault>>,
 }
 
 pub fn submission_router(state: Arc<AppState>) -> Router {
+    let admin: BearerGate = (state.admin_token_hashes.clone().into(), "admin");
+    if admin.0.is_empty() {
+        tracing::warn!(
+            event = "prism_admin_auth_unconfigured",
+            "no admin bearer tokens: manual retry + playground + artifacts answer 503"
+        );
+    }
+    let operator = Router::new()
+        .route(
+            "/v1/admin/playground/complete",
+            prism_playground::playground_route(prism_playground::PlaygroundState {
+                store: Arc::clone(&state.store),
+                infer_script: prism_playground::default_infer_script(),
+            }),
+        )
+        .route(
+            "/v1/admin/artifacts/{submission_id}/receive",
+            prism_artifacts::artifact_receive_route(prism_artifacts::ArtifactReceiveState {
+                store: Arc::clone(&state.store),
+            }),
+        )
+        .route(
+            "/v1/admin/artifacts/{submission_id}",
+            prism_artifacts::artifact_get_route(),
+        )
+        .route("/v1/admin/gating/{hotkey}/reset", post(admin_reset_gating))
+        .route_layer(from_fn_with_state(admin, require_bearer));
     Router::new()
         .route("/health", get(health))
         .route("/v1/submissions", post(post_submission))
-        .route("/v1/submissions/precheck", post(post_precheck))
+        // Advisory copy-gate: shares the intake front-end but writes no row,
+        // so it lives in `prism-intake` with its own narrow state.
+        .route(
+            "/v1/submissions/precheck",
+            prism_intake::precheck_route(Arc::clone(&state.store), state.metagraph.clone()),
+        )
         .route("/v1/submissions", get(list_submissions))
         .route("/v1/submissions/{id}", get(get_submission))
+        .route(
+            "/v1/submissions/{id}/diff",
+            prism_attribution::diff_route(Arc::clone(&state.store)),
+        )
         .route("/v1/submissions/{id}/events", get(get_events))
         .route("/v1/submissions/{id}/retry", post(post_retry))
+        // Attribution planner (2×2 matrix run plans) and the v3 read-only
+        // eval surface: split into the `prism-attribution` crate for the
+        // per-crate LOC cap; each route carries its own narrow state.
+        .route(
+            "/v1/submissions/{id}/metrics",
+            prism_attribution::metrics_route(
+                Arc::clone(&state.store),
+                Arc::clone(&state.eval_store),
+            ),
+        )
+        .route(
+            "/v1/submissions/{id}/inference",
+            prism_attribution::inference_route(Arc::clone(&state.store)),
+        )
+        .route(
+            "/v1/submissions/{id}/attribution",
+            prism_attribution::attribution_route(Arc::clone(&state.store)),
+        )
+        .route(
+            "/v1/anchors",
+            prism_attribution::anchors_route(Arc::clone(&state.eval_store)),
+        )
+        .route(
+            "/v1/preregistration",
+            prism_attribution::prereg_route(Arc::clone(&state.eval_store)),
+        )
         .route("/v1/status", get(get_status))
         .route("/v1/jobs", get(get_jobs))
         .route("/v1/recipe", get(get_recipe))
         .route("/v1/recipe/baseline", get(get_recipe_baseline))
         .route("/v1/architectures", get(get_architectures))
+        .merge(operator)
         .with_state(state)
 }
 
@@ -59,71 +154,14 @@ async fn health() -> impl IntoResponse {
     )
 }
 
-fn parse_submission_body(
-    headers: &axum::http::HeaderMap,
-    body: &[u8],
-) -> Result<SubmissionRequest, String> {
-    let ct = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if ct.contains("application/zip") || ct.contains("application/x-zip-compressed") {
-        let hk = headers
-            .get("x-miner-hotkey")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| "X-Miner-Hotkey required for application/zip".to_owned())?;
-        let arch_id = headers
-            .get("x-prism-arch-id")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        let (architecture_py, training_py) = if arch_id.is_some() {
-            (
-                String::new(),
-                prism_recipe::training_from_zip(body).map_err(|e| e.to_string())?,
-            )
-        } else {
-            prism_recipe::sources_from_zip(body).map_err(|e| e.to_string())?
-        };
-        return Ok(SubmissionRequest {
-            miner_hotkey: hk.to_owned(),
-            architecture_py,
-            training_py,
-            zip_base64: None,
-            arch_id,
-            label: None,
-        });
-    }
-    serde_json::from_slice(body).map_err(|e| format!("invalid_json: {e}"))
-}
-
-#[allow(clippy::result_large_err)]
-fn metagraph_uid(st: &AppState, hotkey: &str) -> Result<Option<u32>, Response> {
-    let Some(cache) = &st.metagraph else {
-        return Ok(None);
-    };
-    match cache.snapshot() {
-        Some(view) => match view.uid_of_hex(hotkey) {
-            Some(u) => Ok(Some(u)),
-            None => Err(json_err(
-                StatusCode::FORBIDDEN,
-                "hotkey_not_in_metagraph",
-                "miner hotkey is not registered on this subnet",
-            )),
-        },
-        None => Err(json_err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "metagraph_unavailable",
-            "metagraph snapshot not ready; retry shortly",
-        )),
-    }
-}
-
+/// Intake gates: metagraph membership + one accepted submission per
+/// `(challenge, hotkey)`. Returns the metagraph uid on pass.
 async fn intake_gates(
     st: &AppState,
     hotkey: &str,
     challenge: &str,
 ) -> Result<Option<u32>, Response> {
-    let uid = metagraph_uid(st, hotkey)?;
+    let uid = metagraph_uid(st.metagraph.as_deref(), hotkey)?;
     gate_one_max(st, hotkey, challenge).await?;
     Ok(uid)
 }
@@ -160,102 +198,24 @@ async fn gate_one_max(
     Ok(None)
 }
 
-async fn materialize_arch(st: &AppState, req: &mut SubmissionRequest) -> Result<(), Response> {
-    let Some(arch_id) = req
-        .arch_id
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-    else {
-        return Ok(());
-    };
-    match st.store.get_arch(&arch_id).await {
-        Ok(Some(rec)) => {
-            req.architecture_py = rec.architecture_py;
-            req.arch_id = Some(arch_id);
-            Ok(())
-        }
-        Ok(None) => Err(json_err(
-            StatusCode::NOT_FOUND,
-            "unknown_arch",
-            "arch_id is not in the published architecture registry",
-        )),
-        Err(e) => Err(json_err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "store",
-            &e.to_string(),
-        )),
-    }
-}
-
-async fn post_precheck(
-    State(st): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-    body: bytes::Bytes,
-) -> Response {
-    let mut req = match parse_submission_body(&headers, body.as_ref()) {
-        Ok(r) => r,
-        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
-    };
-    if let Err(e) = prism_pipeline::expand_zip_fields(&mut req) {
-        return json_err(StatusCode::BAD_REQUEST, "zip", &e);
-    }
-    if let Err(e) = prism_pipeline::validate(&req) {
-        return map_submission_err(&e);
-    }
-    if let Err(resp) = materialize_arch(&st, &mut req).await {
-        return resp;
-    }
-    if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
-        return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
-    }
-    req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
-    if let Err(resp) = metagraph_uid(&st, &req.miner_hotkey) {
-        return resp;
-    }
-    let miner_coldkey = st
-        .metagraph
-        .as_ref()
-        .and_then(|c| c.snapshot())
-        .and_then(|v| v.coldkey_hex_of(&req.miner_hotkey));
-    let (identity, identity_kind) = quota_identity(&req.miner_hotkey, miner_coldkey.as_deref());
-    let day = utc_day(now_ms() / 1000);
-    let used = match st
-        .store
-        .precheck_quota_try_consume(&identity, &day, PRECHECK_DAILY_LIMIT)
-        .await
-    {
-        Ok(Some(n)) => n,
-        Ok(None) => {
-            let used = st
-                .store
-                .precheck_quota_get(&identity, &day)
-                .await
-                .unwrap_or(PRECHECK_DAILY_LIMIT);
-            let q = quota_view(day, used, identity_kind);
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(precheck_quota_exceeded_json(&q)),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string());
-        }
-    };
-    let quota = quota_view(day, used, identity_kind);
-    if req.arch_id.is_some() {
-        return Json(precheck_json(&precheck_skipped(quota))).into_response();
-    }
-    let candidate = ephemeral_candidate(
-        &req.miner_hotkey,
-        miner_coldkey,
-        &req.architecture_py,
+/// [`prism_pipeline::queued_row`] with the coldkey resolved from the live
+/// metagraph snapshot (`None` off-chain).
+fn queued_row(
+    st: &AppState,
+    req: &SubmissionRequest,
+    id: String,
+    tree_blob: Option<Vec<u8>>,
+) -> SubmissionState {
+    let coldkey = coldkey_of(st.metagraph.as_deref(), req.miner_hotkey.trim());
+    prism_pipeline::queued_row(
+        req,
+        id,
+        coldkey,
+        tree_blob,
+        st.epoch.load(std::sync::atomic::Ordering::Relaxed),
+        st.netuid,
         now_ms(),
-    );
-    let recent = st.store.list_champions(64).await.unwrap_or_default();
-    let result = evaluate_copy_precheck(&candidate, &recent, quota);
-    Json(precheck_json(&result)).into_response()
+    )
 }
 
 /// POST body: JSON sources, JSON+`zip_base64`, or raw `application/zip`
@@ -265,25 +225,30 @@ async fn post_submission(
     headers: axum::http::HeaderMap,
     body: bytes::Bytes,
 ) -> Response {
+    let miner_lium_key = headers
+        .get(prism_lium_payer::LIUM_API_KEY_HEADER)
+        .or_else(|| headers.get("X-Lium-Api-Key"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(prism_lium_payer::normalize_lium_api_key);
     let mut req = match parse_submission_body(&headers, body.as_ref()) {
         Ok(r) => r,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
     };
     if let Err(e) = prism_pipeline::expand_zip_fields(&mut req) {
-        return json_err(StatusCode::BAD_REQUEST, "zip", &e);
+        return map_zip_err(&e);
     }
     if let Err(e) = prism_pipeline::validate(&req) {
         return map_submission_err(&e);
     }
-    // Training-only: pull the architecture from the registry (miner-sent
-    // source is rejected by validate above, so the registry is the only
-    // source of truth — this is what makes the pre-LLM copy gate safe to
-    // skip on these rows).
-    if let Err(resp) = materialize_arch(&st, &mut req).await {
-        return resp;
-    }
-    if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
-        return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
+    // Training-only (legacy): pull architecture from the registry. AutoModel
+    // rows skip the 1.x contract check — review uses GET …/diff.
+    if !is_automodel_request(&req) {
+        if let Err(resp) = materialize_arch(st.store.as_ref(), &mut req).await {
+            return resp;
+        }
+        if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
+            return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
+        }
     }
     // Normalize hotkey case so gating + ids are case-stable.
     req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
@@ -303,40 +268,26 @@ async fn post_submission(
             Err(resp) => return resp,
         }
     };
-    let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
-    let miner_hotkey = req.miner_hotkey.trim().to_owned();
-    let miner_coldkey = st
-        .metagraph
-        .as_ref()
-        .and_then(|c| c.snapshot())
-        .and_then(|v| v.coldkey_hex_of(&miner_hotkey));
-    let row = SubmissionState {
-        id: id.clone(),
-        miner_hotkey,
-        miner_coldkey,
-        epoch,
-        netuid: st.netuid,
-        status: Stage::Queued,
-        architecture_py: req.architecture_py.clone(),
-        training_py: req.training_py.clone(),
-        label: req.label.clone(),
-        pod_id: None,
-        pod_provider: None,
-        receipt: None,
-        metrics_json: None,
-        bpb: None,
-        arch_id: req.arch_id.clone(),
-        review: None,
-        similarity: None,
-        final_score: None,
-        retry_count: 0,
-        error_detail: None,
-        created_at_ms: now_ms(),
-        updated_at_ms: now_ms(),
+    let tree_blob = match prism_pipeline::tree_blob_for(&req) {
+        Ok(b) => b,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, "tree", &e),
     };
+    // Live Lium: miners fund their own pod via X-Lium-Api-Key (not persisted).
+    if prism_lium_payer::require_miner_lium(st.backend_mode) && miner_lium_key.is_none() && !exists
+    {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "missing_lium_api_key",
+            "live Prism eval requires header X-Lium-Api-Key (miner-funded Lium account)",
+        );
+    }
+    let row = queued_row(&st, &req, id.clone(), tree_blob);
     // Idempotent no-op duplicate accepted (same id → 200 OK {status:"already-queued"}).
     match st.store.insert_queued(&row).await {
         Ok(()) => {
+            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key.as_ref()) {
+                vault.insert(id.clone(), key.clone());
+            }
             // Registration finalizes only after the row is queued so intake
             // failures never consume the miner's single slot.
             if !exists {
@@ -362,11 +313,16 @@ async fn post_submission(
             )
                 .into_response()
         }
-        Err(StoreError::Backend(e)) if e.contains("duplicate") || e.contains("unique") => (
-            StatusCode::OK,
-            Json(json!({"submission_id": id, "status": "already-queued"})),
-        )
-            .into_response(),
+        Err(StoreError::Backend(e)) if e.contains("duplicate") || e.contains("unique") => {
+            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key.as_ref()) {
+                vault.insert(id.clone(), key.clone());
+            }
+            (
+                StatusCode::OK,
+                Json(json!({"submission_id": id, "status": "already-queued"})),
+            )
+                .into_response()
+        }
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
 }
@@ -395,8 +351,12 @@ async fn get_submission(State(st): State<Arc<AppState>>, Path(id): Path<String>)
     match st.store.get(&id).await {
         Ok(Some(row)) => {
             let events = st.store.events(&id).await.unwrap_or_default();
+            let mut detail = detail_view(&row);
+            if let Value::Object(m) = &mut detail {
+                m.insert("eval".into(), eval_json(st.eval_store.as_ref(), &id).await);
+            }
             Json(json!({
-                "submission": detail_view(&row),
+                "submission": detail,
                 "events": events,
             }))
             .into_response()
@@ -413,7 +373,30 @@ async fn get_events(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
     }
 }
 
-async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+/// `POST /v1/admin/gating/{hotkey}/reset` — clear 1-max open slot (operator).
+async fn admin_reset_gating(
+    State(st): State<Arc<AppState>>,
+    Path(hotkey): Path<String>,
+) -> Response {
+    let Some(gating) = &st.gating else {
+        return json_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "gating_disabled",
+            "submission gating is not enabled",
+        );
+    };
+    match gating.reset_open(CHALLENGE_ID, &hotkey).await {
+        Ok(()) => Json(json!({"ok": true, "hotkey": hotkey})).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "gating", &e.to_string()),
+    }
+}
+
+/// `POST /v1/submissions/{id}/retry` — requeue a failed row (guard: max attempts).
+async fn post_retry(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let row = match st.store.get(&id).await {
         Ok(Some(r)) => r,
         Ok(None) => return json_err(StatusCode::NOT_FOUND, "unknown_submission", &id),
@@ -438,6 +421,27 @@ async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
                 .is_some_and(|gr| infra_resubmit_allowed(&gr, now_ms()));
         }
     }
+    if !infra {
+        if let Err(resp) = verify_bearer(&st.admin_token_hashes, "admin", &headers) {
+            return resp;
+        }
+    }
+    let miner_lium_key = headers
+        .get(prism_lium_payer::LIUM_API_KEY_HEADER)
+        .or_else(|| headers.get("X-Lium-Api-Key"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(prism_lium_payer::normalize_lium_api_key);
+    if infra
+        && row.metrics_json.is_none()
+        && prism_lium_payer::require_miner_lium(st.backend_mode)
+        && miner_lium_key.is_none()
+    {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "missing_lium_api_key",
+            "live Prism retry requires header X-Lium-Api-Key when another GPU run is needed",
+        );
+    }
     if row.retry_count >= st.retry_max && !infra {
         return json_err(
             StatusCode::CONFLICT,
@@ -452,11 +456,16 @@ async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
         }
     }
     match st.store.reset_for_retry(&id, true).await {
-        Ok(_) => (
-            StatusCode::ACCEPTED,
-            Json(json!({"submission_id": id, "status": "queued"})),
-        )
-            .into_response(),
+        Ok(_) => {
+            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key) {
+                vault.insert(id.clone(), key);
+            }
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({"submission_id": id, "status": "queued"})),
+            )
+                .into_response()
+        }
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
 }
@@ -539,86 +548,6 @@ pub fn record_epoch(st: &AppState, epoch: u64) {
     st.epoch.store(epoch, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn list_view(r: &SubmissionState) -> Value {
-    json!({
-        "id": r.id,
-        "miner_hotkey": r.miner_hotkey,
-        "epoch": r.epoch,
-        "status": r.status.as_str(),
-        "label": r.label,
-        "bpb": r.bpb,
-        "arch_id": r.arch_id,
-        "n_params": r.n_params(),
-        "score": r.final_score.as_ref().map(|f| match f {
-            FinalScore::Score(v) => json!({"kind":"score","value":v}),
-            FinalScore::NoScore(c) => json!({"kind":"no_score","reason":c}),
-        }),
-        "created_at_ms": r.created_at_ms,
-        "updated_at_ms": r.updated_at_ms,
-    })
-}
-
-fn detail_view(r: &SubmissionState) -> Value {
-    let mut v = list_view(r);
-    if let Value::Object(m) = &mut v {
-        m.insert(
-            "architecture_sha256".into(),
-            json!(sha256_hex(&r.architecture_py)),
-        );
-        m.insert("training_sha256".into(), json!(sha256_hex(&r.training_py)));
-        m.insert("pod_id".into(), json!(r.pod_id));
-        m.insert("pod_provider".into(), json!(r.pod_provider));
-        m.insert(
-            "receipt".into(),
-            r.receipt.as_ref().map_or(Value::Null, |x| json!(x)),
-        );
-        m.insert("metrics".into(), json!(r.metrics_json));
-        m.insert(
-            "review".into(),
-            r.review.as_ref().map_or(Value::Null, |x| {
-                json!({
-                    "quality_score": x.quality_score,
-                    "issues": x.issues,
-                    "prompt_version": x.prompt_version,
-                })
-            }),
-        );
-        m.insert(
-            "similarity".into(),
-            r.similarity.as_ref().map_or(Value::Null, |x| {
-                json!({
-                    "kind": format!("{:?}", x.kind),
-                    "score": x.score,
-                    "closest": x.closest,
-                    "evidence": x.evidence,
-                    "prompt_version": x.prompt_version,
-                })
-            }),
-        );
-        m.insert("error_detail".into(), json!(r.error_detail));
-    }
-    v
-}
-
-fn sha256_hex(s: &str) -> String {
-    use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(s.as_bytes()))
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
-fn map_submission_err(err: &SubmissionError) -> Response {
-    json_err(StatusCode::BAD_REQUEST, "invalid_request", &err.to_string())
-}
-
-fn json_err(status: StatusCode, code: &str, message: &str) -> Response {
-    (status, Json(json!({"error": message, "code": code}))).into_response()
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -628,18 +557,23 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
-    use prism_store::{MemoryPrismStore, StatePatch};
+    use prism_store::{FinalScore, MemoryPrismStore, StatePatch};
     use tower::ServiceExt;
 
     fn state() -> Arc<AppState> {
+        // Transitional: training-only `arch_id` unit tests still exercise 1.x.
+        std::env::set_var(prism_automodel::ALLOW_LEGACY_ENV, "1");
         Arc::new(AppState {
             store: Arc::new(MemoryPrismStore::new()),
+            eval_store: Arc::new(crate::MemoryEvalStore::new()),
             epoch: std::sync::atomic::AtomicU64::new(7),
             netuid: 541,
             backend_mode: "sim",
             retry_max: 2,
             gating: None,
             metagraph: None,
+            admin_token_hashes: vec![],
+            payer_vault: None,
         })
     }
 
@@ -654,12 +588,15 @@ mod tests {
         (
             Arc::new(AppState {
                 store: Arc::new(MemoryPrismStore::new()),
+                eval_store: Arc::new(crate::MemoryEvalStore::new()),
                 epoch: std::sync::atomic::AtomicU64::new(7),
                 netuid: 541,
                 backend_mode: "sim",
                 retry_max: 2,
                 gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
                 metagraph: Some(cache),
+                admin_token_hashes: vec![],
+                payer_vault: None,
             }),
             gating,
         )
@@ -667,7 +604,22 @@ mod tests {
 
     #[tokio::test]
     async fn retry_requeues_failed_then_guard_blocks() {
-        let st = state();
+        const ADMIN: &str = "test-admin-token";
+        let mut st = state();
+        // Rebuild with a configured admin bearer (fail-closed otherwise).
+        let inner = Arc::new(AppState {
+            store: Arc::clone(&st.store),
+            eval_store: Arc::clone(&st.eval_store),
+            epoch: std::sync::atomic::AtomicU64::new(7),
+            netuid: 541,
+            backend_mode: "sim",
+            retry_max: 2,
+            gating: None,
+            metagraph: None,
+            admin_token_hashes: vec![prism_intake::token_hash(ADMIN)],
+            payer_vault: None,
+        });
+        st = inner;
         let app = submission_router(Arc::clone(&st));
         let id = prism_pipeline::submission_id(&crate::example_valid_request());
         // Seed via POST.
@@ -696,6 +648,7 @@ mod tests {
         let (s, v) = call(
             app.clone(),
             Request::post(format!("/v1/submissions/{id}/retry"))
+                .header("authorization", format!("Bearer {ADMIN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -716,6 +669,7 @@ mod tests {
         let (s, _v) = call(
             app.clone(),
             Request::post(format!("/v1/submissions/{id}/retry"))
+                .header("authorization", format!("Bearer {ADMIN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -735,6 +689,7 @@ mod tests {
         let (s, _v) = call(
             app,
             Request::post(format!("/v1/submissions/{id}/retry"))
+                .header("authorization", format!("Bearer {ADMIN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1003,7 +958,9 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["version"], "2.0.0");
         assert_eq!(v["train_hours_cap"], 6.0);
+        assert_eq!(v["automodel_pin_id"], prism_automodel::AUTOMODEL_PIN_ID);
         let (s, v) = call(
             app,
             Request::get("/v1/recipe/baseline")
@@ -1234,6 +1191,7 @@ mod tests {
             status: Stage::Terminated,
             architecture_py: victim.architecture_py.clone(),
             training_py: victim.training_py.clone(),
+            tree_blob: None,
             label: None,
             pod_id: None,
             pod_provider: None,
@@ -1330,12 +1288,15 @@ mod tests {
         let gating = Arc::new(submission_gating::MemoryGatingStore::new());
         let st = Arc::new(AppState {
             store: Arc::new(MemoryPrismStore::new()),
+            eval_store: Arc::new(crate::MemoryEvalStore::new()),
             epoch: std::sync::atomic::AtomicU64::new(7),
             netuid: 541,
             backend_mode: "sim",
             retry_max: 2,
             gating: Some(gating as Arc<dyn GatingStore>),
             metagraph: Some(Arc::new(MetagraphCache::new())),
+            admin_token_hashes: vec![],
+            payer_vault: None,
         });
         let app = submission_router(st);
         let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
@@ -1349,5 +1310,322 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
         assert_eq!(v["code"], "metagraph_unavailable");
+    }
+
+    async fn post_one(app: &Router) -> String {
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        v["submission_id"].as_str().unwrap().to_owned()
+    }
+
+    fn eval_blob() -> Value {
+        json!({
+            "bpb": 1.0,
+            "tokens_seen": 1_000_000_000_u64,
+            "tokens_seen_source": "train_stream",
+            "wall_clock_seconds": 3600.0,
+            "gpu_type": "H100",
+            "n_params": 125_000_000_u64,
+            "recipe": "1.3.0",
+            "train_metrics": { "miner.train.loss": 0.7 },
+            "battery": { "metrics": { "org.g1.bits_per_byte_code": 1.0 } },
+        })
+    }
+
+    #[tokio::test]
+    async fn detail_eval_null_then_populated() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["submission"]["eval"], Value::Null, "no eval pre-finalize");
+
+        prism_eval_store::finalize_composite(
+            &st.eval_store,
+            &id,
+            &eval_blob(),
+            &prism_eval_store::AnchorInput::v0_placeholder(),
+        )
+        .await
+        .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let eval = &v["submission"]["eval"];
+        assert_eq!(eval["scoring_mode"], "shadow");
+        assert_eq!(
+            eval["status"], "ineligible",
+            "partial battery is ineligible"
+        );
+        assert_eq!(eval["groups"].as_array().unwrap().len(), 8);
+        assert_eq!(eval["anchor_version"], 0);
+        assert_eq!(eval["prereg_hash"].as_str().unwrap().len(), 64);
+    }
+
+    #[tokio::test]
+    async fn metrics_zone_a_and_b_and_bad_zone() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+        prism_eval_store::finalize_composite(
+            &st.eval_store,
+            &id,
+            &eval_blob(),
+            &prism_eval_store::AnchorInput::v0_placeholder(),
+        )
+        .await
+        .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/metrics?zone=a"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["provenance"], "organizer-measured");
+        assert_eq!(v["metrics"][0]["key"], "org.g1.bits_per_byte_code");
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/metrics?zone=b"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["provenance"], "participant-reported");
+        assert_eq!(v["reports"][0]["verdict"], "ok");
+        assert_eq!(v["reports"][0]["seq"], 0);
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/metrics?zone=c"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["code"], "invalid_zone");
+
+        let (s, _) = call(
+            app,
+            Request::get("/v1/submissions/nope/metrics?zone=a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn inference_traces_paginated_from_metrics_json() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+        let traces = json!({
+            "version": 1,
+            "truncated": false,
+            "n_items": 2,
+            "bytes_approx": 120,
+            "caps": { "global": 2500 },
+            "items": [
+                {
+                    "kind": "mc",
+                    "group": "g2",
+                    "task": "hellaswag",
+                    "cluster": "g2/hellaswag",
+                    "prompt": "The dog",
+                    "choices": [" barked", " flew"],
+                    "gold": 0,
+                    "selected": 0,
+                    "value": 1.0,
+                    "choice_logprobs": [{"i": 0, "sum_lp": -0.1, "n_tok": 1, "norm_lp": -0.01}]
+                },
+                {
+                    "kind": "mc",
+                    "group": "g3",
+                    "cluster": "mqar/n4",
+                    "prompt": "k1 v1",
+                    "choices": [" v1", " v9"],
+                    "gold": 0,
+                    "selected": 1,
+                    "value": 0.0
+                }
+            ]
+        });
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    metrics_json: Some(json!({
+                        "bpb": 1.5,
+                        "inference_traces": traces,
+                    })),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/inference?group=g2&limit=10"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["provenance"], "organizer-measured");
+        assert_eq!(v["battery"]["total"], 1);
+        assert_eq!(v["battery"]["items"][0]["prompt"], "The dog");
+        assert_eq!(v["battery"]["items"][0]["choices"][0], " barked");
+        assert_eq!(v["battery"]["items"][0]["selected"], 0);
+
+        let (s, _) = call(
+            app,
+            Request::get("/v1/submissions/nope/inference")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn anchors_and_preregistration_views() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+        prism_eval_store::finalize_composite(
+            &st.eval_store,
+            &id,
+            &eval_blob(),
+            &prism_eval_store::AnchorInput::v0_placeholder(),
+        )
+        .await
+        .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get("/v1/anchors").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let anchors = v["anchors"].as_array().unwrap();
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0]["version"], 0);
+        assert_eq!(anchors[0]["status"], "placeholder");
+
+        let (s, v) = call(
+            app,
+            Request::get("/v1/preregistration")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let regs = v["preregistrations"].as_array().unwrap();
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0]["hash"], anchors[0]["prereg_hash"]);
+    }
+
+    #[tokio::test]
+    async fn automodel_fixture_intake_and_diff_route() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let req = crate::example_automodel_request();
+        let id = prism_pipeline::submission_id(&req);
+        let body = serde_json::to_vec(&req).unwrap();
+        // Wire JSON omits packed_tree (serde skip) — re-expand via zip_base64.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(v["submission_id"], id);
+        assert_eq!(v["status"], "accepted");
+
+        let (s, v) = call(
+            app,
+            Request::get(format!("/v1/submissions/{id}/diff"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["pin_id"], prism_automodel::FIXTURE_PIN_ID);
+        assert!(v["patch"].as_str().unwrap().contains("ToyModel"));
+        assert!(!v["diffstat"]["files"].as_array().unwrap().is_empty());
+        let classes: Vec<&str> = v["diffstat"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["class"].as_str())
+            .collect();
+        assert!(classes.contains(&"arch"), "{classes:?}");
+    }
+
+    #[tokio::test]
+    async fn legacy_zip_rejected_unsupported_layout() {
+        use base64::Engine as _;
+        let st = state();
+        let app = submission_router(st);
+        let arch = "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
+        let train = "def train(model, ctx):\n    return {}\n";
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            use std::io::Write;
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            w.start_file("architecture.py", opts).unwrap();
+            w.write_all(arch.as_bytes()).unwrap();
+            w.start_file("training.py", opts).unwrap();
+            w.write_all(train.as_bytes()).unwrap();
+            w.finish().unwrap();
+        }
+        let zip_b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+        let body = serde_json::json!({
+            "miner_hotkey": "11".repeat(32),
+            "zip_base64": zip_b64,
+        });
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["code"], "unsupported_layout");
     }
 }

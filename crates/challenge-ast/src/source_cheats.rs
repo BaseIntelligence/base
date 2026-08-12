@@ -10,6 +10,12 @@ pub enum SourceCheatKind {
     /// Dense sequence/time mix without a causal mask (MLP-Mixer / `TokenMix`
     /// label leak into next-token CE).
     NonCausalLabelLeak,
+    /// Recipe 2.0 delta disables / mocks telemetry hooks.
+    TelemetryDisable,
+    /// Recipe 2.0 delta introduces network / exfil primitives.
+    NetworkExfil,
+    /// Recipe 2.0 delta references held-out / private eval assets.
+    EvalSetLeak,
 }
 
 /// One static source finding.
@@ -24,6 +30,110 @@ pub struct SourceCheatHit {
 /// Scan miner sources for cheap, deterministic cheat patterns.
 #[must_use]
 pub fn static_source_cheat(architecture_py: &str, training_py: &str) -> Option<SourceCheatHit> {
+    static_source_cheat_inner(architecture_py, training_py, false)
+}
+
+/// Recipe 2.0 `AutoModel` path: scan the **delta** (patch + touched Python).
+///
+/// Skips the 1.x `training.py` telemetry-hook requirement (harness wraps the
+/// `AutoModel` entry). Still hard-rejects telemetry disable / network exfil /
+/// eval-set leakage patterns in added hunk lines, plus `METRICS_JSON` and
+/// non-causal mixes in touched architecture Python.
+#[must_use]
+pub fn static_automodel_delta_cheat(
+    patch_text: &str,
+    touched_architecture_py: &str,
+) -> Option<SourceCheatHit> {
+    if let Some(hit) = static_patch_cheat(patch_text) {
+        return Some(hit);
+    }
+    static_source_cheat_inner(touched_architecture_py, "", true)
+}
+
+/// Unified-diff delta scan (added lines only).
+#[must_use]
+pub fn static_patch_cheat(patch_text: &str) -> Option<SourceCheatHit> {
+    let added = added_hunk_text(patch_text);
+    if added.is_empty() {
+        return None;
+    }
+    let lower = added.to_ascii_lowercase();
+
+    for needle in [
+        "disable_telemetry",
+        "telemetry_disabled",
+        "prism_telemetry = none",
+        "prism_telemetry=none",
+        "sys.modules['prism_telemetry']",
+        "sys.modules[\"prism_telemetry\"]",
+        "report = lambda",
+        "finish_evaluation = lambda",
+    ] {
+        if lower.contains(needle) {
+            return Some(SourceCheatHit {
+                kind: SourceCheatKind::TelemetryDisable,
+                rationale: format!("static delta: telemetry disable/mock ({needle})"),
+            });
+        }
+    }
+
+    for needle in [
+        "import socket",
+        "from socket ",
+        "import urllib",
+        "from urllib",
+        "import requests",
+        "from requests",
+        "http.client",
+        "aiohttp",
+        "subprocess.",
+        "subprocess.call",
+        "subprocess.popen",
+        "os.system(",
+        "curl ",
+        "wget ",
+    ] {
+        if lower.contains(needle) || added.contains(needle) {
+            return Some(SourceCheatHit {
+                kind: SourceCheatKind::NetworkExfil,
+                rationale: format!("static delta: network/exfil primitive ({needle})"),
+            });
+        }
+    }
+
+    for needle in [
+        "eval_pack",
+        "held_out",
+        "held-out",
+        "private_eval",
+        "private/eval",
+        "/eval/private",
+        "g8_private",
+        "eval_tier=private",
+        "eval_tier = private",
+    ] {
+        if lower.contains(needle) {
+            return Some(SourceCheatHit {
+                kind: SourceCheatKind::EvalSetLeak,
+                rationale: format!("static delta: eval-set leakage pattern ({needle})"),
+            });
+        }
+    }
+
+    if added.contains("METRICS_JSON=") {
+        return Some(SourceCheatHit {
+            kind: SourceCheatKind::EvalShortCircuit,
+            rationale: "static delta: hardcoded METRICS_JSON in patch".into(),
+        });
+    }
+    None
+}
+
+fn static_source_cheat_inner(
+    architecture_py: &str,
+    training_py: &str,
+    automodel_delta: bool,
+) -> Option<SourceCheatHit> {
     for (path, src) in [
         ("architecture.py", architecture_py),
         ("training.py", training_py),
@@ -41,6 +151,10 @@ pub fn static_source_cheat(architecture_py: &str, training_py: &str) -> Option<S
             rationale: format!("static: non-causal sequence mix label leak — {why}"),
         });
     }
+    if automodel_delta {
+        // Harness wraps AutoModel train entry; miner training.py hooks N/A.
+        return None;
+    }
     if !training_has_telemetry_hooks(training_py) {
         return Some(SourceCheatHit {
             kind: SourceCheatKind::MissingTelemetryHooks,
@@ -49,6 +163,18 @@ pub fn static_source_cheat(architecture_py: &str, training_py: &str) -> Option<S
         });
     }
     None
+}
+
+/// Concatenate added hunk lines from a unified diff (skip `+++` headers).
+fn added_hunk_text(patch_text: &str) -> String {
+    let mut out = String::new();
+    for line in patch_text.lines() {
+        if line.starts_with('+') && !line.starts_with("+++") {
+            out.push_str(&line[1..]);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Detect MLP-Mixer / `TokenMix`-style dense mixes across the time axis with no
@@ -240,5 +366,54 @@ def build_model(ctx):
 ";
         assert!(static_source_cheat(arch, CLEAN_TRAIN).is_none());
         assert!(!arch_has_noncausal_seq_mix(arch));
+    }
+
+    #[test]
+    fn patch_telemetry_disable_is_cheat() {
+        let patch = "\
+diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ -0,0 +1,2 @@
++import sys
++sys.modules['prism_telemetry'] = None
+";
+        let hit = static_patch_cheat(patch).expect("hit");
+        assert_eq!(hit.kind, SourceCheatKind::TelemetryDisable);
+    }
+
+    #[test]
+    fn patch_network_exfil_is_cheat() {
+        let patch = "\
+diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ -0,0 +1,1 @@
++import socket
+";
+        let hit = static_patch_cheat(patch).expect("hit");
+        assert_eq!(hit.kind, SourceCheatKind::NetworkExfil);
+    }
+
+    #[test]
+    fn patch_eval_leak_is_cheat() {
+        let patch = "\
+diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ -0,0 +1,1 @@
++path = 'private_eval/held_out.json'
+";
+        let hit = static_patch_cheat(patch).expect("hit");
+        assert_eq!(hit.kind, SourceCheatKind::EvalSetLeak);
+    }
+
+    #[test]
+    fn automodel_delta_skips_training_hooks() {
+        assert!(static_automodel_delta_cheat(
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1,1 @@\n+x = 1\n",
+            "def scale(x):\n    return x\n",
+        )
+        .is_none());
     }
 }

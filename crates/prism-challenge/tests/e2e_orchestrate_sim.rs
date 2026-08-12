@@ -134,6 +134,7 @@ async fn orchestrator_completes_one_submission_and_emits() {
             status: Stage::Queued,
             architecture_py: req.architecture_py.clone(),
             training_py: req.training_py.clone(),
+            tree_blob: None,
             label: req.label,
             pod_id: None,
             pod_provider: None,
@@ -197,6 +198,7 @@ async fn submission_detail_exposes_metrics_over_http() {
             status: Stage::Queued,
             architecture_py: req.architecture_py.clone(),
             training_py: req.training_py.clone(),
+            tree_blob: None,
             label: req.label,
             pod_id: None,
             pod_provider: None,
@@ -218,12 +220,15 @@ async fn submission_detail_exposes_metrics_over_http() {
 
     let state = Arc::new(prism_challenge::AppState {
         store: Arc::clone(&store) as Arc<dyn PrismStore>,
+        eval_store: Arc::new(prism_challenge::MemoryEvalStore::new()),
         epoch: std::sync::atomic::AtomicU64::new(7),
         netuid: 541,
         backend_mode: "sim",
         retry_max: 2,
         gating: None,
         metagraph: None,
+        admin_token_hashes: vec![],
+        payer_vault: None,
     });
     let app = prism_challenge::submission_router(state);
     let res = tower::ServiceExt::oneshot(
@@ -279,6 +284,7 @@ async fn emit_and_submit_covers_expected_set() {
             status: Stage::Terminated,
             architecture_py: "a".into(),
             training_py: "t".into(),
+            tree_blob: None,
             label: None,
             pod_id: None,
             pod_provider: None,

@@ -9,15 +9,22 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::doc_markdown)]
 
+pub mod composite;
 pub mod config;
 pub mod pipeline;
 pub mod precheck;
 pub mod score;
 pub mod submission;
 
+pub use composite::{
+    evaluate, BootstrapInfo, BudgetFacts, CompositeAnchors, CompositeError, CompositeOutcome,
+    CompositeScore, GateFailure, GateReport, GateThresholds, GroupScore, Ineligible, MetricSeries,
+    MirrorPair, NormDesc, SubmissionMetrics, GROUP_KEYS, N_GROUPS,
+};
 pub use config::PrismConfig;
 pub use pipeline::{
-    run_eval_pipeline, run_sim_pipeline, PipelineError, PipelineInput, PipelineResult,
+    measurement_patch, resume_measurement, run_eval_pipeline, run_sim_pipeline, PipelineError,
+    PipelineInput, PipelineResult,
 };
 pub use precheck::{
     corpus_from_rows, ephemeral_candidate, evaluate_copy_precheck, gate_corpus_from_rows,
@@ -25,9 +32,10 @@ pub use precheck::{
     same_miner, utc_day, PrecheckIdentityKind, PrecheckQuotaView, PrecheckResult,
     PRECHECK_DAILY_LIMIT,
 };
-pub use score::{score_from_bpb, score_from_pipeline, PipelineOutcome};
+pub use score::{final_lattice, score_from_bpb, score_from_pipeline, PipelineOutcome, ScoringMode};
 pub use submission::{
-    arch_digest, arch_id_for, example_valid_request, expand_zip_fields, gating_key, is_arch_id,
-    submission_id, validate, QueuedSubmission, SubmissionAccepted, SubmissionError, SubmissionId,
-    SubmissionRequest, SubmissionService,
+    arch_digest, arch_id_for, example_automodel_request, example_legacy_request,
+    example_valid_request, expand_zip_fields, gating_key, is_arch_id, is_automodel_request,
+    queued_row, source_tree, submission_id, tree_blob_for, validate, QueuedSubmission,
+    SubmissionAccepted, SubmissionError, SubmissionId, SubmissionRequest, SubmissionService,
 };

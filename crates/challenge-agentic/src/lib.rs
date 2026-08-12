@@ -19,17 +19,20 @@ mod llm;
 mod prompts;
 mod sim;
 mod tools;
-mod types;
 
 pub use agent::{AgentConfig, OpenRouterAgent};
 pub use challenge_ast::{
-    arch_has_noncausal_seq_mix, copy_gate, static_source_cheat, training_has_telemetry_hooks,
-    CopyGateHit, GateCorpusEntry, SourceCheatHit, SourceCheatKind,
+    arch_has_noncausal_seq_mix, copy_gate, static_automodel_delta_cheat, static_patch_cheat,
+    static_source_cheat, training_has_telemetry_hooks, CopyGateHit, GateCorpusEntry,
+    SourceCheatHit, SourceCheatKind,
 };
 pub use llm::{load_api_key_file, DEFAULT_MODEL};
 pub use prompts::{AGENTIC_PROMPT_VERSION, DESIGN_DOMAIN_RULES, PRISM_DOMAIN_RULES};
 pub use sim::{SimAgent, SIM_CHEAT_BPS, SIM_SUSPICIOUS_BPS};
-pub use types::{
+// The review contract lives in `challenge-agentic-types` (per-crate LOC cap);
+// it is re-exported wholesale so `challenge_agentic::…` stays the single
+// import path.
+pub use challenge_agentic_types::{
     AgenticBackend, AgenticError, AgenticVerdict, CheatCode, ContainerReviewRequest, CorpusEntry,
     ReviewRequest, VerdictKind, OPENROUTER_API_BASE,
 };
@@ -56,5 +59,18 @@ pub fn same_miner_identity(
     match (coldkey_a, coldkey_b) {
         (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => a.eq_ignore_ascii_case(b),
         _ => false,
+    }
+}
+
+/// Pre-pod static screen: recipe 2.0 uses `patch` (delta); 1.x uses seams.
+#[must_use]
+pub fn prism_static_screen(
+    architecture_py: &str,
+    training_py: &str,
+    automodel_patch: Option<&str>,
+) -> Option<SourceCheatHit> {
+    match automodel_patch {
+        Some(patch) => static_automodel_delta_cheat(patch, architecture_py),
+        None => static_source_cheat(architecture_py, training_py),
     }
 }

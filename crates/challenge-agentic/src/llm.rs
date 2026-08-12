@@ -3,7 +3,7 @@
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use serde_json::{json, Value};
 
-use crate::types::{AgenticError, OPENROUTER_API_BASE};
+use challenge_agentic_types::{AgenticError, OPENROUTER_API_BASE};
 
 /// Default chat model for tool-calling reviews.
 pub const DEFAULT_MODEL: &str = "openai/gpt-4o-mini";

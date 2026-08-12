@@ -1,0 +1,8 @@
+{"prompt": "Question: Which unit is best for measuring the mass of a paperclip?\nAnswer:", "choices": [" grams", " kilograms", " liters", " meters"], "gold": 0}
+{"prompt": "Question: What do plants need most directly to make their own food?\nAnswer:", "choices": [" sunlight", " salt", " metal", " plastic"], "gold": 0}
+{"prompt": "Question: Which of these is a source of renewable energy?\nAnswer:", "choices": [" wind", " coal", " gasoline", " diesel"], "gold": 0}
+{"prompt": "Question: What state of matter is ice?\nAnswer:", "choices": [" solid", " liquid", " gas", " plasma"], "gold": 0}
+{"prompt": "Question: Which organ pumps blood through the human body?\nAnswer:", "choices": [" the heart", " the liver", " the lungs", " the stomach"], "gold": 0}
+{"prompt": "Question: What force pulls objects toward the center of the Earth?\nAnswer:", "choices": [" gravity", " friction", " magnetism", " tension"], "gold": 0}
+{"prompt": "Question: Which of these animals is a mammal?\nAnswer:", "choices": [" dolphin", " shark", " eagle", " lizard"], "gold": 0}
+{"prompt": "Question: Water boils at what temperature at sea level?\nAnswer:", "choices": [" 100 degrees Celsius", " 0 degrees Celsius", " 50 degrees Celsius", " 10 degrees Celsius"], "gold": 0}

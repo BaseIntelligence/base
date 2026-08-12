@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use sqlx::PgPool;
 
-use crate::store::{
+use prism_store_types::{
     ArchitectureRecord, PublishArchOutcome, StoreError, SubmissionState, TopModelPublication,
 };
 
@@ -194,13 +194,30 @@ pub(crate) async fn record_publication(
 }
 
 pub(crate) async fn last_publication_bpb(pool: &PgPool) -> Result<Option<f64>, StoreError> {
-    let row: Option<(f64,)> = sqlx::query_as(
-        "SELECT bpb FROM prism_topmodel_publication ORDER BY published_at DESC LIMIT 1",
+    Ok(last_publication(pool).await?.map(|p| p.bpb))
+}
+
+pub(crate) async fn last_publication(
+    pool: &PgPool,
+) -> Result<Option<TopModelPublication>, StoreError> {
+    type PubRow = (String, Option<String>, String, f64, String, Option<String>);
+    let row: Option<PubRow> = sqlx::query_as(
+        "SELECT submission_id, arch_id, owner_hotkey, bpb, repo_path, commit_sha \
+         FROM prism_topmodel_publication ORDER BY published_at DESC LIMIT 1",
     )
     .fetch_optional(pool)
     .await
     .map_err(backend)?;
-    Ok(row.map(|(b,)| b))
+    Ok(row.map(
+        |(submission_id, arch_id, owner_hotkey, bpb, repo_path, commit_sha)| TopModelPublication {
+            submission_id,
+            arch_id,
+            owner_hotkey,
+            bpb,
+            repo_path,
+            commit_sha,
+        },
+    ))
 }
 
 pub(crate) async fn best_scored_bpb(pool: &PgPool) -> Result<Option<f64>, StoreError> {

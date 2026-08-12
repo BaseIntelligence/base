@@ -122,6 +122,7 @@ def train(model, ctx):
             status: Stage::Queued,
             architecture_py: architecture_py.into(),
             training_py: training_py.into(),
+            tree_blob: None,
             label: Some("cheat-metrics".into()),
             pod_id: None,
             pod_provider: None,

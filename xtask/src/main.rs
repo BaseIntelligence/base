@@ -4,6 +4,7 @@
 //! - `loc-cap` — fail if any crate under `crates/` or `bins/` exceeds 1500 non-test LOC
 //! - `consensus-lint` — fail if listed consensus crates use forbidden tokens (D8)
 //! - `metadata-snapshot` — fetch testnet metadata + epoch-schedule sources into `metadata/testnet.lock`
+//! - `natural-pack` — build the pinned G5 natural-document eval packs into the operator assets dir
 //! - `spec-check` — fail if `docs/BUNDLE_SPEC.md` is missing plan pins (a)–(l)
 //! - `design-check` — fail if `docs/DESIGN_CHALLENGE.md` is missing freeze pins
 //! - `external-docs-check` — fail if external miner docs `protocol_version` ≠ bundle, or D19 drifts
@@ -14,6 +15,7 @@ mod design_check;
 mod external_docs_check;
 mod loc_cap;
 mod metadata_snapshot;
+mod natural_pack;
 mod spec_check;
 
 use clap::{Parser, Subcommand};
@@ -45,6 +47,36 @@ enum Command {
         #[arg(long, default_value = "metadata/testnet.lock")]
         out: PathBuf,
         /// Compare live snapshot to the committed lockfile; exit 1 on drift.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Build the pinned G5 natural-document eval packs (LongBench-v2 MCQ + HELMET RAG).
+    NaturalPack {
+        /// Operator eval-assets root; packs land under `<out>/g5/natural/`.
+        #[arg(long, default_value = "prism-eval-assets")]
+        out: PathBuf,
+        /// Source artifact cache (downloads + extracted archive members).
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        /// Pack seed; changing it rotates which rows are private vs mirror.
+        #[arg(long, default_value = natural_pack::DEFAULT_PACK_SEED)]
+        seed: String,
+        /// MCQ rows per side (private and mirror each get this many).
+        #[arg(long, default_value_t = 64)]
+        mcq_pool: usize,
+        /// RAG rows per side, per (corpus, k) cell.
+        #[arg(long, default_value_t = 12)]
+        rag_per_cell: usize,
+        /// Few-shot demo rows per side, per corpus.
+        #[arg(long, default_value_t = 8)]
+        demos_per_corpus: usize,
+        /// LongBench-v2 length bands to draw from (repeatable).
+        #[arg(long = "length", default_values_t = [String::from("short")])]
+        lengths: Vec<String>,
+        /// Never touch the network; every artifact must already be cached.
+        #[arg(long)]
+        offline: bool,
+        /// Rebuild beside `<out>` and fail if the pack hash drifted.
         #[arg(long)]
         check: bool,
     },
@@ -89,6 +121,31 @@ fn main() -> ExitCode {
                 check,
             };
             metadata_snapshot::run(&root, &args)
+        }
+        Command::NaturalPack {
+            out,
+            cache,
+            seed,
+            mcq_pool,
+            rag_per_cell,
+            demos_per_corpus,
+            lengths,
+            offline,
+            check,
+        } => {
+            let defaults = natural_pack::PackArgs::default();
+            let args = natural_pack::PackArgs {
+                out,
+                cache: cache.unwrap_or(defaults.cache),
+                seed,
+                mcq_pool,
+                rag_per_cell,
+                demos_per_corpus,
+                lengths,
+                offline,
+                check,
+            };
+            natural_pack::run(&root, &args)
         }
         Command::SpecCheck => spec_check::run(&root),
         Command::DesignCheck => design_check::run(&root),

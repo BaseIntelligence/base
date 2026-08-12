@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::llm::ChatClient;
 use crate::prompts::system_prompt;
 use crate::tools::{dispatch, tool_schemas, ToolContext};
-use crate::types::{AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest};
+use challenge_agentic_types::{AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest};
 
 /// Loop budgets.
 #[derive(Debug, Clone)]
@@ -15,7 +15,10 @@ pub struct AgentConfig {
     pub max_turns: u32,
     /// Max completion tokens per provider call.
     pub max_tokens_per_turn: u32,
-    /// Soft total token budget across the loop.
+    /// Soft total token budget across the loop. Each turn resends the full
+    /// conversation, so `usage.total_tokens` accumulates superlinearly: v3
+    /// source trees + a ≤24KiB metrics blob need ~60k for a healthy review
+    /// (the old 24k default died mid-loop at ~40k on real submissions).
     pub token_budget: u64,
 }
 
@@ -24,7 +27,7 @@ impl Default for AgentConfig {
         Self {
             max_turns: 12,
             max_tokens_per_turn: 1_800,
-            token_budget: 24_000,
+            token_budget: 120_000,
         }
     }
 }
@@ -101,12 +104,23 @@ impl OpenRouterAgent {
             }),
         ];
         let mut spent_tokens: u64 = 0;
+        let mut forced = false;
 
         for _turn in 0..self.config.max_turns {
             if spent_tokens >= self.config.token_budget {
-                return Err(AgenticError::NoVerdict(format!(
-                    "token budget exhausted ({spent_tokens})"
-                )));
+                // Budget death gets exactly one forced-verdict turn: the model
+                // must convert evidence already gathered into submit_verdict
+                // instead of dying mid-investigation with no outcome.
+                if forced {
+                    return Err(AgenticError::NoVerdict(format!(
+                        "token budget exhausted ({spent_tokens}) without submit_verdict"
+                    )));
+                }
+                forced = true;
+                messages.push(json!({
+                    "role": "user",
+                    "content": "Token budget exhausted. Do NOT call any inspection tool. Call submit_verdict now with your best judgment from the evidence already gathered."
+                }));
             }
             let turn = self
                 .client
@@ -178,7 +192,7 @@ impl AgenticBackend for OpenRouterAgent {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::types::VerdictKind;
+    use challenge_agentic_types::VerdictKind;
     use std::fs;
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
@@ -230,6 +244,139 @@ mod tests {
         let v = agent.review(&req).await.unwrap();
         assert_eq!(v.verdict, VerdictKind::Clean);
         assert_eq!(v.similarity_bps, 1200);
+    }
+
+    /// Sequential responses + capture (budget tests need distinct turns).
+    struct Seq {
+        bodies: Vec<Value>,
+        idx: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        saw_forced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl wiremock::Respond for Seq {
+        fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+            if String::from_utf8_lossy(&req.body).contains("Token budget exhausted") {
+                self.saw_forced
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            let i = self
+                .idx
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .min(self.bodies.len() - 1);
+            ResponseTemplate::new(200).set_body_json(&self.bodies[i])
+        }
+    }
+
+    fn tool_call_body(name: &str, args: &str, tokens: u64) -> Value {
+        json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
+                "id": "c", "type": "function", "function": {"name": name, "arguments": args}}]}}],
+            "usage": {"total_tokens": tokens}
+        })
+    }
+
+    #[test]
+    fn default_budget_covers_v3_source_tree_reviews() {
+        // Regression pin (E12): the old 24k default died mid-review at ~40k
+        // accumulated tokens on real v3 submissions.
+        assert_eq!(AgentConfig::default().token_budget, 120_000);
+    }
+
+    #[tokio::test]
+    async fn budget_exhaustion_forces_final_verdict_turn() {
+        let server = MockServer::start().await;
+        let saw_forced = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seq = Seq {
+            bodies: vec![
+                tool_call_body("read_file", "{\"path\":\"agent.py\"}", 500),
+                tool_call_body(
+                    "submit_verdict",
+                    "{\"verdict\":\"clean\",\"cheat_codes\":[],\"nearest_id\":null,\"similarity_bps\":100,\"rationale\":\"best judgment from gathered evidence\"}",
+                    900,
+                ),
+            ],
+            idx: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            saw_forced: std::sync::Arc::clone(&saw_forced),
+        };
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(seq)
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("agent.py"), "x = 1\n").unwrap();
+        let agent = OpenRouterAgent::with_config(
+            "test-key-123456",
+            server.uri(),
+            "m",
+            AgentConfig {
+                token_budget: 100,
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec!["agent.py".into()],
+            corpus: vec![],
+            metrics_relpath: None,
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: String::new(),
+        };
+        // Budget died after turn 1; the forced turn still yields a verdict.
+        let v = agent.review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Clean);
+        assert_eq!(v.similarity_bps, 100);
+        assert!(saw_forced.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn budget_exhaustion_without_verdict_is_defined_noverdict() {
+        let server = MockServer::start().await;
+        let saw_forced = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seq = Seq {
+            bodies: vec![tool_call_body("read_file", "{\"path\":\"agent.py\"}", 500)],
+            idx: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            saw_forced: std::sync::Arc::clone(&saw_forced),
+        };
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(seq)
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("agent.py"), "x = 1\n").unwrap();
+        let agent = OpenRouterAgent::with_config(
+            "test-key-123456",
+            server.uri(),
+            "m",
+            AgentConfig {
+                token_budget: 100,
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec!["agent.py".into()],
+            corpus: vec![],
+            metrics_relpath: None,
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: String::new(),
+        };
+        // The model ignored the forced turn (kept inspecting): defined
+        // NoVerdict error — the orchestrator maps this to a bounded
+        // no-retrain retry, then terminal NoScore(ChallengeInternal).
+        let err = agent.review(&req).await.unwrap_err();
+        match err {
+            AgenticError::NoVerdict(m) => assert!(m.contains("token budget exhausted"), "{m}"),
+            other => panic!("expected NoVerdict, got {other}"),
+        }
+        assert!(saw_forced.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]

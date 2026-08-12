@@ -1,0 +1,8 @@
+{"prompt": "The trophy would not fit in the brown suitcase because it was too big. The _ was too big.", "choices": [" trophy", " suitcase"], "gold": 0}
+{"prompt": "The trophy would not fit in the brown suitcase because it was too small. The _ was too small.", "choices": [" suitcase", " trophy"], "gold": 0}
+{"prompt": "Sarah thanked Maria for the help because she had stayed late. _ had stayed late.", "choices": [" Maria", " Sarah"], "gold": 0}
+{"prompt": "The nurse called the doctor because she was worried about the patient. _ was worried.", "choices": [" nurse", " doctor"], "gold": 0}
+{"prompt": "I couldn't put the book on the shelf because it was too high. The _ was too high.", "choices": [" shelf", " book"], "gold": 0}
+{"prompt": "The cat chased the mouse but it escaped because it was too fast. The _ was too fast.", "choices": [" mouse", " cat"], "gold": 0}
+{"prompt": "Tom gave his umbrella to Jane because she was getting wet. _ was getting wet.", "choices": [" Jane", " Tom"], "gold": 0}
+{"prompt": "The package was too heavy for the child to lift, so the adult carried it. The _ was too heavy.", "choices": [" package", " child"], "gold": 0}
