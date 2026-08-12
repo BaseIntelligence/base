@@ -255,6 +255,24 @@ case "$ENV" in
   prod)    COMPOSE_FILES+=(-f deploy/compose/env-prod.yml) ;;
 esac
 
+# Recipe 2.0 AutoModel pin: env-*/yml mounts /var/lib/prism/automodel-pin into
+# prism-challenge. Fail loud on master when the staged tree is missing so a
+# redeploy does not silently return code=pin to miners. Also pick up a
+# host-local overlay outside the rsync tree (survives --delete) when present.
+if [[ "$ROLE" == "master" ]]; then
+  if ssh_h "test -d /var/lib/prism/automodel-pin/.git"; then
+    echo "remote-deploy: AutoModel pin present at /var/lib/prism/automodel-pin"
+  else
+    echo "remote-deploy: WARNING: AutoModel pin missing at /var/lib/prism/automodel-pin" >&2
+    echo "remote-deploy:   stage with: ./deploy/scripts/stage-automodel-pin.sh --dir /var/lib/prism/automodel-pin" >&2
+    echo "remote-deploy:   (Prism AutoModel intake fails closed with code=pin until staged)" >&2
+  fi
+  if ssh_h "test -f /var/lib/prism/docker-compose.automodel-pin.yml"; then
+    COMPOSE_FILES+=(-f /var/lib/prism/docker-compose.automodel-pin.yml)
+    echo "remote-deploy: including host AutoModel pin overlay"
+  fi
+fi
+
 GE_EXPORT=""
 if [[ -n "$GATEWAY_ENDPOINT" ]]; then
   GE_EXPORT="export BASE_GATEWAY_ENDPOINT='$GATEWAY_ENDPOINT';"

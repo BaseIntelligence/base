@@ -56,10 +56,15 @@ services:
   prism-challenge:
     environment:
       PRISM_FORCE_SIM: "false"
+      # Recipe 2.0 AutoModel pin (stage with deploy/scripts/stage-automodel-pin.sh).
+      # Fail-closed intake when unset/unmounted — miners see code=pin.
+      PRISM_AUTOMODEL_PIN_DIR: "/var/lib/prism/automodel-pin"
       # Horizontal scale: N orchestrator workers each claim_next under a semaphore.
       PRISM_MAX_CONCURRENT_EVALS: "8"
       # Emitter/gating/epoch-feed chain reads share the gateway failover list.
       BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
+    volumes:
+      - /var/lib/prism/automodel-pin:/var/lib/prism/automodel-pin:ro
   design-challenge:
     environment:
       # Docker-only on prod. Never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM here.

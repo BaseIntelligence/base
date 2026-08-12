@@ -27,7 +27,7 @@ use site_types::coding_arena;
 use site_types::page_slice;
 use site_types::{
     ArenaSlug, Governance, LandingSummary, MetricsEmission, MetricsPassRate, MetricsPopulation,
-    NetworkMetrics, NetworkStats, ResultsMatrix, Validator,
+    NetworkMetrics, NetworkStats, RecipeEra, ResultsMatrix, Validator,
 };
 
 /// Mount marketing site routes under `/v1/site`.
@@ -73,6 +73,9 @@ struct PageQuery {
     status: Option<String>,
     /// Hotkey / handle / prompt substring filter (SS58 or hex).
     q: Option<String>,
+    /// Prism submissions only: `all` (default) includes in-flight / failed;
+    /// `champions` keeps Score>0 gallery rows.
+    scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -447,6 +450,10 @@ async fn prism_leaderboard_json(
                 enrich_leaderboard_row_from_detail(row, detail);
             }
         }
+        if row.recipe_era.is_none() {
+            // Historical 1.x champions without AutoModel signals → legacy tab.
+            row.recipe_era = Some(RecipeEra::Legacy);
+        }
     }
     decorate_leaderboard(st, &mut board);
     if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
@@ -542,18 +549,30 @@ async fn get_submissions(
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            // Public gallery: champions only (current top + Score>0 ex-tops).
+            // Default `scope=all` so the FE can show pending/running; leaderboard
+            // stays champions-only. Opt into the scored gallery with champions.
+            let scope = q
+                .scope
+                .as_deref()
+                .unwrap_or("all")
+                .trim()
+                .to_ascii_lowercase();
+            let champions_only = matches!(scope.as_str(), "champions" | "champion");
             let mut items: Vec<_> = rows
                 .iter()
-                .filter(|r| is_prism_champion_submission(r))
+                .filter(|r| !champions_only || is_prism_champion_submission(r))
                 .filter_map(prism_submission)
                 .collect();
+            // Prefer in-flight + recent rows for detail fan-out (era / benches).
             let mut ids: Vec<String> = items.iter().map(|s| s.id.clone()).collect();
             ids.truncate(PRISM_CHAMPION_DETAIL_FANOUT);
             let details = fetch_prism_details(&st, &ids).await;
             for item in &mut items {
                 if let Some(detail) = details.get(&item.id) {
                     enrich_submission_from_detail(item, detail);
+                } else if item.recipe_era.is_none() {
+                    // Pre-2.0 / unknown → legacy so era tabs are not empty.
+                    item.recipe_era = Some(RecipeEra::Legacy);
                 }
             }
             decorate_submissions(&st, &mut items);
@@ -914,6 +933,12 @@ mod tests {
     }
 
     async fn mount_site_mocks(design: &MockServer, prism: &MockServer) {
+        mount_design_site_mocks(design).await;
+        mount_prism_list_mocks(prism).await;
+        mount_prism_detail_mock(prism).await;
+    }
+
+    async fn mount_design_site_mocks(design: &MockServer) {
         Mock::given(method("GET"))
             .and(path("/v1/dashboard"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -964,6 +989,9 @@ mod tests {
             })))
             .mount(design)
             .await;
+    }
+
+    async fn mount_prism_list_mocks(prism: &MockServer) {
         Mock::given(method("GET"))
             .and(path("/v1/status"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -986,11 +1014,36 @@ mod tests {
                     "score": {"kind":"score","value": 900},
                     "created_at_ms": 1_700_000_000_000_u64,
                     "updated_at_ms": 1_700_000_000_000_u64
+                }, {
+                    "id": "sub-running",
+                    "miner_hotkey": "cc".repeat(32),
+                    "epoch": 3,
+                    "status": "running",
+                    "label": "inflight",
+                    "created_at_ms": 1_700_000_100_000_u64,
+                    "updated_at_ms": 1_700_000_100_000_u64
                 }]
             })))
             .mount(prism)
             .await;
-        mount_prism_detail_mock(prism).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/submissions/sub-running"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "submission": {
+                    "id": "sub-running",
+                    "miner_hotkey": "cc".repeat(32),
+                    "epoch": 3,
+                    "status": "running",
+                    "label": "inflight",
+                    "architecture_sha256": "aa".repeat(32),
+                    "training_sha256": "bb".repeat(32),
+                    "created_at_ms": 1_700_000_100_000_u64,
+                    "updated_at_ms": 1_700_000_100_000_u64
+                },
+                "events": []
+            })))
+            .mount(prism)
+            .await;
     }
 
     async fn mount_prism_detail_mock(prism: &MockServer) {
@@ -1177,10 +1230,23 @@ mod tests {
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/submissions").await;
         assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 2, "default scope=all includes in-flight: {v}");
         assert_eq!(v["items"][0]["recipeEra"], "automodel");
         assert_eq!(v["items"][0]["pinId"], "automodel@v0.5.0");
         assert_eq!(v["items"][0]["benchmarks"]["hellaswag"], 0.31);
         assert_eq!(v["items"][0]["evalGroups"].as_array().unwrap().len(), 2);
+        assert_eq!(v["items"][1]["id"], "sub-running");
+        assert_eq!(v["items"][1]["status"], "pending");
+        assert_eq!(v["items"][1]["recipeEra"], "legacy");
+
+        // scope=champions keeps Score>0 gallery; default scope=all includes in-flight.
+        let (s, v) = call(
+            app.clone(),
+            "/v1/site/arenas/prism/submissions?scope=champions",
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "{v}");
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
         assert_eq!(s, StatusCode::OK, "{v}");

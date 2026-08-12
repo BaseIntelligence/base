@@ -74,6 +74,14 @@ staged checkout.
 clean checkout of `automodel_git_commit`. Use
 `deploy/scripts/stage-automodel-pin.sh` (clone + hash verify). Intake
 fail-closes when the dir is missing or the content SHA mismatches.
+Prod/staging Compose (`deploy/compose/env-prod.yml` / `env-staging.yml`)
+mount `/var/lib/prism/automodel-pin` read-only into `prism-challenge` and set
+the env var; stage the tree **before** `remote-deploy` recreates the service:
+
+```bash
+sudo ./deploy/scripts/stage-automodel-pin.sh --dir /var/lib/prism/automodel-pin
+# then recreate prism-challenge (or full remote-deploy)
+```
 
 **CI / Sim fixture (not live):** pin id `automodel@fixture-v1` + vendored tree
 `crates/prism-automodel/fixtures/automodel-pin/` + `fixtures/patches/happy.patch`.
