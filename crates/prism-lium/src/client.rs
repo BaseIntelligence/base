@@ -712,12 +712,15 @@ fn parse_one_offer(item: &Value) -> Option<Offer> {
         .or_else(|| item.pointer("/machine/gpu_type").and_then(|x| x.as_str()))
         .unwrap_or("UNKNOWN")
         .to_owned();
-    let gpu_count = item
+    let raw_count = item
         .get("gpu_count")
         .and_then(|x| x.as_u64())
         .or_else(|| item.get("available_gpu_count").and_then(|x| x.as_u64()))
         .or_else(|| item.get("gpus").and_then(|x| x.as_u64()))
         .unwrap_or(1) as u32;
+    // Prefer the higher of the numeric field and any `8x` / `x8` label so a
+    // lying `gpu_count: 1` on a multi-GPU host cannot pass the single-GPU filter.
+    let gpu_count = prism_lium_types::effective_gpu_count(raw_count, &gpu_type);
     let price = item
         .get("price_per_hour")
         .or_else(|| item.get("price_per_gpu"))
@@ -808,27 +811,40 @@ impl EvalJobBackend for LiumClient {
         }
 
         let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
+        // Hard-reject multi-GPU hosts when requesting a single GPU (and exact
+        // match otherwise). The old `gpu_count >= requested` filter + rent
+        // fallback to `selected.gpu_count` could silently rent 8×5090.
+        offers.retain(|o| o.matches_gpu_count(spec.gpu_count));
         let pref = GpuPreference::default_prism();
         offers.sort_by(|a, b| {
             pref.rank(&a.gpu_type)
                 .cmp(&pref.rank(&b.gpu_type))
                 .then_with(|| {
-                    a.price_per_hour
-                        .partial_cmp(&b.price_per_hour)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                    // Prefer true singles (effective count) then cheaper.
+                    let ac = prism_lium_types::effective_gpu_count(a.gpu_count, &a.gpu_type);
+                    let bc = prism_lium_types::effective_gpu_count(b.gpu_count, &b.gpu_type);
+                    ac.cmp(&bc).then_with(|| {
+                        a.price_per_hour
+                            .partial_cmp(&b.price_per_hour)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
                 })
         });
         let candidates: Vec<Offer> = match &spec.preferred_offer_id {
-            Some(pref) => offers
-                .into_iter()
-                .filter(|o| &o.id == pref)
-                .take(1)
-                .collect(),
-            None => offers
-                .into_iter()
-                .filter(|o| o.gpu_count >= spec.gpu_count)
-                .take(10)
-                .collect(),
+            Some(pref_id) => {
+                let matched: Vec<Offer> = offers
+                    .into_iter()
+                    .filter(|o| &o.id == pref_id)
+                    .take(1)
+                    .collect();
+                if matched.is_empty() {
+                    return Err(LiumError::Api(format!(
+                        "preferred offer {pref_id} missing or multi-GPU rejected"
+                    )));
+                }
+                matched
+            }
+            None => offers.into_iter().take(10).collect(),
         };
         if candidates.is_empty() {
             return Err(CostGuardrailError::NoCapacity.into());
@@ -836,12 +852,15 @@ impl EvalJobBackend for LiumClient {
 
         let lifetime = spec.max_lifetime_hours.ceil() as u64;
         let template_id = self.resolve_template_id(spec).await?;
-        let make_body = |gpu_count: u32| {
+        // Never rent more GPUs than requested — even if the marketplace
+        // offer advertises a larger host (those are filtered above).
+        let rent_gpu_count = spec.gpu_count.max(1);
+        let make_body = || {
             serde_json::json!({
                 "pod_name": spec.name,
                 "user_public_key": spec.ssh_public_keys,
                 "termination_hours": lifetime.max(1),
-                "gpu_count": gpu_count,
+                "gpu_count": rent_gpu_count,
                 "template_id": template_id,
             })
         };
@@ -851,39 +870,31 @@ impl EvalJobBackend for LiumClient {
             if selected.price_per_hour > spec.max_price_per_hour {
                 continue;
             }
+            let effective =
+                prism_lium_types::effective_gpu_count(selected.gpu_count, &selected.gpu_type);
             info!(
                 offer_id = %selected.id,
                 gpu = %selected.gpu_type,
+                gpu_count = effective,
+                rent_gpu_count,
                 price = selected.price_per_hour,
                 %template_id,
                 "lium rent"
             );
-            let mut split_choices = vec![spec.gpu_count];
-            if selected.gpu_count != spec.gpu_count {
-                split_choices.push(selected.gpu_count);
-            }
-            let mut rented: Result<Value, LiumError> = Err(LiumError::Api("unrented".into()));
-            for gcount in split_choices {
-                let body = make_body(gcount);
-                let permit = rent_pool().take().await;
-                rented = self
-                    .request(
-                        reqwest::Method::POST,
-                        &format!("/executors/{}/rent", selected.id),
-                        Some(&body),
-                    )
-                    .await;
-                if let Err(e) = &rented {
-                    let es = e.to_string();
-                    if lium_rent_pool::is_rate_limited(&es) {
-                        permit.rate_limited(&es);
-                        break;
-                    }
-                    if es.contains("splitting") {
-                        continue;
-                    }
+            let body = make_body();
+            let permit = rent_pool().take().await;
+            let rented = self
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/executors/{}/rent", selected.id),
+                    Some(&body),
+                )
+                .await;
+            if let Err(e) = &rented {
+                let es = e.to_string();
+                if lium_rent_pool::is_rate_limited(&es) {
+                    permit.rate_limited(&es);
                 }
-                break;
             }
             match rented {
                 Ok(v) => {
@@ -1166,6 +1177,50 @@ mod tests {
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
         let inst = c.provision(&provision_spec()).await.unwrap();
         assert_eq!(inst.id, "pod-5090");
+    }
+
+    #[tokio::test]
+    async fn provision_never_selects_8x_5090_when_1x_available() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48},
+                {"id": "eight-label", "gpu_type": "8x RTX 5090", "gpu_count": 1, "price_per_hour": 0.45},
+                {"id": "one-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 2.0}
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "one-5090", "pod-1x").await;
+        // If multi-GPU slipped through, these would be rented instead.
+        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        mount_rent_path(&server, "eight-label", "pod-8x-label").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let inst = c.provision(&provision_spec()).await.unwrap();
+        assert_eq!(inst.id, "pod-1x");
+    }
+
+    #[tokio::test]
+    async fn provision_rejects_all_multi_gpu_offers() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48},
+                {"id": "eight-label", "gpu_type": "8× RTX 5090", "gpu_count": 1, "price_per_hour": 0.45}
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        mount_rent_path(&server, "eight-label", "pod-8x-label").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let err = c.provision(&provision_spec()).await.unwrap_err();
+        assert!(
+            matches!(err, LiumError::Cost(CostGuardrailError::NoCapacity))
+                || err.to_string().contains("NoCapacity")
+                || err.to_string().to_ascii_lowercase().contains("capacity"),
+            "got {err}"
+        );
     }
 
     #[tokio::test]
