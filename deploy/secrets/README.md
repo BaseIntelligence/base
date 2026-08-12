@@ -59,3 +59,15 @@ chmod 0400 deploy/secrets/design/annotator_tokens deploy/secrets/openrouter/api_
   `POST|GET /v1/admin/artifacts/...`. Read via `PRISM_ADMIN_TOKENS_FILE`
   (`/run/base/prism/admin_tokens`). Empty/missing → those routes answer
   **503 `auth_unconfigured`** (fail-closed). Mode **0400**, uid **65532**.
+- `prism/payer_vault_key` — 32-byte (or 64-hex) key for short-TTL encrypted
+  miner BYOK seals (`PRISM_PAYER_VAULT_KEY_FILE`). Host dir
+  `/var/lib/prism/payer-vault` is mounted RW for `*.seal` files. **Never
+  commit the key.** Generate once:
+
+```bash
+mkdir -p deploy/secrets/prism /var/lib/prism/payer-vault
+openssl rand -hex 32 > deploy/secrets/prism/payer_vault_key
+chown 65532:65532 deploy/secrets/prism/payer_vault_key /var/lib/prism/payer-vault
+chmod 0400 deploy/secrets/prism/payer_vault_key
+chmod 0700 /var/lib/prism/payer-vault
+```

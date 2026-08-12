@@ -57,6 +57,14 @@ pub fn site_router(state: SiteState) -> Router {
             "/v1/site/arenas/prism/submissions/{id}/telemetry",
             get(get_prism_submission_telemetry),
         )
+        .route(
+            "/v1/site/arenas/prism/submissions/{id}/events",
+            get(get_prism_submission_events),
+        )
+        .route(
+            "/v1/site/arenas/prism/submissions/{id}/logs",
+            get(get_prism_submission_logs),
+        )
         .route("/v1/site/validators", get(get_validators))
         .route("/v1/site/weights", get(get_site_weights))
         .route("/v1/site/activity", get(get_activity))
@@ -734,6 +742,72 @@ async fn get_prism_submission_telemetry(
     let detail = upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await;
     match detail.as_ref().and_then(prism_telemetry) {
         Some(t) => Json(t).into_response(),
+        None => json_err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown prism submission",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SinceQuery {
+    since: Option<u64>,
+}
+
+/// Safe subset of Prism stage events (no secrets).
+async fn get_prism_submission_events(
+    State(st): State<SiteState>,
+    Path(id): Path<String>,
+) -> Response {
+    match upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}/events")).await {
+        Some(v) => Json(v).into_response(),
+        None => json_err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown prism submission",
+        ),
+    }
+}
+
+/// Harness log tail proxy (`?since=` cursor) — camelCase marketing subset.
+async fn get_prism_submission_logs(
+    State(st): State<SiteState>,
+    Path(id): Path<String>,
+    Query(q): Query<SinceQuery>,
+) -> Response {
+    let since = q.since.unwrap_or(0);
+    match upstream::get_json_opt(
+        &st,
+        PRISM,
+        &format!("/v1/submissions/{id}/logs?since={since}"),
+    )
+    .await
+    {
+        Some(v) => {
+            let logs = v
+                .get("logs")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|line| {
+                    Some(json!({
+                        "seq": line.get("seq")?.as_u64()?,
+                        "atMs": line.get("at_ms")?.as_u64()?,
+                        "line": line.get("line")?.as_str()?,
+                    }))
+                })
+                .collect::<Vec<_>>();
+            Json(json!({
+                "submissionId": v.get("submission_id").and_then(Value::as_str).unwrap_or(&id),
+                "logs": logs,
+                "nextSince": v.get("next_since").and_then(Value::as_u64).unwrap_or(since),
+                "pollHintMs": v.get("poll_hint_ms").and_then(Value::as_u64).unwrap_or(0),
+                "live": v.get("live").and_then(Value::as_bool).unwrap_or(false),
+            }))
+            .into_response()
+        }
         None => json_err(
             StatusCode::NOT_FOUND,
             "not_found",

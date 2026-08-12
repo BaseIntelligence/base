@@ -64,8 +64,12 @@ services:
       # (stage with deploy/scripts/stage-automodel-pin.sh). Sim/fixture pins
       # still work when miners submit automodel@fixture-v1.
       PRISM_AUTOMODEL_PIN_DIR: "/var/lib/prism/automodel-pin"
+      PRISM_PAYER_VAULT_DIR: "/var/lib/prism/payer-vault"
+      PRISM_PAYER_VAULT_KEY_FILE: "/run/secrets/prism_payer_vault_key"
     volumes:
       - /var/lib/prism/automodel-pin:/var/lib/prism/automodel-pin:ro
+      - /var/lib/prism/payer-vault:/var/lib/prism/payer-vault
+      - ./deploy/secrets/prism/payer_vault_key:/run/secrets/prism_payer_vault_key:ro
   design-challenge:
     environment:
       BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"

@@ -1,28 +1,9 @@
 //! Public PRISM HTTP API (miners + operators).
 //!
-//! | Route | Purpose |
-//! |-------|---------|
-//! | `GET  /health` | liveness |
-//! | `POST /v1/submissions` | accept AutoModel patch ZIP (recipe ≥ 2.0) |
-//! | `POST /v1/submissions/precheck` | advisory copy-gate (quota 3/coldkey/UTC day) |
-//! | `GET  /v1/submissions` | list (`status` / `miner` filter, limit) |
-//! | `GET  /v1/submissions/{id}` | full detail + event timeline + `eval` |
-//! | `GET  /v1/submissions/{id}/diff` | unified diff + diffstat (recipe ≥ 2.0) |
-//! | `GET  /v1/submissions/{id}/events` | journal only |
-//! | `POST /v1/submissions/{id}/attribution` | 2×2 attribution run plans (JSON) |
-//! | `POST /v1/submissions/{id}/zone-b` | Zone B self-report intake (mounted by the service bin from `prism-attribution`) |
-//! | `GET  /v1/submissions/{id}/metrics?zone=a\|b` | Zone A rows / Zone B chain |
-//! | `GET  /v1/submissions/{id}/inference` | Battery inference traces (+ playground journal) |
-//! | `GET  /v1/anchors` | anchor-set registry with status |
-//! | `GET  /v1/preregistration` | anchor pre-registration hash-commits |
-//! | `GET  /v1/status` | queue sizes + backend + recipe pin |
-//! | `GET  /v1/jobs` | orchestrator jobs view (active/last per pod) |
-//! | `GET  /v1/recipe` | recipe descriptor (full data contract) |
-//! | `GET  /v1/recipe/baseline` | baseline sources pairs |
-//!
-//! The API never blocks on the chain: acceptance timestamps the chain epoch
-//! read at boot loop; if that read fails the epoch stays at the last known
-//! value (still `>= 0`), never guessed.
+//! Routes: `/health`, `/v1/submissions` (+ precheck/retry/events/logs/diff/
+//! metrics/inference/attribution/zone-b), `/v1/anchors`, `/v1/preregistration`,
+//! `/v1/status`, `/v1/jobs`, `/v1/recipe` (+ baseline), admin playground/artifacts.
+//! Acceptance uses the cached chain epoch (never blocks on RPC).
 
 use std::sync::Arc;
 
@@ -65,6 +46,8 @@ pub struct AppState {
     pub admin_token_hashes: Vec<String>,
     /// Miner Lium API keys (BYOK). `None` → Sim / operator-only billing.
     pub payer_vault: Option<std::sync::Arc<prism_lium_payer::PayerKeyVault>>,
+    /// Live harness log tails (shared with orchestrator).
+    pub logs: std::sync::Arc<prism_orphan::LogBuffer>,
 }
 
 pub fn submission_router(state: Arc<AppState>) -> Router {
@@ -111,6 +94,7 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
             prism_attribution::diff_route(Arc::clone(&state.store)),
         )
         .route("/v1/submissions/{id}/events", get(get_events))
+        .route("/v1/submissions/{id}/logs", get(get_logs))
         .route("/v1/submissions/{id}/retry", post(post_retry))
         // Attribution planner (2×2 matrix run plans) and the v3 read-only
         // eval surface: split into the `prism-attribution` crate for the
@@ -373,6 +357,29 @@ async fn get_events(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct LogsQuery {
+    since: Option<u64>,
+}
+
+async fn get_logs(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<LogsQuery>,
+) -> Response {
+    if st.store.get(&id).await.ok().flatten().is_none() {
+        return json_err(StatusCode::NOT_FOUND, "not_found", "submission not found");
+    }
+    let body = prism_orphan::logs_json(
+        Some(st.logs.as_ref()),
+        st.store.as_ref(),
+        &id,
+        q.since.unwrap_or(0),
+    )
+    .await;
+    Json(body).into_response()
+}
+
 /// `POST /v1/admin/gating/{hotkey}/reset` — clear 1-max open slot (operator).
 async fn admin_reset_gating(
     State(st): State<Arc<AppState>>,
@@ -574,6 +581,7 @@ mod tests {
             metagraph: None,
             admin_token_hashes: vec![],
             payer_vault: None,
+            logs: std::sync::Arc::new(prism_orphan::LogBuffer::new()),
         })
     }
 
@@ -597,6 +605,7 @@ mod tests {
                 metagraph: Some(cache),
                 admin_token_hashes: vec![],
                 payer_vault: None,
+                logs: std::sync::Arc::new(prism_orphan::LogBuffer::new()),
             }),
             gating,
         )
@@ -618,6 +627,7 @@ mod tests {
             metagraph: None,
             admin_token_hashes: vec![prism_intake::token_hash(ADMIN)],
             payer_vault: None,
+            logs: std::sync::Arc::new(prism_orphan::LogBuffer::new()),
         });
         st = inner;
         let app = submission_router(Arc::clone(&st));
@@ -1297,6 +1307,7 @@ mod tests {
             metagraph: Some(Arc::new(MetagraphCache::new())),
             admin_token_hashes: vec![],
             payer_vault: None,
+            logs: std::sync::Arc::new(prism_orphan::LogBuffer::new()),
         });
         let app = submission_router(st);
         let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();

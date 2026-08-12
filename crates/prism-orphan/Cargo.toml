@@ -1,0 +1,27 @@
+[package]
+name = "prism-orphan"
+description = "Prism mid-flight orphan reconcile, active-job registry, and harness log buffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+bundle = { path = "../bundle" }
+prism-lium = { path = "../prism-lium" }
+prism-lium-payer = { path = "../prism-lium-payer" }
+prism-pipeline = { path = "../prism-pipeline" }
+prism-store = { path = "../prism-store" }
+serde_json = "1"
+submission-gating = { path = "../submission-gating" }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

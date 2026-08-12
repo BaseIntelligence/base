@@ -1,0 +1,193 @@
+//! Short-TTL encrypted-at-rest BYOK seals (not the submission DB).
+//!
+//! ChaCha20-Poly1305 with a process key file. Plaintext never lands in Postgres.
+//! Files are mode-0600 under `PRISM_PAYER_VAULT_DIR`.
+
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+use rand::RngCore;
+use sha2::{Digest, Sha256};
+
+/// Default TTL for sealed payer keys (covers max healthy train + margin).
+pub const DEFAULT_TTL_SECS: u64 = 12 * 3600;
+/// Env: directory for `*.seal` files.
+pub const DIR_ENV: &str = "PRISM_PAYER_VAULT_DIR";
+/// Env: 32-byte key file (raw or 64-hex).
+pub const KEY_ENV: &str = "PRISM_PAYER_VAULT_KEY_FILE";
+
+/// On-disk sealed vault settings.
+#[derive(Debug, Clone)]
+pub struct SealedVaultConfig {
+    /// Directory for per-submission seal files.
+    pub dir: PathBuf,
+    /// 32-byte AEAD key.
+    pub key: [u8; 32],
+    /// Soft TTL seconds.
+    pub ttl_secs: u64,
+}
+
+impl SealedVaultConfig {
+    /// From env; `None` when dir or key file unset/unreadable (memory-only).
+    #[must_use]
+    pub fn from_env() -> Option<Self> {
+        let dir = std::env::var(DIR_ENV)
+            .ok()
+            .filter(|s| !s.trim().is_empty())?;
+        let key_path = std::env::var(KEY_ENV)
+            .ok()
+            .filter(|s| !s.trim().is_empty())?;
+        let key = load_key(Path::new(&key_path))?;
+        let ttl_secs = std::env::var("PRISM_PAYER_VAULT_TTL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_TTL_SECS);
+        let dir = PathBuf::from(dir);
+        let _ = fs::create_dir_all(&dir);
+        Some(Self { dir, key, ttl_secs })
+    }
+}
+
+fn load_key(path: &Path) -> Option<[u8; 32]> {
+    let raw = fs::read(path).ok()?;
+    let t = String::from_utf8_lossy(&raw);
+    let hex = t.trim();
+    if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        let mut out = [0u8; 32];
+        for i in 0..32 {
+            out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+        }
+        return Some(out);
+    }
+    if raw.len() == 32 {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&raw);
+        return Some(out);
+    }
+    // Derive a 32-byte key from whatever was mounted (still not plaintext at rest).
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&Sha256::digest(&raw));
+    Some(out)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn seal_path(dir: &Path, submission_id: &str) -> PathBuf {
+    // submission ids are hex; keep filename boring.
+    let safe: String = submission_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(64)
+        .collect();
+    dir.join(format!("{safe}.seal"))
+}
+
+/// Encrypt + write seal file. Never logs key material.
+pub fn persist(cfg: &SealedVaultConfig, submission_id: &str, api_key: &str) -> Result<(), String> {
+    let expires = now_secs().saturating_add(cfg.ttl_secs);
+    let payload = format!("{expires}\n{api_key}");
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let cipher = ChaCha20Poly1305::new_from_slice(&cfg.key).map_err(|e| e.to_string())?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ct = cipher
+        .encrypt(nonce, payload.as_bytes())
+        .map_err(|_| "seal encrypt failed".to_string())?;
+    let mut out = Vec::with_capacity(12 + ct.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ct);
+    let path = seal_path(&cfg.dir, submission_id);
+    let tmp = path.with_extension("seal.tmp");
+    {
+        let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(&out).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(fs::Permissions::from_mode(0o600));
+        }
+    }
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Decrypt seal when present and unexpired.
+pub fn load(cfg: &SealedVaultConfig, submission_id: &str) -> Option<String> {
+    let path = seal_path(&cfg.dir, submission_id);
+    let bytes = fs::read(&path).ok()?;
+    if bytes.len() < 13 {
+        return None;
+    }
+    let (nonce_bytes, ct) = bytes.split_at(12);
+    let cipher = ChaCha20Poly1305::new_from_slice(&cfg.key).ok()?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let pt = cipher.decrypt(nonce, ct).ok()?;
+    let text = String::from_utf8(pt).ok()?;
+    let (exp_s, key) = text.split_once('\n')?;
+    let exp: u64 = exp_s.parse().ok()?;
+    if now_secs() > exp {
+        let _ = fs::remove_file(&path);
+        return None;
+    }
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    Some(key.to_owned())
+}
+
+/// Delete seal file (best-effort).
+pub fn remove(cfg: &SealedVaultConfig, submission_id: &str) {
+    let _ = fs::remove_file(seal_path(&cfg.dir, submission_id));
+}
+
+/// Load every unexpired seal into `(submission_id, key)` pairs.
+pub fn hydrate_all(cfg: &SealedVaultConfig) -> Vec<(String, String)> {
+    let Ok(rd) = fs::read_dir(&cfg.dir) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for ent in rd.flatten() {
+        let path = ent.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("seal") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if let Some(key) = load(cfg, stem) {
+            out.push((stem.to_owned(), key));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn seal_roundtrip_and_ttl_expiry() {
+        let dir = tempdir().unwrap();
+        let cfg = SealedVaultConfig {
+            dir: dir.path().to_path_buf(),
+            key: [7u8; 32],
+            ttl_secs: 3600,
+        };
+        persist(&cfg, "abc123", "sk_test_secret").unwrap();
+        assert_eq!(load(&cfg, "abc123").as_deref(), Some("sk_test_secret"));
+        let all = hydrate_all(&cfg);
+        assert_eq!(all.len(), 1);
+        remove(&cfg, "abc123");
+        assert!(load(&cfg, "abc123").is_none());
+    }
+}

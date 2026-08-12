@@ -229,6 +229,7 @@ async fn submission_detail_exposes_metrics_over_http() {
         metagraph: None,
         admin_token_hashes: vec![],
         payer_vault: None,
+        logs: std::sync::Arc::new(prism_orphan::LogBuffer::new()),
     });
     let app = prism_challenge::submission_router(state);
     let res = tower::ServiceExt::oneshot(

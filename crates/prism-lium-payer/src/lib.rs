@@ -1,10 +1,13 @@
 //! Miner-funded Lium keys (BYOK): vault + live-client factory.
 //!
-//! Keys are held only in process memory, never logged, never written to the
-//! submission store. Master still SSHs with the operator keypair; the miner
-//! key pays for rent/terminate only.
+//! Keys are held in process memory and optionally in a short-TTL
+//! encrypted seal directory (`PRISM_PAYER_VAULT_DIR` + key file). They are
+//! never written to the submission store and never logged. Master still SSHs
+//! with the operator keypair; the miner key pays for rent/terminate only.
 
 #![forbid(unsafe_code)]
+
+mod sealed;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -12,10 +15,21 @@ use std::sync::{Arc, Mutex};
 
 use prism_lium::{EvalJobBackend, LiumClient, LiumError, LiumSshConfig, LIUM_API_BASE_URL};
 
-/// In-memory map `submission_id → Lium API key`.
-#[derive(Default)]
+pub use sealed::{SealedVaultConfig, DEFAULT_TTL_SECS, DIR_ENV, KEY_ENV};
+
+/// In-memory map `submission_id → Lium API key`, with optional sealed persist.
 pub struct PayerKeyVault {
     inner: Mutex<HashMap<String, String>>,
+    sealed: Option<SealedVaultConfig>,
+}
+
+impl Default for PayerKeyVault {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            sealed: None,
+        }
+    }
 }
 
 impl fmt::Debug for PayerKeyVault {
@@ -23,41 +37,94 @@ impl fmt::Debug for PayerKeyVault {
         let n = self.inner.lock().map_or(0, |g| g.len());
         f.debug_struct("PayerKeyVault")
             .field("entries", &n)
+            .field("sealed", &self.sealed.is_some())
             .finish()
     }
 }
 
 impl PayerKeyVault {
-    /// Empty vault.
+    /// Empty vault (memory only).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Attach sealed-disk backend (call before hydrate/insert).
+    #[must_use]
+    pub fn with_sealed(mut self, cfg: SealedVaultConfig) -> Self {
+        self.sealed = Some(cfg);
+        self
+    }
+
+    /// Build from env: sealed when dir+key present, else memory-only.
+    #[must_use]
+    pub fn from_env() -> Self {
+        match SealedVaultConfig::from_env() {
+            Some(cfg) => {
+                let v = Self::new().with_sealed(cfg);
+                let n = v.hydrate();
+                tracing::info!(hydrated = n, "payer vault sealed backend enabled");
+                v
+            }
+            None => Self::new(),
+        }
+    }
+
+    /// Load unexpired seals into memory. Returns count hydrated.
+    pub fn hydrate(&self) -> usize {
+        let Some(cfg) = &self.sealed else {
+            return 0;
+        };
+        let pairs = sealed::hydrate_all(cfg);
+        let n = pairs.len();
+        if let Ok(mut g) = self.inner.lock() {
+            for (id, key) in pairs {
+                g.insert(id, key);
+            }
+        }
+        n
+    }
+
     /// Insert or replace the payer key for `submission_id`.
     pub fn insert(&self, submission_id: impl Into<String>, api_key: impl Into<String>) {
+        let id = submission_id.into();
         let key = api_key.into();
         if key.trim().is_empty() {
             return;
         }
+        if let Some(cfg) = &self.sealed {
+            if let Err(e) = sealed::persist(cfg, &id, &key) {
+                tracing::warn!(error = %e, "payer seal persist failed");
+            }
+        }
         if let Ok(mut g) = self.inner.lock() {
-            g.insert(submission_id.into(), key);
+            g.insert(id, key);
         }
     }
 
-    /// Clone of the stored key, if any.
+    /// Clone of the stored key, if any (memory, then sealed file).
     #[must_use]
     pub fn get(&self, submission_id: &str) -> Option<String> {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|g| g.get(submission_id).cloned())
+        if let Ok(g) = self.inner.lock() {
+            if let Some(k) = g.get(submission_id) {
+                return Some(k.clone());
+            }
+        }
+        let cfg = self.sealed.as_ref()?;
+        let key = sealed::load(cfg, submission_id)?;
+        if let Ok(mut g) = self.inner.lock() {
+            g.insert(submission_id.to_owned(), key.clone());
+        }
+        Some(key)
     }
 
-    /// Drop the key after the eval finishes (best-effort hygiene).
+    /// Drop the key after the eval finishes (memory + seal).
     pub fn remove(&self, submission_id: &str) {
         if let Ok(mut g) = self.inner.lock() {
             g.remove(submission_id);
+        }
+        if let Some(cfg) = &self.sealed {
+            sealed::remove(cfg, submission_id);
         }
     }
 }

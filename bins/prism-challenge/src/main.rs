@@ -476,7 +476,9 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
 
     // Metagraph cache + watcher feed the intake membership check.
     let metagraph = Arc::new(MetagraphCache::new());
-    let payer_vault = (backend_mode == "lium").then(|| Arc::new(PayerKeyVault::new()));
+    let payer_vault = (backend_mode == "lium").then(|| Arc::new(PayerKeyVault::from_env()));
+    let active_jobs = Arc::new(prism_orphan::ActiveJobs::new());
+    let log_buf = Arc::new(prism_orphan::LogBuffer::new());
 
     let state = Arc::new(AppState {
         store: Arc::clone(&store),
@@ -491,6 +493,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
         admin_token_hashes: prism_intake::load_token_hashes(cli.admin_tokens_file.as_deref()),
         payer_vault: payer_vault.clone(),
+        logs: Arc::clone(&log_buf),
     });
     // Zone B miner self-report intake: split into `prism-attribution` for
     // the per-crate LOC cap (same pattern as the attribution planner,
@@ -535,7 +538,8 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     // v3: persist the METRICS_JSON v2 battery + compute the composite
     // (scoring mode from PRISM_SCORING_MODE; default shadow keeps the v2
     // score bit-identical).
-    .with_eval_store(Some(eval_store));
+    .with_eval_store(Some(eval_store))
+    .with_runtime(Arc::clone(&active_jobs), Arc::clone(&log_buf));
     orchestrator = attach_miner_payer(orchestrator, payer_vault, live_ssh, operator_key.is_some());
     if gating_enabled {
         orchestrator = orchestrator.with_gating(Arc::clone(&gating));
@@ -616,6 +620,18 @@ fn spawn_orchestrator(
     }
     let o = Arc::clone(orchestrator);
     tokio::spawn(async move { o.run_sweeper().await });
+    let o = Arc::clone(orchestrator);
+    tokio::spawn(async move {
+        if let Err(e) = o.reconcile_orphans(true).await {
+            tracing::warn!(error = %e, "recover_on_boot failed");
+        }
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            if let Err(e) = o.reconcile_orphans(false).await {
+                tracing::warn!(error = %e, "orphan reconcile tick error");
+            }
+        }
+    });
     let o = Arc::clone(orchestrator);
     tokio::spawn(async move { o.run_emitter().await });
     spawn_rate_limit_recovery(store, gating);

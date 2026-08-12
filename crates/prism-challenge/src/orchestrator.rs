@@ -14,6 +14,9 @@ use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
 use prism_lium::{EvalJobBackend, InstanceSpec, RemoteExecResult};
 use prism_lium_payer::PayerBackendFactory;
+use prism_orphan::{
+    spawn_log_watch, ActiveJobs, LogBuffer, DEFAULT_LOG_POLL_SECS, DEFAULT_ORPHAN_GRACE_SECS,
+};
 use prism_pipeline::{gating_key, measurement_patch, resume_measurement, ScoringMode};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
@@ -21,9 +24,9 @@ use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::agentic::{build_review_request, corpus_from_rows, gate_corpus_from_rows, same_miner};
-use crate::score::{combine_final, FinalOutcome};
 use prism_eval_store::finalize_for_submission;
+use prism_final::{build_review_request, corpus_from_rows, gate_corpus_from_rows, same_miner};
+use prism_final::{combine_final, FinalOutcome};
 use prism_store::eval::EvalStore;
 use prism_store::{FinalScore, PrismStore, Stage, StageEvent, StatePatch, SubmissionState};
 
@@ -48,23 +51,15 @@ pub struct OrchestratorConfig {
     pub max_attempts: u32,
     /// Similarity / agentic corpus size (champions + baseline).
     pub similarity_corpus_limit: u32,
-    /// Stuck sweep grace (seconds). Must exceed max healthy wall-clock of a
-    /// live worker hold: `PRISM_SSH_RUNNING_TIMEOUT` (≤15m) + train cap (6h) +
-    /// harness SSH margin (~65m) ≈ 7h20m. A prior 7h grace false-positive
-    /// swept a healthy ~7h19m train (`swept: stuck beyond grace`) with no
-    /// log harvest. Default 10h.
+    /// Stuck sweep grace (seconds). Default 10h (> wait-RUNNING + 6h train + SSH margin).
     pub stuck_grace_secs: u64,
-    /// Local/e2e only: pause after each published stage so mid-flight is
-    /// photographable. Zero in production (default).
+    /// Local/e2e only: pause after each published stage. Zero in production.
     pub stage_delay: Duration,
-    /// Auto-retry budget for infra-class failures (Lium install / AST / LLM).
-    /// Default 3; cheat / rejected verdicts are always terminal.
+    /// Auto-retry budget for infra-class failures (default 3).
     pub auto_retry_max: u32,
-    /// Scoring mode for finalized rows: `Shadow` (default; the v2 score is
-    /// bit-identical and the composite is observed only) or `Composite`
-    /// (the v3 lattice becomes the score, fail-closed to 0 without a scored
-    /// composite). Defaults to `PRISM_SCORING_MODE` at config build.
+    /// Scoring mode (`PRISM_SCORING_MODE`; default shadow).
     pub scoring_mode: ScoringMode,
+    pub orphan_grace_secs: u64,
 }
 
 impl Default for OrchestratorConfig {
@@ -83,6 +78,7 @@ impl Default for OrchestratorConfig {
             stage_delay: Duration::ZERO,
             auto_retry_max: 3,
             scoring_mode: ScoringMode::from_env(),
+            orphan_grace_secs: DEFAULT_ORPHAN_GRACE_SECS,
         }
     }
 }
@@ -101,6 +97,8 @@ pub struct Orchestrator<C: ChainClient + Send> {
     gating: Option<Arc<dyn GatingStore>>,
     topmodel: Option<Arc<prism_registry::TopModelPublisher>>,
     eval_store: Option<Arc<dyn EvalStore>>,
+    active: Arc<ActiveJobs>,
+    logs: Arc<LogBuffer>,
 }
 
 impl<C: ChainClient + Send> Orchestrator<C> {
@@ -130,7 +128,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             gating: None,
             topmodel: None,
             eval_store: None,
+            active: Arc::new(ActiveJobs::new()),
+            logs: Arc::new(LogBuffer::new()),
         }
+    }
+
+    #[must_use]
+    pub fn with_runtime(mut self, active: Arc<ActiveJobs>, logs: Arc<LogBuffer>) -> Self {
+        self.active = active;
+        self.logs = logs;
+        self
     }
 
     /// Miner-funded Lium: resolve a per-submission client from the vault.
@@ -203,7 +210,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    /// Stuck-row sweeper loop.
+    /// Stuck-row sweeper loop (skips rows held by a live worker).
     pub async fn run_sweeper(self: Arc<Self>)
     where
         C: Sync,
@@ -219,6 +226,24 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
+    /// One orphan reconcile pass (`boot` ⇒ grace 0).
+    pub async fn reconcile_orphans(
+        &self,
+        boot: bool,
+    ) -> Result<prism_orphan::ReconcileReport, String> {
+        let grace = if boot { 0 } else { self.cfg.orphan_grace_secs };
+        prism_orphan::reconcile_once(
+            self.store.as_ref(),
+            &self.active,
+            self.payer.as_ref(),
+            Arc::clone(&self.backend),
+            grace,
+            boot,
+            self.gating.as_ref(),
+        )
+        .await
+    }
+
     async fn sweep_once(&self) -> Result<(), String> {
         let stuck = self
             .store
@@ -226,8 +251,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await
             .map_err(|e| e.to_string())?;
         for row in stuck {
-            // Harvest on-pod harness log **before** reclaim — otherwise the
-            // costly long attempt leaves only `swept: stuck beyond grace`.
+            if self.active.contains(&row.id) {
+                continue;
+            }
             let be = self
                 .backend_for(&row.id)
                 .unwrap_or_else(|_| Arc::clone(&self.backend));
@@ -251,9 +277,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                     prism_lium::truncate_tail(&harvested, prism_lium::HARNESS_LOG_RETAIN_BYTES)
                 )
             };
-            // Infra-class: auto-retry while budget remains (do **not** burn a
-            // retry_bump without requeue — that previously exhausted manual
-            // retry while leaving gating `registered`).
             if self.maybe_auto_retry(&row, "install", &msg).await {
                 continue;
             }
@@ -418,19 +441,13 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     /// Process one submission end-to-end.
     pub async fn run_row(&self, row: SubmissionState) -> Result<(), String> {
         let id = row.id.clone();
+        let _active = self.active.enter(&id);
         info!(submission_id = %id, miner = %row.miner_hotkey, "prism eval start");
 
-        // Phase 0: pre-pod cheap screens (no GPU / private eval assets).
         let Some(similarity) = self.pre_pod_screens(&id, &row).await else {
             return Ok(());
         };
 
-        // Phase 1: provision + recipe exec + terminate (always verified).
-        // Lium/infra failures auto-retry (install class); budget exhaustion is
-        // terminal with NoScore(ChallengeInternal), never a miner zero. A retry
-        // of a post-run stage (review/similarity/agentic) resumes from the
-        // persisted measurement — the multi-hour pod job is never re-run for
-        // a master-side review failure.
         let (measured, fresh) = match resume_measurement(&row) {
             Some(mr) => (Ok(mr), false),
             None => (self.measure(&id, &row).await, true),
@@ -447,27 +464,18 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             }
         };
 
-        // Miner-attributable parameter-cap breach (machine-verified by the
-        // harness): terminal Score(0) — never a measured score, no LLM spend.
         if self.cap_terminal(&row, metrics.as_ref()).await {
             return Ok(());
         }
-        // Persist a fresh measurement at once (best-effort; the metrics blob
-        // also lands the telemetry series) so a post-run infra retry resumes
-        // at the review stages instead of re-provisioning. Cap-breach refusals
-        // are not measurements and are never persisted.
         if let (true, Some(m), Some(r)) = (fresh, metrics.as_ref(), receipt.as_ref()) {
             let _ = self.store.apply(&id, &measurement_patch(m, r), None).await;
         }
         let bpb = metrics.as_ref().map(|m| m.bpb);
 
-        // Phase 2: cheap review (LLM infra → auto-retry, then terminal).
         let Some(review) = self.review_step(&id, &row).await else {
             return Ok(());
         };
 
-        // Phase 3: agentic anti-cheat (needs metrics/receipt; post-pod).
-        // Source-only screens already ran pre-pod; this catches metrics forge.
         let Some(agentic) = self
             .agentic_step(&id, &row, metrics.as_ref(), receipt.as_ref())
             .await
@@ -475,7 +483,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             return Ok(());
         };
 
-        // Cheat / suspicious is terminal: no retry, gating rejected.
         if matches!(
             agentic.verdict,
             VerdictKind::Cheat | VerdictKind::Suspicious
@@ -483,11 +490,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             self.reject_gating(&row).await;
         }
 
-        // v3 composite finalize (E7): with an EvalStore attached, persist
-        // the METRICS_JSON v2 battery + Zone B lift and compute the
-        // composite against the active anchor set; `None` (default) skips
-        // this entirely. The hard gates above fire first in `combine_final`
-        // regardless of the attached outcome.
         let blob = metrics
             .as_ref()
             .map(|m| serde_json::to_value(m).unwrap_or_default());
@@ -535,12 +537,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await
             .map_err(|e| e.to_string())?;
 
-        // Leaf emission is decoupled: the epoch-close emitter batches this
-        // score into the next boundary's D24 set (exactly-once outbox), so
-        // the arch publish below lands well before the row's leaf epoch.
         if let Ok(Some(scored)) = self.store.get(&id).await {
             prism_registry::post_score_hooks(&self.store, self.topmodel.as_deref(), &scored).await;
         }
+        self.logs.clear(&id);
         Ok(())
     }
 
@@ -754,16 +754,22 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             )
             .await;
 
+        let stop_tx = spawn_log_watch(
+            Arc::clone(&self.logs),
+            Arc::clone(&self.store),
+            Arc::clone(&backend),
+            Arc::clone(&self.active),
+            id.to_owned(),
+            pod_id.clone(),
+            DEFAULT_LOG_POLL_SECS,
+        );
+
         #[rustfmt::skip]
         let metrics = backend
             .exec_eval(&pod_id, &row.architecture_py, &row.training_py, row.tree_blob.as_deref())
             .await;
+        let _ = stop_tx.send(true);
 
-        // Secure receive: master pulls checkpoint over SSH, then stages via
-        // prism-artifacts (FP32×2×1.5 budget from measured n_params + allowlist
-        // + hash receipt) BEFORE terminate.
-        // Fail-soft on harvest: scoring continues; top-model publish requires
-        // verify_parked (RECEIPT.json) and refuses without it.
         if let Ok(ref m) = metrics {
             let dest = prism_lium::artifact_dir_for(id);
             match backend
