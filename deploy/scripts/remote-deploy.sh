@@ -414,19 +414,27 @@ fi
 # The updater can only pull from a registry. Enable it only when the desired
 # image is a registry reference (host/path@sha256:…), otherwise every tick 404s
 # trying to pull a locally-built tag from Docker Hub.
+# Validator role disables updater + socket-proxy (profiles: never); enabling
+# --profile auto-update there fails compose with "depends on undefined
+# service socket-proxy".
 UP_PROFILE=""
-desired=\$(sed -n 's/^BASE_UPDATER_DESIRED_IMAGE=//p' deploy/env/updater.env 2>/dev/null | tail -1)
-if [[ -z "\$desired" && -f "deploy/pins/\${ENV_NAME}.desired.env" ]]; then
-  desired=\$(sed -n 's/^BASE_UPDATER_DESIRED_IMAGE=//p' "deploy/pins/\${ENV_NAME}.desired.env" | tail -1)
+if [[ '$ROLE' == 'validator' ]]; then
+  echo "updater disabled (validator role — master-only)"
+  docker compose ${COMPOSE_FILES[*]} --profile auto-update rm -sf updater >/dev/null 2>&1 || true
+else
+  desired=\$(sed -n 's/^BASE_UPDATER_DESIRED_IMAGE=//p' deploy/env/updater.env 2>/dev/null | tail -1)
+  if [[ -z "\$desired" && -f "deploy/pins/\${ENV_NAME}.desired.env" ]]; then
+    desired=\$(sed -n 's/^BASE_UPDATER_DESIRED_IMAGE=//p' "deploy/pins/\${ENV_NAME}.desired.env" | tail -1)
+  fi
+  case "\$desired" in
+    */*) UP_PROFILE="--profile auto-update"; echo "updater enabled (registry image)" ;;
+    *)
+      echo "updater disabled (desired image '\$desired' is not a registry reference)"
+      # Deselecting a profile does not remove an already-running container.
+      docker compose ${COMPOSE_FILES[*]} --profile auto-update rm -sf updater >/dev/null 2>&1 || true
+      ;;
+  esac
 fi
-case "\$desired" in
-  */*) UP_PROFILE="--profile auto-update"; echo "updater enabled (registry image)" ;;
-  *)
-    echo "updater disabled (desired image '\$desired' is not a registry reference)"
-    # Deselecting a profile does not remove an already-running container.
-    docker compose ${COMPOSE_FILES[*]} --profile auto-update rm -sf updater >/dev/null 2>&1 || true
-    ;;
-esac
 UP_ARGS=(up -d --remove-orphans)
 if [[ "\$BUILD_FROM" == "registry" ]]; then
   UP_ARGS+=(--no-build)
