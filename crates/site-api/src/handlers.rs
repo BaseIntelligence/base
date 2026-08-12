@@ -10,6 +10,10 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::prism_enrich::{
+    enrich_leaderboard_row_from_detail, enrich_submission_from_detail, pin_id_from_payload,
+    prism_reference_baselines, prism_submission_detail,
+};
 use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
 use site_data::map::{
@@ -41,6 +45,14 @@ pub fn site_router(state: SiteState) -> Router {
             get(get_results_matrix),
         )
         .route("/v1/site/arenas/prism/window", get(get_prism_window))
+        .route(
+            "/v1/site/arenas/prism/references",
+            get(get_prism_references),
+        )
+        .route(
+            "/v1/site/arenas/prism/submissions/{id}",
+            get(get_prism_submission_detail),
+        )
         .route(
             "/v1/site/arenas/prism/submissions/{id}/telemetry",
             get(get_prism_submission_telemetry),
@@ -422,6 +434,20 @@ async fn prism_leaderboard_json(
         .cloned()
         .unwrap_or_default();
     let mut board = prism_bpb_leaderboard(&rows, epoch);
+    // Fan out detail for top champions so era / G1–G8 / G2 benches fill in.
+    let mut ids: Vec<String> = board
+        .iter()
+        .filter_map(|r| r.submission_id.clone())
+        .collect();
+    ids.truncate(PRISM_CHAMPION_DETAIL_FANOUT);
+    let details = fetch_prism_details(st, &ids).await;
+    for row in &mut board {
+        if let Some(id) = row.submission_id.as_ref() {
+            if let Some(detail) = details.get(id) {
+                enrich_leaderboard_row_from_detail(row, detail);
+            }
+        }
+    }
     decorate_leaderboard(st, &mut board);
     if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
         board.retain(|r| leaderboard_matches_query(r, needle));
@@ -437,6 +463,34 @@ async fn prism_leaderboard_json(
         "metric": "bpb",
         "updatedAt": now_iso(),
     })
+}
+
+/// Fetch bounded challenge detail payloads keyed by submission id.
+async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, Value> {
+    let mut out = HashMap::new();
+    for id in ids {
+        if id.is_empty() {
+            continue;
+        }
+        if let Some(mut detail) =
+            upstream::get_json_opt(st, PRISM, &format!("/v1/submissions/{id}")).await
+        {
+            // Optional /diff for pin_id when detail alone lacks era signals.
+            if pin_id_from_payload(&detail).is_none() {
+                if let Some(diff) =
+                    upstream::get_json_opt(st, PRISM, &format!("/v1/submissions/{id}/diff")).await
+                {
+                    if let Some(pin) = diff.get("pin_id").and_then(Value::as_str) {
+                        if let Some(obj) = detail.as_object_mut() {
+                            obj.insert("pin_id".into(), json!(pin));
+                        }
+                    }
+                }
+            }
+            out.insert(id.clone(), detail);
+        }
+    }
+    out
 }
 
 async fn get_leaderboard(
@@ -494,6 +548,14 @@ async fn get_submissions(
                 .filter(|r| is_prism_champion_submission(r))
                 .filter_map(prism_submission)
                 .collect();
+            let mut ids: Vec<String> = items.iter().map(|s| s.id.clone()).collect();
+            ids.truncate(PRISM_CHAMPION_DETAIL_FANOUT);
+            let details = fetch_prism_details(&st, &ids).await;
+            for item in &mut items {
+                if let Some(detail) = details.get(&item.id) {
+                    enrich_submission_from_detail(item, detail);
+                }
+            }
             decorate_submissions(&st, &mut items);
             if let Some(st_f) = status_filter {
                 items.retain(|s| match st_f {
@@ -599,6 +661,9 @@ async fn get_results_matrix() -> impl IntoResponse {
 /// Max per-submission detail fetches the window fans out for loss curves.
 const PRISM_WINDOW_TELEMETRY_FANOUT: usize = 8;
 
+/// Max champion detail fetches for board/list era + benchmark columns.
+const PRISM_CHAMPION_DETAIL_FANOUT: usize = 24;
+
 async fn get_prism_window(State(st): State<SiteState>) -> impl IntoResponse {
     let recipe = fetch_prism_recipe(&st).await;
     let status = fetch_prism_status(&st).await;
@@ -656,6 +721,46 @@ async fn get_prism_submission_telemetry(
             "unknown prism submission",
         ),
     }
+}
+
+/// Public Prism submission detail (era, eval groups, benches, telemetry).
+async fn get_prism_submission_detail(
+    State(st): State<SiteState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(mut detail) =
+        upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await
+    else {
+        return json_err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown prism submission",
+        );
+    };
+    if pin_id_from_payload(&detail).is_none() {
+        if let Some(diff) =
+            upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}/diff")).await
+        {
+            if let Some(pin) = diff.get("pin_id").and_then(Value::as_str) {
+                if let Some(obj) = detail.as_object_mut() {
+                    obj.insert("pin_id".into(), json!(pin));
+                }
+            }
+        }
+    }
+    match prism_submission_detail(&detail) {
+        Some(d) => Json(d).into_response(),
+        None => json_err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown prism submission",
+        ),
+    }
+}
+
+/// Frozen public GPT-2 literature baselines (not miner submissions).
+async fn get_prism_references() -> impl IntoResponse {
+    Json(prism_reference_baselines())
 }
 
 async fn get_validators(
@@ -900,13 +1005,17 @@ mod tests {
                     "label": "base",
                     "bpb": 1.25,
                     "n_params": 12_000_000_u64,
+                    "score": {"kind":"score","value": 900},
                     "metrics": {
+                        "recipe": "2.0.0",
                         "bpb": 1.25,
                         "tokens_seen": 2048,
                         "wall_clock_seconds": 12.0,
                         "gpu_type": "SIM",
                         "n_params": 12_000_000_u64,
                         "val_rows": 256,
+                        "org.g2.hellaswag_acc": {"value": 0.31},
+                        "org.g2.piqa_acc": {"value": 0.62},
                         "telemetry": {
                             "finish_reason": "finish_evaluation",
                             "report_count": 5,
@@ -916,9 +1025,33 @@ mod tests {
                                 {"step": 3, "loss": 2.5, "grad_norm": 0.33, "at_secs": 6.0}
                             ]
                         }
+                    },
+                    "eval": {
+                        "status": "scored",
+                        "composite": 0.55,
+                        "scoring_mode": "shadow",
+                        "gates": {
+                            "complete": true, "g3_ok": true, "g8_ok": true,
+                            "budgets_ok": true, "ci_ok": true
+                        },
+                        "groups": [
+                            {"group":"g1","g":0.8},
+                            {"group":"g2","g":0.4}
+                        ]
                     }
                 },
                 "events": []
+            })))
+            .mount(prism)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/submissions/sub1/diff"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "submission_id": "sub1",
+                "pin_id": "automodel@v0.5.0",
+                "patch": "diff --git a/x b/x\n",
+                "diffstat": {"files": [{"path":"x","added":1,"deleted":0,"class":"arch"}],
+                             "total_added": 1, "total_deleted": 0}
             })))
             .mount(prism)
             .await;
@@ -1034,6 +1167,47 @@ mod tests {
                 .any(|m| m.contains("Design evaluated") || m.contains("winner")),
             "{msgs:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn prism_detail_references_and_era_enrichment() {
+        let (design, prism, st) = setup().await;
+        mount_site_mocks(&design, &prism).await;
+        let app = site_router(st);
+
+        let (s, v) = call(app.clone(), "/v1/site/arenas/prism/submissions").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["items"][0]["recipeEra"], "automodel");
+        assert_eq!(v["items"][0]["pinId"], "automodel@v0.5.0");
+        assert_eq!(v["items"][0]["benchmarks"]["hellaswag"], 0.31);
+        assert_eq!(v["items"][0]["evalGroups"].as_array().unwrap().len(), 2);
+
+        let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["items"][0]["submissionId"], "sub1");
+        assert_eq!(v["items"][0]["recipeEra"], "automodel");
+        assert_eq!(v["items"][0]["benchmarks"]["piqa"], 0.62);
+
+        let (s, v) = call(app.clone(), "/v1/site/arenas/prism/submissions/sub1").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["id"], "sub1");
+        assert_eq!(v["recipeEra"], "automodel");
+        assert_eq!(v["pinId"], "automodel@v0.5.0");
+        assert_eq!(v["eval"]["status"], "scored");
+        assert_eq!(v["eval"]["groups"].as_array().unwrap().len(), 2);
+        assert_eq!(v["telemetry"]["reportCount"], 5);
+        assert!(v.get("patch").is_none());
+
+        let (s, v) = call(app.clone(), "/v1/site/arenas/prism/references").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["id"], "gpt2-small-124m");
+        assert_eq!(v[0]["paramsM"], 124.0);
+        assert!(v[0].get("bpb").is_none());
+        assert!(v[0]["disclaimer"].as_str().unwrap().contains("not a Prism"));
+
+        let (s, v) = call(app, "/v1/site/arenas/prism/submissions/nope").await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
     }
 
     #[tokio::test]

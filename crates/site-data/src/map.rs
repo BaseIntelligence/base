@@ -392,6 +392,11 @@ pub fn design_leaderboard(
                 params_m: None,
                 weight: None,
                 tao_per_day: None,
+                submission_id: None,
+                recipe_era: None,
+                pin_id: None,
+                eval_groups: None,
+                benchmarks: None,
             },
         )
         .collect()
@@ -415,6 +420,7 @@ fn run_screenshot_url(run_id: &str, run_detail: Option<&Value>) -> Option<String
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn design_submission(
     run: &Value,
     miner_hotkey: &str,
@@ -524,6 +530,10 @@ pub fn design_submission(
             None
         },
         submitted_at: ms_to_iso(ms),
+        recipe_era: None,
+        pin_id: None,
+        eval_groups: None,
+        benchmarks: None,
     })
 }
 
@@ -598,6 +608,10 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         params_m,
         failure_reason,
         submitted_at: ms_to_iso(ms),
+        recipe_era: None,
+        pin_id: None,
+        eval_groups: None,
+        benchmarks: None,
     })
 }
 
@@ -619,10 +633,11 @@ pub fn is_prism_champion_submission(row: &Value) -> bool {
 /// Non-top submissions are hidden from the public board. `elo` carries the BPB
 /// value so the existing leaderboard row contract can surface rankings without
 /// inventing Elo/duels; `bpb` / `paramsM` mirror the measured values explicitly
-/// for telemetry-aware clients.
+/// for telemetry-aware clients. `submissionId` is the best-BPB champion row so
+/// clients can open the detail modal; era / benches are filled by detail fan-out.
 #[must_use]
 pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> {
-    let mut best: HashMap<String, (f64, Option<u64>)> = HashMap::new();
+    let mut best: HashMap<String, (f64, Option<u64>, String)> = HashMap::new();
     let mut counts: HashMap<String, u32> = HashMap::new();
     for row in subs {
         if row.get("status").and_then(Value::as_str) != Some("terminated") {
@@ -635,6 +650,11 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
             continue;
         };
         let n_params = row.get("n_params").and_then(Value::as_u64);
+        let id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
         let hk = row
             .get("miner_hotkey")
             .and_then(Value::as_str)
@@ -642,38 +662,46 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
             .to_owned();
         *counts.entry(hk.clone()).or_insert(0) += 1;
         best.entry(hk)
-            .and_modify(|(b, p)| {
+            .and_modify(|(b, p, sid)| {
                 if bpb < *b {
                     *b = bpb;
                     *p = n_params;
+                    sid.clone_from(&id);
                 }
             })
-            .or_insert((bpb, n_params));
+            .or_insert((bpb, n_params, id));
     }
-    let mut rows: Vec<(f64, String, u32, Option<u64>)> = best
+    let mut rows: Vec<(f64, String, u32, Option<u64>, String)> = best
         .into_iter()
-        .map(|(hk, (bpb, n_params))| {
+        .map(|(hk, (bpb, n_params, sid))| {
             let n = counts.get(&hk).copied().unwrap_or(1);
-            (bpb, hk, n, n_params)
+            (bpb, hk, n, n_params, sid)
         })
         .collect();
     rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     rows.into_iter()
         .enumerate()
-        .map(|(i, (bpb, hk, submissions, n_params))| LeaderboardRow {
-            rank: u32::try_from(i + 1).unwrap_or(u32::MAX),
-            agent: agent_from_hotkey(&hk, epoch),
-            elo: bpb,
-            wins: 0,
-            losses: 0,
-            win_rate: 0.0,
-            submissions,
-            delta7d: 0.0,
-            bpb: Some(bpb),
-            params_m: n_params.map(|p| p as f64 / 1e6),
-            weight: None,
-            tao_per_day: None,
-        })
+        .map(
+            |(i, (bpb, hk, submissions, n_params, sid))| LeaderboardRow {
+                rank: u32::try_from(i + 1).unwrap_or(u32::MAX),
+                agent: agent_from_hotkey(&hk, epoch),
+                elo: bpb,
+                wins: 0,
+                losses: 0,
+                win_rate: 0.0,
+                submissions,
+                delta7d: 0.0,
+                bpb: Some(bpb),
+                params_m: n_params.map(|p| p as f64 / 1e6),
+                weight: None,
+                tao_per_day: None,
+                submission_id: if sid.is_empty() { None } else { Some(sid) },
+                recipe_era: None,
+                pin_id: None,
+                eval_groups: None,
+                benchmarks: None,
+            },
+        )
         .collect()
 }
 
@@ -1417,8 +1445,10 @@ mod tests {
         let rows = prism_bpb_leaderboard(&subs, 3);
         assert_eq!(rows.len(), 2);
         assert!((rows[0].bpb.unwrap() - 1.0).abs() < f64::EPSILON);
+        assert_eq!(rows[0].submission_id.as_deref(), Some("b"));
         assert!(rows[0].params_m.is_none());
         assert!((rows[1].params_m.unwrap() - 12.0).abs() < f64::EPSILON);
+        assert_eq!(rows[1].submission_id.as_deref(), Some("a"));
         // Backwards compat: old payloads without the new fields still decode.
         let old: LeaderboardRow = serde_json::from_value(json!({
             "rank": 1,

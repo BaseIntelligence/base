@@ -8,7 +8,7 @@ frontend `BaseApi` contract (`types.ts` / `contract.ts`).
 | Site path | Upstream |
 |-----------|----------|
 | `/v1/site/arenas`, `/arenas/design/*` | Registry pick `challenge_id=design` → `/v1/dashboard`, `/v1/rounds/{id}/leaderboard`, `/v1/harness/{id}`, `/v1/runs/{id}` |
-| `/v1/site/arenas/prism/*` | Registry pick `challenge_id=prism` → `/v1/status`, `/v1/submissions`, `/v1/recipe` |
+| `/v1/site/arenas/prism/*` | Registry pick `challenge_id=prism` → `/v1/status`, `/v1/submissions`, `/v1/submissions/{id}`, `/v1/submissions/{id}/diff`, `/v1/recipe` |
 | `/v1/site/network`, `/validators` | Chain tip / metagraph when available; numeric unknowns are `0` or omitted — never invented TAO price/emission |
 | `/v1/site/arenas/design/duels` | Always `[]` (admin winners model; no fabricated matchups) |
 | `/v1/site/activity` | Design `recent_runs` + round winners + prism submissions → ops-style English lines (deduped) |
@@ -38,6 +38,28 @@ x as an egalitarian “token window.” Prism public submissions + BPB
 leaderboard list **champions only** (`score.kind=score` and `value > 0` —
 current top and historical ex-tops); non-top rows stay on the operator
 challenge API.
+
+### Prism era, benches, detail, GPT-2 references
+
+Champion list / leaderboard rows may carry (when detail fan-out succeeds):
+
+| Field | Meaning |
+|-------|---------|
+| `recipeEra` | `"automodel"` \| `"legacy"` — AutoModel if `pin_id` / recipe major ≥ 2 / diff shape; else legacy |
+| `pinId` | AutoModel pin (`automodel@…`) when era is automodel |
+| `evalGroups` | `{ group: "g1"…"g8", g }` from composite `eval.groups` |
+| `benchmarks` | Public G2 subset: `hellaswag`, `arcChallenge`, `piqa`, `winogrande`, `boolq` from `org.g2.*` / battery keys |
+| `submissionId` | (leaderboard) best-BPB champion id for the detail modal |
+
+Additional Prism routes:
+
+| Path | Response |
+|------|----------|
+| `GET /v1/site/arenas/prism/submissions/{id}` | `PrismSubmissionDetail` — list fields + `eval` summary (status, groups, gates, composite) + telemetry + public `review` / `similarity` (quality/kind only). **No** raw patch text. |
+| `GET /v1/site/arenas/prism/references` | `PrismReferenceBaseline[]` — frozen **published** GPT-2 Small (124M) Eleuther-style accuracies + `sourceUrl` / `disclaimer`. **`bpb` omitted** (not Prism-protocol BPB). |
+| `GET /v1/site/arenas/prism/submissions/{id}/telemetry` | Existing loss-curve payload (also embedded on detail). |
+
+GPT-2 constants live in `crates/site-api` (`prism_enrich`) so API and FE stay aligned; they are literature / Eleuther harness numbers, not a Prism battery run. List/leaderboard row shells still map in `crates/site-data`.
 
 `GET /v1/site/arenas/{slug}/submissions` and `/leaderboard` accept optional
 `?q=` — case-insensitive substring over miner hotkey (SS58 or hex), handle,
