@@ -13,6 +13,7 @@
 #![allow(clippy::doc_markdown)]
 
 mod handlers;
+mod prism_enrich;
 mod state;
 mod upstream;
 

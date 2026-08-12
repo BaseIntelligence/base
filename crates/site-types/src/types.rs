@@ -134,6 +134,59 @@ pub struct Agent {
     pub joined_epoch: u64,
 }
 
+/// Prism recipe era (`AutoModel` 2.0 vs legacy 1.x two-script / tree).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecipeEra {
+    /// Recipe ≥ 2.0 AutoModel pin + patch.
+    Automodel,
+    /// Pre-2.0 architecture/training (or tree) layout.
+    Legacy,
+}
+
+/// One G1–G8 composite group score for marketing tables.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalGroupScore {
+    /// Group key (`g1`…`g8`).
+    pub group: String,
+    /// Point estimate after mirror penalty.
+    pub g: f64,
+}
+
+/// Public subset of Prism G2 downstream accuracies (0..1 when present).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismBenchmarks {
+    /// HellaSwag accuracy (prefer `acc_norm` / `org.g2.hellaswag_acc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hellaswag: Option<f64>,
+    /// ARC-Challenge accuracy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_challenge: Option<f64>,
+    /// PIQA accuracy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub piqa: Option<f64>,
+    /// WinoGrande accuracy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winogrande: Option<f64>,
+    /// BoolQ accuracy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boolq: Option<f64>,
+}
+
+impl PrismBenchmarks {
+    /// True when every public bench field is absent.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.hellaswag.is_none()
+            && self.arc_challenge.is_none()
+            && self.piqa.is_none()
+            && self.winogrande.is_none()
+            && self.boolq.is_none()
+    }
+}
+
 /// Leaderboard row (design ratings → `elo`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -166,6 +219,21 @@ pub struct LeaderboardRow {
     /// Estimated TAO/day = `weight × subnet_emission_per_day` when both known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tao_per_day: Option<f64>,
+    /// Winning Prism submission id (for detail modal); absent for design.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_id: Option<String>,
+    /// Prism recipe era when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_era: Option<RecipeEra>,
+    /// AutoModel pin id when era is automodel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_id: Option<String>,
+    /// G1–G8 group scores when the composite eval is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_groups: Option<Vec<EvalGroupScore>>,
+    /// Public G2 benchmark subset when measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmarks: Option<PrismBenchmarks>,
 }
 
 /// Submission status.
@@ -225,6 +293,122 @@ pub struct Submission {
     pub failure_reason: Option<String>,
     /// ISO-8601 UTC.
     pub submitted_at: String,
+    /// Prism recipe era when known (absent for design).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_era: Option<RecipeEra>,
+    /// AutoModel pin id when era is automodel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_id: Option<String>,
+    /// G1–G8 group scores when the composite eval is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_groups: Option<Vec<EvalGroupScore>>,
+    /// Public G2 benchmark subset when measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmarks: Option<PrismBenchmarks>,
+}
+
+/// Lexicographic gate flags from a Prism composite outcome (public subset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // mirrors upstream GateReport flags
+pub struct PrismGateSummary {
+    /// Every declared group/metric present.
+    pub complete: bool,
+    /// g3 floor passed.
+    pub g3_ok: bool,
+    /// g8 floor passed.
+    pub g8_ok: bool,
+    /// Budget gates passed.
+    pub budgets_ok: bool,
+    /// CI-sufficiency gate passed.
+    pub ci_ok: bool,
+}
+
+/// Composite eval summary for the public Prism detail modal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismEvalSummary {
+    /// Upstream outcome status (`scored` | `ineligible`).
+    pub status: String,
+    /// G1–G8 point estimates when present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<EvalGroupScore>,
+    /// Gate flags when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<PrismGateSummary>,
+    /// Composite C when computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composite: Option<f64>,
+    /// Scoring mode (`shadow` | …) when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring_mode: Option<String>,
+    /// Eval tier when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_tier: Option<String>,
+}
+
+/// Public review chip (quality only — no prompt dumps).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismPublicReview {
+    /// Quality score when the reviewer returned one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_score: Option<f64>,
+}
+
+/// Public similarity chip (kind + score only).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismPublicSimilarity {
+    /// Similarity kind label from upstream.
+    pub kind: String,
+    /// Similarity score when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+}
+
+/// Full public Prism submission detail (`GET …/submissions/{id}`).
+///
+/// Safe marketing subset: list fields (incl. era / benches) + eval /
+/// telemetry / review. Raw AutoModel patch text is never included.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismSubmissionDetail {
+    /// List-row fields (identity, stage, score, era, benches).
+    #[serde(flatten)]
+    pub submission: Submission,
+    /// Composite eval summary when finalized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<PrismEvalSummary>,
+    /// Loss curve / harness telemetry (same shape as `…/telemetry`).
+    pub telemetry: PrismTelemetry,
+    /// Public review chip when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<PrismPublicReview>,
+    /// Public similarity chip when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<PrismPublicSimilarity>,
+}
+
+/// Frozen public literature baseline (not a miner submission).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismReferenceBaseline {
+    /// Stable id (`gpt2-small-124m`).
+    pub id: String,
+    /// Display label.
+    pub label: String,
+    /// Parameters in millions.
+    pub params_m: f64,
+    /// Prism-protocol BPB is intentionally omitted (not comparable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpb: Option<f64>,
+    /// Literature / Eleuther-style accuracies.
+    pub benchmarks: PrismBenchmarks,
+    /// Canonical source for the published numbers.
+    pub source_url: String,
+    /// Short disclaimer shown under the board / in the modal.
+    pub disclaimer: String,
 }
 
 /// Loss series point.
