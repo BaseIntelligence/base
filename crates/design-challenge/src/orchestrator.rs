@@ -251,7 +251,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             // Open the round, then auto-enqueue every eligible active harness
             // with this round's shared prompt (Scheduled origin; idempotent).
             let _ = self.ensure_round(rid).await;
-            if let Err(e) = enqueue_active_harnesses_for_round(
+            match enqueue_active_harnesses_for_round(
                 self.store.as_ref(),
                 rid,
                 self.cfg.netuid,
@@ -259,7 +259,28 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             )
             .await
             {
-                warn!(error = %e, round = rid, "auto-enqueue failed");
+                Ok(result) => {
+                    // Per-harness failures used to be discarded — ops had no signal
+                    // when quota / elimination skipped an individual miner.
+                    for (harness_id, miner_hotkey, reason) in &result.skipped {
+                        warn!(
+                            harness_id = %harness_id,
+                            miner_hotkey = %miner_hotkey,
+                            round = rid,
+                            reason = %reason,
+                            "auto-enqueue skipped harness"
+                        );
+                    }
+                    if !result.skipped.is_empty() {
+                        info!(
+                            round = rid,
+                            scheduled = result.scheduled.len(),
+                            skipped = result.skipped.len(),
+                            "auto-enqueue finished with skips"
+                        );
+                    }
+                }
+                Err(e) => warn!(error = %e, round = rid, "auto-enqueue failed"),
             }
         }
     }
