@@ -34,10 +34,13 @@ no step curve is stored. `PrismWindow.tokenBudget` is **0** unless a recipe
 publishes a fixed token quota (prism ≥1.2 does not — caps are wall-clock /
 steps / params). Chart x-values still come from miner telemetry
 (`layer_stats.tokens` when present); clients must not label the max observed
-x as an egalitarian “token window.” Prism public submissions + BPB
-leaderboard list **champions only** (`score.kind=score` and `value > 0` —
-current top and historical ex-tops); non-top rows stay on the operator
-challenge API.
+x as an egalitarian “token window.” Prism **leaderboard** lists **champions
+only** (`score.kind=score` and `value > 0` — current top and historical
+ex-tops). Prism **`/submissions`** defaults to **`scope=all`** (in-flight +
+terminal, including Score=0 / failed) so the marketing FE can show live
+progress; pass `?scope=champions` for the scored gallery only. Missing
+`recipeEra` on a row is filled as **`legacy`** after detail fan-out (or when
+no AutoModel signals exist).
 
 ### Prism era, benches, detail, GPT-2 references
 
