@@ -933,6 +933,12 @@ mod tests {
     }
 
     async fn mount_site_mocks(design: &MockServer, prism: &MockServer) {
+        mount_design_site_mocks(design).await;
+        mount_prism_list_mocks(prism).await;
+        mount_prism_detail_mock(prism).await;
+    }
+
+    async fn mount_design_site_mocks(design: &MockServer) {
         Mock::given(method("GET"))
             .and(path("/v1/dashboard"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -983,6 +989,9 @@ mod tests {
             })))
             .mount(design)
             .await;
+    }
+
+    async fn mount_prism_list_mocks(prism: &MockServer) {
         Mock::given(method("GET"))
             .and(path("/v1/status"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -1035,7 +1044,6 @@ mod tests {
             })))
             .mount(prism)
             .await;
-        mount_prism_detail_mock(prism).await;
     }
 
     async fn mount_prism_detail_mock(prism: &MockServer) {
