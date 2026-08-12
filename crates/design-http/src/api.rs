@@ -452,6 +452,46 @@ async fn post_harness(
         .into_response()
 }
 
+/// Outcome of enqueueing every eligible active harness into one round.
+#[derive(Debug, Default)]
+pub struct EnqueueRoundResult {
+    pub scheduled: Vec<(String, String, Vec<String>)>,
+    pub skipped: Vec<(String, String, String)>,
+}
+
+/// Schedule every eligible active harness into `rid` ([`RunOrigin::Scheduled`]).
+///
+/// Latest active harness per hotkey (`list_active_harnesses`); eliminated rows
+/// are omitted. Idempotent per `(harness, round)`. Used by the round loop and
+/// by `POST /v1/admin/rounds/current/requeue`.
+pub async fn enqueue_active_harnesses_for_round(
+    store: &dyn DesignStore,
+    rid: u64,
+    netuid: u16,
+    epoch: u64,
+) -> Result<EnqueueRoundResult, String> {
+    let harnesses = store
+        .list_active_harnesses(rid)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out = EnqueueRoundResult::default();
+    for harness in &harnesses {
+        match schedule_harness_for_round(store, harness, rid, netuid, epoch, RunOrigin::Scheduled)
+            .await
+        {
+            Ok(run_ids) => {
+                out.scheduled
+                    .push((harness.id.clone(), harness.miner_hotkey.clone(), run_ids));
+            }
+            Err(e) => {
+                out.skipped
+                    .push((harness.id.clone(), harness.miner_hotkey.clone(), e));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Schedule an active harness into `rid` (create missing queued runs).
 ///
 /// Idempotent: if runs for `(harness, round)` already exist, returns those ids.
@@ -1009,54 +1049,34 @@ struct RejectBody {
 
 /// Manually schedule every active harness into the CURRENT open round.
 ///
-/// Operator escape hatch when a round opened with no/few runs (e.g. challenge
-/// restart). Idempotent for the current round: `schedule_harness_for_round`
-/// returns the existing run ids for a `(harness, round)` pair that already has
-/// runs, so a repeated call creates nothing and consumes no quota. This is
-/// organizer work, so it draws on the scheduled cap, never on the miner's
-/// submission quota. Harnesses that fail scheduling are reported under
-/// `skipped`; one bad harness never blocks the rest.
+/// Ops escape hatch (challenge restart). Same path as the round-loop
+/// auto-enqueue; idempotent; scheduled-quota only. Failures land in `skipped`.
 async fn admin_requeue_current(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Err(r) = check_admin(&st, &headers) {
         return r;
     }
     let rid = round_id_at(now_secs());
-    let harnesses = match st.store.list_active_harnesses(rid).await {
-        Ok(h) => h,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-    };
     let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
-    let mut scheduled = Vec::new();
-    let mut skipped = Vec::new();
-    for harness in &harnesses {
-        match schedule_harness_for_round(
-            st.store.as_ref(),
-            harness,
-            rid,
-            st.netuid,
-            epoch,
-            RunOrigin::Scheduled,
-        )
-        .await
-        {
-            Ok(run_ids) => scheduled.push(json!({
-                "harness_id": harness.id,
-                "miner_hotkey": harness.miner_hotkey,
-                "run_ids": run_ids,
-            })),
-            Err(e) => skipped.push(json!({
-                "harness_id": harness.id,
-                "miner_hotkey": harness.miner_hotkey,
-                "reason": e,
-            })),
-        }
-    }
-    Json(json!({
-        "round_id": rid,
-        "scheduled": scheduled,
-        "skipped": skipped,
-    }))
-    .into_response()
+    let result =
+        match enqueue_active_harnesses_for_round(st.store.as_ref(), rid, st.netuid, epoch).await {
+            Ok(r) => r,
+            Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e),
+        };
+    let scheduled: Vec<Value> = result
+        .scheduled
+        .into_iter()
+        .map(|(harness_id, miner_hotkey, run_ids)| {
+            json!({ "harness_id": harness_id, "miner_hotkey": miner_hotkey, "run_ids": run_ids })
+        })
+        .collect();
+    let skipped: Vec<Value> = result
+        .skipped
+        .into_iter()
+        .map(|(harness_id, miner_hotkey, reason)| {
+            json!({ "harness_id": harness_id, "miner_hotkey": miner_hotkey, "reason": reason })
+        })
+        .collect();
+    Json(json!({ "round_id": rid, "scheduled": scheduled, "skipped": skipped })).into_response()
 }
 
 async fn admin_candidates(
@@ -1617,6 +1637,56 @@ mod tests {
         assert_eq!(v["error"], "gone");
         // The stored HTML must not leak into the response body.
         assert!(!v.to_string().contains("miner"));
+    }
+
+    #[tokio::test]
+    async fn auto_enqueue_queues_all_active_same_prompt_idempotent() {
+        let (st, _g) = app_state(None);
+        let a = harness_row(&hk(0xAA), "a");
+        let b = harness_row(&hk(0xBB), "b");
+        let mut elim = harness_row(&hk(0xCC), "c");
+        let rid = round_id_at(now_secs());
+        elim.eliminated_until_round = rid + 5;
+        st.store.insert_harness(&a).await.unwrap();
+        st.store.insert_harness(&b).await.unwrap();
+        st.store.insert_harness(&elim).await.unwrap();
+
+        let first = enqueue_active_harnesses_for_round(st.store.as_ref(), rid, 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(first.scheduled.len(), 2, "{first:?}");
+        assert!(first.skipped.is_empty(), "{first:?}");
+        let runs = st.store.runs_for_round(rid).await.unwrap();
+        assert_eq!(runs.len(), 2 * design_challenge_task::prompts_per_round());
+        let prompts: BTreeMap<_, _> = runs
+            .iter()
+            .map(|r| (r.harness_id.clone(), r.prompt_id.clone()))
+            .collect();
+        assert_eq!(prompts.len(), 2);
+        let prompt_ids: std::collections::BTreeSet<_> = prompts.values().cloned().collect();
+        assert_eq!(prompt_ids.len(), 1, "all harnesses share the round prompt");
+
+        let again = enqueue_active_harnesses_for_round(st.store.as_ref(), rid, 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(again.scheduled.len(), 2);
+        let again_ids: Vec<_> = again
+            .scheduled
+            .iter()
+            .flat_map(|(_, _, ids)| ids.clone())
+            .collect();
+        let first_ids: Vec<_> = first
+            .scheduled
+            .iter()
+            .flat_map(|(_, _, ids)| ids.clone())
+            .collect();
+        assert_eq!(again_ids, first_ids, "idempotent: no duplicate runs");
+        assert_eq!(
+            st.store.runs_for_round(rid).await.unwrap().len(),
+            runs.len()
+        );
+        // Eliminated harness must not appear.
+        assert!(runs.iter().all(|r| r.harness_id != elim.id));
     }
 
     #[tokio::test]

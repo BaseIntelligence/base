@@ -115,7 +115,7 @@ proxy prefixes (`DESIGN_`, `HTTP_`, `PYTHON…`, …) are rejected. Values are
 `harness_id = sha256(base-design-submission-v1 || hotkey || agent || pyproject || extras || env)`.
 `POST /v1/harness` is idempotent on that digest.
 
-### Submission gating (1-max) + one attempt
+### Submission gating (1-max) + auto round enqueue
 
 - The miner hotkey must be **in the metagraph** (bulk cached snapshot, **15m**
   TTL fail-closed; no per-UID RPC on the request path). Unknown hotkey →
@@ -125,10 +125,14 @@ proxy prefixes (`DESIGN_`, `HTTP_`, `PYTHON…`, …) are rejected. Values are
   table). While the row is `registered` / `blocked` / `rejected`, a *different*
   harness from the same hotkey → `409 submission_gated`. The identical re-POST
   stays idempotent (`200 already-queued`).
-- **One sandbox attempt** per accepted harness: submit schedules
-  `round_id(now) + 1` once. The round loop does **not** auto-roll the harness
-  into later rounds. Infra auto-retry on the *same* run id (up to 3) is not a
-  new attempt. Ops may still `POST /v1/admin/rounds/current/requeue`.
+- **Auto round enqueue**: `POST /v1/harness` schedules the harness into
+  `round_id(now) + 1` ([`RunOrigin::Manual`]). On every subsequent open round
+  the orchestrator auto-enqueues the **latest active harness per hotkey** into
+  that round with the round's shared prompt ([`RunOrigin::Scheduled`]) —
+  idempotent if already queued. Eliminated harnesses
+  (`eliminated_until_round > rid`) are skipped. Infra auto-retry on the *same*
+  run id (up to 3) is not a new schedule. Ops may still
+  `POST /v1/admin/rounds/current/requeue` (same enqueue path).
 - **Auto-retry**: infra-class failures (`install`, `ast_infra`, `llm_infra`)
   requeue automatically up to **3** times; `cheat` / `rejected` / admin reject /
   unscored timeout are terminal. Budget exhaustion → `failed` + gating
@@ -335,7 +339,9 @@ docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
   `round_id = floor(unix_secs / 8640)`.
 - **Registration waits for the next round**: an accepted harness is scheduled
   into `round_id(now) + 1` and its runs only become claimable once that round
-  opens — never into the round already in flight.
+  opens — never into the round already in flight. After that, the round loop
+  **auto-enqueues** every eligible active harness into each newly opened round
+  (same shared prompt; Scheduled origin; idempotent).
 - **Agent run timeout**: `AGENT_RUN_TIMEOUT_SECS = 1_800` (30 minutes wall clock
   for the sandbox run phase — not the round length).
 - **Prompts**: repo-pinned bank (`bank_v1.json`, no human approval API);
@@ -347,12 +353,13 @@ docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
 
   | Bucket | Charged by | Cap | Override |
   |--------|-----------|-----|----------|
-  | Manual | `POST /v1/harness` (miner-initiated) | `MANUAL_DAILY_RUN_QUOTA = 10` | `DESIGN_MANUAL_DAILY_RUN_QUOTA` |
-  | Scheduled | Submit next-round schedule + `admin/rounds/current/requeue` | `rounds/day × prompts/round × SCHEDULED_DAILY_RUN_HEADROOM` (= **20** at 10 rounds × 1 prompt) | `DESIGN_SCHEDULED_DAILY_RUN_CAP` (clamped ≥ the day's own schedule) |
+  | Manual | `POST /v1/harness` (miner-initiated next-round schedule) | `MANUAL_DAILY_RUN_QUOTA = 10` | `DESIGN_MANUAL_DAILY_RUN_QUOTA` |
+  | Scheduled | Round-loop auto-enqueue + `admin/rounds/current/requeue` | `rounds/day × prompts/round × SCHEDULED_DAILY_RUN_HEADROOM` (= **20** at 10 rounds × 1 prompt) | `DESIGN_SCHEDULED_DAILY_RUN_CAP` (clamped ≥ the day's own schedule) |
 
   Enforcement is **per bucket**: exhausting manual submissions never stops the
   round scheduler, and the scheduled cap is a runaway-scheduler guard, not a
-  participation limit. `GET /v1/quota/{hotkey}` reports both.
+  participation limit (a harness active all day stays under the floor of
+  `scheduled_runs_per_day`). `GET /v1/quota/{hotkey}` reports both.
 - **Auto-retry**: infra-class failures (`install` / `ast_infra` / `llm_infra`)
   requeue up to 3 times (`DESIGN_AUTO_RETRY_MAX`), then terminal
   `NoScore(ChallengeInternal)` + gating `blocked`.
@@ -573,7 +580,7 @@ returns 403). Operators hit `design-challenge:8093` on the master host
 | `GET /v1/admin/rounds/{id}/candidates` | Clean `awaiting_admin` runs (pages + verdict) |
 | `POST /v1/admin/rounds/{id}/winners` | Body `{ "harness_ids": ["…"] }` length 1 or 2; awards + emits leaves |
 | `POST /v1/admin/rounds/{id}/reject` | Body `{ "harness_ids": ["…"], "reason": "…" }`; terminal `rejected` + miner-visible `reject_reason` on `GET /v1/runs/{id}`; gating closed until UID leave |
-| `POST /v1/admin/rounds/current/requeue` | Schedule all active harnesses into the **current** open round (ops escape hatch; idempotent per harness; quota-blocked harnesses reported under `skipped`) |
+| `POST /v1/admin/rounds/current/requeue` | Same enqueue path as the round loop: schedule all active harnesses into the **current** open round (ops escape hatch / restart; idempotent per harness; quota-blocked harnesses reported under `skipped`) |
 | `GET /v1/rounds/{id}/leaderboard` | Round ratings |
 
 ### Annotation (deprecated; unused on leaf path)

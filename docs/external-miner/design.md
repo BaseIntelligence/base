@@ -105,36 +105,40 @@ Minimal `harness.json` shape:
 
 `POST /v1/harness` is **idempotent** on content digest (`harness_id`).
 
-## Submission gating (1-max) + one attempt
+## Submission gating (1-max) + auto round enqueue
 
 - Your hotkey must be **registered on the subnet** (metagraph). Unknown hotkey
   → `403 hotkey_not_in_metagraph`. Intake uses a bulk metagraph cache with a
   **15 minute** fail-closed TTL (`503 metagraph_unavailable` → retry shortly).
-- **One accepted submission per hotkey** and **one sandbox attempt** for that
-  submission. While yours is `registered` / `blocked` / `rejected`, a
-  *different* harness gets `409 submission_gated`. Re-POSTing the **identical**
-  bundle is always safe (idempotent `200 already-queued`).
-- After your attempt finishes (score, cheat, admin reject, or unscored
-  timeout), you cannot submit again on the same hotkey until that hotkey
-  **leaves the metagraph** and you register a **new UID** (same hotkey is fine).
-- Infra auto-retries on the *same* run id (up to 3) are not a new attempt.
+- **One accepted submission per hotkey**. While yours is `registered` /
+  `blocked` / `rejected`, a *different* harness gets `409 submission_gated`.
+  Re-POSTing the **identical** bundle is always safe (idempotent
+  `200 already-queued`).
+- After a **terminal** outcome that closes gating (cheat / admin reject /
+  unscored timeout / budget exhaustion), you cannot submit a **new** digest on
+  the same hotkey until that hotkey **leaves the metagraph** and you register a
+  **new UID** (same hotkey is fine).
+- Infra auto-retries on the *same* run id (up to 3) are not a new schedule.
 - `env_vars` are **locked at submission**; changing them means a new digest,
   which requires a free slot.
 
 ## Quotas and rounds
 
 - **10 rounds per UTC day** (`ROUND_SECS = 8640`; `round_id = floor(unix / 8640)`).
-- An accepted harness **waits for the next round**: runs are scheduled into
-  `round_id + 1` and start when that round opens, never mid-round. You are
-  **not** auto-scheduled into later rounds.
+- An accepted harness **waits for the next round**: your `POST /v1/harness`
+  schedules into `round_id + 1` (never mid-round). After that, the organizer
+  **auto-enqueues your latest active harness every open round** with that
+  round's **shared prompt** — you do **not** need to re-POST to keep competing.
+  Eliminated miners are skipped until their cooldown ends.
 - Sandbox **run** timeout is **30 minutes** (`AGENT_RUN_TIMEOUT_SECS = 1800`).
 - Each round picks **1 shared prompt** for every harness
   (`PROMPTS_PER_ROUND = 1`).
 - Daily run quota is **split by origin**:
-  - **Manual** — **10** runs/day, charged only by your own `POST /v1/harness`.
-  - **Scheduled** — organizer next-round schedule / ops requeue (10 rounds × 1
+  - **Manual** — **10** runs/day, charged only by your own `POST /v1/harness`
+    (the initial next-round schedule).
+  - **Scheduled** — round-loop auto-enqueue / ops requeue (10 rounds × 1
     prompt = **10** runs; cap **20**). You never spend manual quota by being
-    scheduled.
+    auto-queued.
 - Infra failures (package install, review/LLM infra) **auto-retry up to 3
   times**; cheat / rejected / admin reject / unscored timeout are terminal.
   Manual retry of a failed run: `POST /v1/runs/{id}/retry`.
