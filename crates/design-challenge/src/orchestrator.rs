@@ -21,7 +21,7 @@ use design_challenge_task::{
     reject_awaiting_admin_run, round_id_at, round_secs, score_window, to_leaf, window_start,
     WindowScorePlan, MAX_LOG_CHARS, UNSCORED_EPOCH_LIMIT,
 };
-use design_http::{mark_awaiting_admin, AdminAwardHook};
+use design_http::{enqueue_active_harnesses_for_round, mark_awaiting_admin, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
 use design_sanitize::sanitize_bundle;
@@ -248,9 +248,19 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                     }
                 }
             }
-            // One attempt: submit schedules next round only (no auto roll-forward).
+            // Open the round, then auto-enqueue every eligible active harness
+            // with this round's shared prompt (Scheduled origin; idempotent).
             let _ = self.ensure_round(rid).await;
-            let _ = self.current_epoch();
+            if let Err(e) = enqueue_active_harnesses_for_round(
+                self.store.as_ref(),
+                rid,
+                self.cfg.netuid,
+                self.current_epoch(),
+            )
+            .await
+            {
+                warn!(error = %e, round = rid, "auto-enqueue failed");
+            }
         }
     }
 
