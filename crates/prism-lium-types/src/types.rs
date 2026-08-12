@@ -19,6 +19,88 @@ pub struct Offer {
     pub provider: String,
 }
 
+/// Plausible discrete GPU counts on marketplace offers (not SKU numbers).
+fn plausible_gpu_count(n: u32) -> bool {
+    (2..=16).contains(&n)
+}
+
+/// Parse a multi-GPU multiplier from a provider label (`8x RTX 5090`,
+/// `RTX 5090 x8`, `8×GeForce`, `8 x RTX`, …). Returns `None` when the label
+/// does not clearly encode a count. SKU digits like `5090` / `H100` are
+/// ignored via [`plausible_gpu_count`].
+#[must_use]
+pub fn gpu_count_from_label(label: &str) -> Option<u32> {
+    let s = label.to_ascii_lowercase().replace('×', "x");
+    let bytes = s.as_bytes();
+    let mut best: Option<u32> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'x' {
+            // Leading: `8x` / `8 x`
+            let mut l = i;
+            while l > 0 && bytes[l - 1].is_ascii_whitespace() {
+                l -= 1;
+            }
+            let end_num = l;
+            while l > 0 && bytes[l - 1].is_ascii_digit() {
+                l -= 1;
+            }
+            if l < end_num {
+                if let Ok(n) = s[l..end_num].parse::<u32>() {
+                    if plausible_gpu_count(n) {
+                        best = Some(best.map_or(n, |b| b.max(n)));
+                    }
+                }
+            }
+            // Trailing: `x8` / `x 8`
+            let mut r = i + 1;
+            while r < bytes.len() && bytes[r].is_ascii_whitespace() {
+                r += 1;
+            }
+            let start_num = r;
+            while r < bytes.len() && bytes[r].is_ascii_digit() {
+                r += 1;
+            }
+            if start_num < r {
+                if let Ok(n) = s[start_num..r].parse::<u32>() {
+                    if plausible_gpu_count(n) {
+                        best = Some(best.map_or(n, |b| b.max(n)));
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    best
+}
+
+/// Effective GPU count for selection: max of the numeric field and any
+/// multiplier encoded in the type / machine label. Defaults to at least 1.
+#[must_use]
+pub fn effective_gpu_count(gpu_count: u32, gpu_type: &str) -> u32 {
+    let from_label = gpu_count_from_label(gpu_type).unwrap_or(1);
+    gpu_count.max(1).max(from_label)
+}
+
+impl Offer {
+    /// True when this offer is multi-GPU (field or label).
+    #[must_use]
+    pub fn is_multi_gpu(&self) -> bool {
+        effective_gpu_count(self.gpu_count, &self.gpu_type) > 1
+    }
+
+    /// Whether this offer may be rented for `requested` GPUs.
+    /// Prism requests exactly one GPU; multi-GPU hosts are hard-rejected.
+    #[must_use]
+    pub fn matches_gpu_count(&self, requested: u32) -> bool {
+        let effective = effective_gpu_count(self.gpu_count, &self.gpu_type);
+        if requested <= 1 {
+            return effective == 1;
+        }
+        effective == requested
+    }
+}
+
 /// Provision request with mandatory cost guardrails.
 #[derive(Debug, Clone)]
 pub struct InstanceSpec {
@@ -270,6 +352,46 @@ mod tests {
         assert!(p.rank("NVIDIA H100") < p.rank("NVIDIA A100-SXM4-80GB"));
         assert!(p.rank("NVIDIA A100") < p.rank("NVIDIA GeForce RTX 4090"));
         assert!(p.rank("NVIDIA GeForce RTX 4090") < p.rank("NVIDIA L4"));
+    }
+
+    #[test]
+    fn gpu_count_from_label_parses_multipliers() {
+        assert_eq!(gpu_count_from_label("8x RTX 5090"), Some(8));
+        assert_eq!(gpu_count_from_label("8× NVIDIA GeForce RTX 5090"), Some(8));
+        assert_eq!(gpu_count_from_label("8 x RTX 5090"), Some(8));
+        assert_eq!(gpu_count_from_label("RTX 5090 x8"), Some(8));
+        assert_eq!(gpu_count_from_label("RTX 5090 x 8"), Some(8));
+        assert_eq!(gpu_count_from_label("NVIDIA GeForce RTX 5090"), None);
+        assert_eq!(gpu_count_from_label("H100x8"), Some(8));
+    }
+
+    #[test]
+    fn offer_hard_rejects_multi_gpu_for_single_request() {
+        let single = Offer {
+            id: "1x".into(),
+            gpu_type: "NVIDIA GeForce RTX 5090".into(),
+            gpu_count: 1,
+            price_per_hour: 2.0,
+            provider: "lium".into(),
+        };
+        let eight = Offer {
+            id: "8x".into(),
+            gpu_type: "NVIDIA GeForce RTX 5090".into(),
+            gpu_count: 8,
+            price_per_hour: 0.48,
+            provider: "lium".into(),
+        };
+        let eight_label = Offer {
+            id: "8x-label".into(),
+            gpu_type: "8x RTX 5090".into(),
+            gpu_count: 1, // lying field; label wins
+            price_per_hour: 0.48,
+            provider: "lium".into(),
+        };
+        assert!(single.matches_gpu_count(1));
+        assert!(!eight.matches_gpu_count(1));
+        assert!(!eight_label.matches_gpu_count(1));
+        assert!(eight.is_multi_gpu());
     }
 
     #[test]
