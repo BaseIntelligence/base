@@ -3822,9 +3822,11 @@ dependencies = [
  "prism-challenge-task",
  "prism-emit",
  "prism-eval-store",
+ "prism-final",
  "prism-intake",
  "prism-lium",
  "prism-lium-payer",
+ "prism-orphan",
  "prism-pipeline",
  "prism-playground",
  "prism-recipe",
@@ -3866,6 +3868,7 @@ dependencies = [
  "prism-intake",
  "prism-lium",
  "prism-lium-payer",
+ "prism-orphan",
  "prism-pipeline",
  "prism-recipe",
  "prism-registry",
@@ -3916,6 +3919,21 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "prism-final"
+version = "0.1.0"
+dependencies = [
+ "bundle",
+ "challenge-agentic",
+ "prism-challenge-task",
+ "prism-lium",
+ "prism-pipeline",
+ "prism-recipe",
+ "prism-review",
+ "prism-store",
+ "serde_json",
 ]
 
 [[package]]
@@ -3971,7 +3989,12 @@ dependencies = [
 name = "prism-lium-payer"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305",
  "prism-lium",
+ "rand 0.8.7",
+ "sha2 0.10.9",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -3984,6 +4007,22 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "prism-orphan"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bundle",
+ "prism-lium",
+ "prism-lium-payer",
+ "prism-pipeline",
+ "prism-store",
+ "serde_json",
+ "submission-gating",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

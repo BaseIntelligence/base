@@ -24,6 +24,7 @@ prism-challenge = { path = "../../crates/prism-challenge" }
 prism-intake = { path = "../../crates/prism-intake" }
 prism-lium = { path = "../../crates/prism-lium" }
 prism-lium-payer = { path = "../../crates/prism-lium-payer" }
+prism-orphan = { path = "../../crates/prism-orphan" }
 prism-pipeline = { path = "../../crates/prism-pipeline" }
 prism-recipe = { path = "../../crates/prism-recipe" }
 prism-registry = { path = "../../crates/prism-registry" }

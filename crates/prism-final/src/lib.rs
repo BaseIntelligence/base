@@ -4,6 +4,11 @@
 //! `score_from_bpb`) lives in `prism-pipeline` and is re-exported by the crate
 //! root.
 
+#![allow(clippy::doc_markdown)]
+
+mod agentic;
+pub use agentic::{build_review_request, corpus_from_rows, gate_corpus_from_rows, same_miner};
+
 use bundle::NoScoreReasonCode;
 use prism_pipeline::{final_lattice, CompositeOutcome, ScoringMode};
 use prism_review::cheap_similarity_hard_zeros;

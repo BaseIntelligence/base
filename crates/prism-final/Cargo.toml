@@ -1,0 +1,23 @@
+[package]
+name = "prism-final"
+description = "Prism orchestrator FinalOutcome → lattice score mapping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+prism-recipe = { path = "../prism-recipe" }
+prism-lium = { path = "../prism-lium" }
+bundle = { path = "../bundle" }
+challenge-agentic = { path = "../challenge-agentic" }
+prism-challenge-task = { path = "../prism-challenge-task" }
+prism-pipeline = { path = "../prism-pipeline" }
+prism-review = { path = "../prism-review" }
+prism-store = { path = "../prism-store" }
+
+[lints]
+workspace = true

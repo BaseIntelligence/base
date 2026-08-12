@@ -11,7 +11,8 @@
 | `400` on `POST /v1/harness` | Invalid bundle | `agent.py` defines `run`, `pyproject.toml` non-empty, size limits |
 | `409 schedule` "daily manual run quota exceeded" | Manual anti-spam cap (10/day) — round-loop auto-enqueue does **not** spend it | `GET /v1/quota/{hotkey}` → `manual.remaining`; wait until next UTC day |
 | Active harness but no runs this round | Rare race / restart before auto-enqueue; or eliminated cooldown | Wait for the round tick / ask ops `admin/rounds/current/requeue`; check `eliminated_until_round` |
-| `auto_retry` events, class `install` | Dep won't install (bad name/version, heavy source build) | `GET /v1/runs/{id}/logs` phase `install`; fix `pyproject.toml` deps |
+| `auto_retry` events, class `install` | Dep won't install (bad name/version, heavy source build) | Design: `GET /v1/runs/{id}/logs`; Prism: `GET /v1/submissions/{id}/logs?since=` |
+| `control_plane_restart` / `harness_detached` | Challenge process restarted mid-pod | Stop the Lium pod if still billing; resubmit with `X-Lium-Api-Key` |
 | Run `failed` / Score 0 | Missing pages, timeout, crash | `GET /v1/runs/{id}/events`; ensure three required HTML pages |
 | External call refused (`403`) | Target is internal-blocklisted (metadata IP, loopback, RFC1918/VPC, control plane) | Call public endpoints only; egress is otherwise open |
 | Pages look empty in viewer | Sanitize stripped content | Scripts/`on*` handlers are removed; use static HTML/CSS |

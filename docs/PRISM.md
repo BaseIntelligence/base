@@ -73,11 +73,15 @@ stateDiagram-v2
 ```
 
 All transitions are append-only events in `prism_stage_event`; the row state
-lives in `prism_submission`. The sweeper fails rows stuck past the **10h**
-grace (aligned above wait-RUNNING + 6h train + SSH margin; a prior 7h grace
-false-positive swept healthy ~7h19m trains) as `ChallengeInternal` after
-harvesting the on-pod harness log tail, and `recover_on_boot` cleans pods
-referenced by interrupted rows.
+lives in `prism_submission`. On boot (and every ~30s) `recover_on_boot` /
+orphan reconcile fails mid-flight `provisioning`/`running` rows whose worker
+is not alive in this process (`control_plane_restart` / `harness_detached`),
+best-effort terminates the pod when the BYOK vault still has a key (memory +
+optional short-TTL sealed file under `PRISM_PAYER_VAULT_DIR`), and requeues
+post-measure review stages. The stuck sweeper remains a **10h** backstop
+(aligned above wait-RUNNING + 6h train + SSH margin) and skips live workers.
+`GET /v1/submissions/{id}/logs?since=` exposes harvested harness tails +
+heartbeats while a pod is measuring.
 
 Evaluation (Lium / Sim, review, agentic, leaf emit) is **master-only**.
 Validators never run `prism-challenge` — they fetch sealed weights only.

@@ -26,9 +26,11 @@ prism-automodel = { path = "../prism-automodel" }
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-emit = { path = "../prism-emit" }
 prism-eval-store = { path = "../prism-eval-store" }
+prism-final = { path = "../prism-final" }
 prism-intake = { path = "../prism-intake" }
 prism-lium = { path = "../prism-lium" }
 prism-lium-payer = { path = "../prism-lium-payer" }
+prism-orphan = { path = "../prism-orphan" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-playground = { path = "../prism-playground" }
 prism-recipe = { path = "../prism-recipe" }

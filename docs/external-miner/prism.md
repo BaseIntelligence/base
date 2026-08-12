@@ -65,10 +65,19 @@ every live submit:
 X-Lium-Api-Key: <your Lium API key>
 ```
 
-The key is held only in master memory for that submission (never stored in the
-DB, never logged). Missing key on live → `400 missing_lium_api_key`. Cost
-guardrails (`max_price_per_hour`, lifetime) still apply so a bad key cannot
-rent unbounded SKUs through the orchestrator.
+The key is held in master memory for that submission and may also land in a
+**short-TTL encrypted seal file** on the master host (never in Postgres, never
+logged) so a control-plane restart can still stop your pod. Missing key on
+live → `400 missing_lium_api_key`. Cost guardrails (`max_price_per_hour`,
+lifetime) still apply so a bad key cannot rent unbounded SKUs through the
+orchestrator.
+
+If the challenge process restarts mid-run, your submission is marked failed
+promptly with `control_plane_restart` / `harness_detached` (not left `running`
+for hours). When the seal is missing, stop the pod yourself on Lium, then
+resubmit with `X-Lium-Api-Key`. Poll `GET /v1/submissions/{id}/events` and
+`GET /v1/submissions/{id}/logs?since=` for live stage heartbeats and harness
+tails while the run is healthy.
 
 ## Submit
 

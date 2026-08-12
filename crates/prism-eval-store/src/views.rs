@@ -31,6 +31,8 @@ pub fn list_view(r: &SubmissionState) -> Value {
         }),
         "created_at_ms": r.created_at_ms,
         "updated_at_ms": r.updated_at_ms,
+        "error_detail": r.error_detail,
+        "pod_id": r.pod_id,
     })
 }
 

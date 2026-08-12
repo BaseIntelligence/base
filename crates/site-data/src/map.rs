@@ -571,22 +571,38 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         .get("n_params")
         .and_then(Value::as_u64)
         .map(|p| p as f64 / 1e6);
+    let err = row
+        .get("error_detail")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let detached = err
+        .as_deref()
+        .is_some_and(|e| e.contains("control_plane_restart") || e.contains("harness_detached"));
     let failure_reason = if status == SubmissionStatus::Failed {
-        row.get("error_detail")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+        err.clone()
     } else {
         None
     };
-    let status_detail = failure_reason.clone().or_else(|| match status_s {
-        "provisioning" => Some("provisioning eval pod".into()),
-        "running" => Some("training on recipe".into()),
-        "llm_review" => Some("LLM review".into()),
-        "similarity" => Some("similarity check".into()),
-        "scoring" => Some("scoring".into()),
-        "terminated" => bpb.map(|b| format!("bpb={b:.4}")),
-        _ => None,
-    });
+    let status_detail = failure_reason
+        .clone()
+        .or_else(|| {
+            if detached {
+                Some(
+                    "disconnected — control plane restarted; stop Lium pod if still billing".into(),
+                )
+            } else {
+                None
+            }
+        })
+        .or_else(|| match status_s {
+            "provisioning" => Some("provisioning eval pod".into()),
+            "running" => Some("training on recipe".into()),
+            "llm_review" => Some("LLM review".into()),
+            "similarity" => Some("similarity check".into()),
+            "scoring" => Some("scoring".into()),
+            "terminated" => bpb.map(|b| format!("bpb={b:.4}")),
+            _ => None,
+        });
     Some(Submission {
         id: id.to_owned(),
         arena: ArenaSlug::Prism,
