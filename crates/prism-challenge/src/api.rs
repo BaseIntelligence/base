@@ -433,11 +433,16 @@ async fn post_retry(
             return resp;
         }
     }
-    let miner_lium_key = headers
+    // Prefer the request header, else reuse the sealed BYOK vault entry for
+    // this submission_id (auto-/admin-retry must not drop miner Lium keys).
+    let header_lium_key = headers
         .get(prism_lium_payer::LIUM_API_KEY_HEADER)
         .or_else(|| headers.get("X-Lium-Api-Key"))
         .and_then(|v| v.to_str().ok())
         .and_then(prism_lium_payer::normalize_lium_api_key);
+    let miner_lium_key = header_lium_key
+        .clone()
+        .or_else(|| st.payer_vault.as_ref().and_then(|v| v.get(&id)));
     if infra
         && row.metrics_json.is_none()
         && prism_lium_payer::require_miner_lium(st.backend_mode)
@@ -446,7 +451,7 @@ async fn post_retry(
         return json_err(
             StatusCode::BAD_REQUEST,
             "missing_lium_api_key",
-            "live Prism retry requires header X-Lium-Api-Key when another GPU run is needed",
+            "live Prism retry requires X-Lium-Api-Key (or a sealed payer vault entry) when another GPU run is needed",
         );
     }
     if row.retry_count >= st.retry_max && !infra {
@@ -465,6 +470,8 @@ async fn post_retry(
     match st.store.reset_for_retry(&id, true).await {
         Ok(_) => {
             if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key) {
+                // Re-seal so TTL covers the new attempt even when the header
+                // was omitted and we reused the vault entry.
                 vault.insert(id.clone(), key);
             }
             (
@@ -705,6 +712,93 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::CONFLICT);
+    }
+
+    /// Infra retry on live Lium must reuse the sealed BYOK vault when the
+    /// miner does not resend `X-Lium-Api-Key` (regression: dropped key →
+    /// `missing_lium_api_key` instead of replaying the real infra error).
+    #[tokio::test]
+    async fn retry_reuses_payer_vault_lium_key() {
+        let vault = Arc::new(prism_lium_payer::PayerKeyVault::new());
+        let st = Arc::new(AppState {
+            store: Arc::new(MemoryPrismStore::new()),
+            eval_store: Arc::new(crate::MemoryEvalStore::new()),
+            epoch: std::sync::atomic::AtomicU64::new(7),
+            netuid: 541,
+            backend_mode: "lium",
+            retry_max: 2,
+            gating: None,
+            metagraph: None,
+            admin_token_hashes: vec![],
+            payer_vault: Some(Arc::clone(&vault)),
+            logs: std::sync::Arc::new(prism_orphan::LogBuffer::new()),
+        });
+        let app = submission_router(Arc::clone(&st));
+        let req = crate::example_valid_request();
+        let id = prism_pipeline::submission_id(&req);
+        let body = serde_json::to_vec(&req).unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .header("x-lium-api-key", "sk_test_miner_lium")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(vault.get(&id).as_deref(), Some("sk_test_miner_lium"));
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    final_score: Some(FinalScore::NoScore(
+                        NoScoreReasonCode::ChallengeInternal as u8,
+                    )),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        // No Lium header — vault must satisfy the live retry gate.
+        let (s, v) = call(
+            app.clone(),
+            Request::post(format!("/v1/submissions/{id}/retry"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(v["status"], "queued");
+        assert_eq!(vault.get(&id).as_deref(), Some("sk_test_miner_lium"));
+
+        // Without vault entry, live infra retry still demands the header.
+        vault.remove(&id);
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    final_score: Some(FinalScore::NoScore(
+                        NoScoreReasonCode::ChallengeInternal as u8,
+                    )),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let (s, v) = call(
+            app,
+            Request::post(format!("/v1/submissions/{id}/retry"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["code"], "missing_lium_api_key");
     }
 
     fn arch_fixture() -> (String, String) {
