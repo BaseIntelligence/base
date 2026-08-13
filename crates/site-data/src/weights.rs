@@ -138,10 +138,7 @@ pub fn arena_weight(
     slug: &str,
 ) -> f64 {
     // Unknown to the trust root → never invent a weight (coding / paused arenas).
-    if configured_shares(challenges)
-        .iter()
-        .all(|(s, _)| s != slug)
-    {
+    if configured_shares(challenges).iter().all(|(s, _)| s != slug) {
         return 0.0;
     }
     let Some((bytes, _)) = latest else {
