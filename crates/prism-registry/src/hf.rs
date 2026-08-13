@@ -616,14 +616,14 @@ pub fn extra_files_from_tree_blob(tree_blob: Option<&[u8]>) -> Vec<(String, Vec<
 }
 
 fn is_publishable_source(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".py")
-        || lower.ends_with(".toml")
-        || lower.ends_with(".json")
-        || lower.ends_with(".md")
-        || lower.ends_with(".patch")
-        || lower.ends_with(".yaml")
-        || lower.ends_with(".yml")
+    let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) else {
+        // Allow extensionless patch paths under .prism/
+        return path.ends_with("automodel.patch");
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "py" | "toml" | "json" | "md" | "patch" | "yaml" | "yml"
+    )
 }
 
 #[cfg(test)]
