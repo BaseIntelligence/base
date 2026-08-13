@@ -14,6 +14,7 @@ bundle = { path = "../bundle" }
 prism-lium = { path = "../prism-lium" }
 prism-lium-payer = { path = "../prism-lium-payer" }
 prism-pipeline = { path = "../prism-pipeline" }
+prism-review = { path = "../prism-review" }
 prism-store = { path = "../prism-store" }
 serde_json = "1"
 submission-gating = { path = "../submission-gating" }

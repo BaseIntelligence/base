@@ -1,10 +1,19 @@
 //! Pod harness packaging and allowlisted environment helpers for Lium runs.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+
+mod detached;
 
 use std::path::PathBuf;
 
 use prism_lium_types::LiumError;
+
+pub use detached::{
+    classify_log, detach_launch_cmd, parse_harness_probe, parse_metrics_output, HarnessProbe,
+    HarnessProgress, HARNESS_ABSENT, HARNESS_PROBE_CMD, TRAIN_DONE_MARKER,
+};
 
 /// Pod-side staging directory for eval assets.
 pub const EVAL_ASSETS_POD_DIR: &str = "/tmp/prism_eval/eval-assets";

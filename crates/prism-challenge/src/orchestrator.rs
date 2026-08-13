@@ -15,15 +15,19 @@ use challenge_agentic::{
 use challenge_common::{expected_set_at_chain, GatewayClient, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
+use prism_lium::HARNESS_ABSENT;
 use prism_lium::{EvalJobBackend, InstanceSpec, RemoteExecResult};
 use prism_lium_payer::PayerBackendFactory;
 use prism_orphan::{
-    spawn_log_watch, ActiveJobs, LogBuffer, DEFAULT_LOG_POLL_SECS, DEFAULT_ORPHAN_GRACE_SECS,
+    fail_terminal, finish_measure, reject_gating, reject_pre_pod, spawn_log_watch, ActiveJobs,
+    LogBuffer, DEFAULT_LOG_POLL_SECS, DEFAULT_ORPHAN_GRACE_SECS,
 };
-use prism_pipeline::{gating_key, measurement_patch, resume_measurement, ScoringMode};
+use prism_pipeline::{
+    gating_key, measurement_patch, mid_pod_resume, resume_measurement, ScoringMode,
+};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
-use submission_gating::{GatingState, GatingStore};
+use submission_gating::GatingStore;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -36,31 +40,18 @@ use prism_store::{FinalScore, PrismStore, Stage, StageEvent, StatePatch, Submiss
 /// Worker + emitter settings.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
-    /// Netuid.
     pub netuid: u16,
-    /// Pod price cap.
     pub max_price_per_hour: f64,
-    /// Pod lifetime hours cap (train cap + margin).
     pub max_lifetime_hours: f64,
-    /// SSH public keys for rent.
     pub ssh_public_keys: Vec<String>,
-    /// Optional image digest pin.
     pub image_digest: Option<String>,
-    /// Queue polling cadence.
     pub claim_poll: Duration,
-    /// Emitter tick cadence (chain-epoch boundary detection lag).
     pub emit_poll: Duration,
-    /// Rent attempt budget before `failed`.
     pub max_attempts: u32,
-    /// Similarity / agentic corpus size (champions + baseline).
     pub similarity_corpus_limit: u32,
-    /// Stuck sweep grace (seconds). Default 10h (> wait-RUNNING + 6h train + SSH margin).
     pub stuck_grace_secs: u64,
-    /// Local/e2e only: pause after each published stage. Zero in production.
     pub stage_delay: Duration,
-    /// Auto-retry budget for infra-class failures (default 3).
     pub auto_retry_max: u32,
-    /// Scoring mode (`PRISM_SCORING_MODE`; default shadow).
     pub scoring_mode: ScoringMode,
     pub orphan_grace_secs: u64,
 }
@@ -91,7 +82,6 @@ pub struct Orchestrator<C: ChainClient + Send> {
     cfg: OrchestratorConfig,
     store: Arc<dyn PrismStore>,
     backend: Arc<dyn EvalJobBackend>,
-    /// When set, each measure builds a miner-billed [`EvalJobBackend`] from the vault.
     payer: Option<PayerBackendFactory>,
     reviewer: Arc<dyn ReviewBackend>,
     agentic: Arc<dyn AgenticBackend>,
@@ -105,7 +95,6 @@ pub struct Orchestrator<C: ChainClient + Send> {
 }
 
 impl<C: ChainClient + Send> Orchestrator<C> {
-    /// Construct.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -143,30 +132,24 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         self
     }
 
-    /// Miner-funded Lium: resolve a per-submission client from the vault.
     #[must_use]
     pub fn with_payer(mut self, payer: PayerBackendFactory) -> Self {
         self.payer = Some(payer);
         self
     }
 
-    /// Attach the submission gating store (terminal states + retry attempts).
     #[must_use]
     pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
         self.gating = Some(gating);
         self
     }
 
-    /// Attach the v3 eval store (composite runs + Zone B ingest). Default
-    /// `None` skips the composite path entirely — legacy behavior is
-    /// bit-identical (no battery parse, no eval rows, `composite: None`).
     #[must_use]
     pub fn with_eval_store(mut self, eval_store: Option<Arc<dyn EvalStore>>) -> Self {
         self.eval_store = eval_store;
         self
     }
 
-    /// Attach the top-model GitHub publisher (absent = publish step no-ops).
     #[must_use]
     pub fn with_topmodel(
         mut self,
@@ -176,7 +159,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         self
     }
 
-    /// Backend that bills `submission_id` (miner vault or operator/sim).
     fn backend_for(&self, submission_id: &str) -> Result<Arc<dyn EvalJobBackend>, String> {
         match &self.payer {
             Some(p) => p.resolve(submission_id, Arc::clone(&self.backend)),
@@ -184,19 +166,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    /// Config getter (API views).
     #[must_use]
     pub const fn cfg(&self) -> &OrchestratorConfig {
         &self.cfg
     }
 
-    /// Emitter accessor (tests / diagnostics).
     #[must_use]
     pub const fn emitter(&self) -> &EpochEmitter {
         &self.emitter
     }
 
-    /// Claim loop (spawn one per concurrency permit).
     pub async fn run_worker(self: Arc<Self>)
     where
         C: Sync,
@@ -213,7 +192,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    /// Stuck-row sweeper loop (skips rows held by a live worker).
     pub async fn run_sweeper(self: Arc<Self>)
     where
         C: Sync,
@@ -229,7 +207,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    /// One orphan reconcile pass (`boot` ⇒ grace 0).
     pub async fn reconcile_orphans(
         &self,
         boot: bool,
@@ -283,15 +260,19 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             if self.maybe_auto_retry(&row, "install", &msg).await {
                 continue;
             }
-            self.fail_terminal(&row, "install", &msg).await;
+            fail_terminal(
+                self.store.as_ref(),
+                self.gating.as_ref(),
+                &row,
+                "install",
+                &msg,
+            )
+            .await;
         }
         Ok(())
     }
 
     /// One claim→finalize cycle; `Ok(true)` when one row was worked.
-    ///
-    /// # Errors
-    /// Claim fault only; per-row business errors become `failed` rows.
     pub async fn cycle_once(&self) -> Result<bool, String> {
         let row = self.store.claim_next().await.map_err(|e| e.to_string())?;
         let Some(row) = row else { return Ok(false) };
@@ -299,8 +280,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Ok(true)
     }
 
-    /// Requeue on infra failures while auto-retry budget lasts (`false` →
-    /// terminal). Lium **429** requeues without burning `retry_count` / gating.
     async fn maybe_auto_retry(&self, row: &SubmissionState, class: &str, msg: &str) -> bool {
         let rate = lium_rent_pool::is_rate_limited(msg);
         if !rate && row.retry_count >= self.cfg.auto_retry_max {
@@ -348,61 +327,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         true
     }
 
-    /// Gating `rejected` for cheat-class terminals (composite key for
-    /// training-only rows, `prism` otherwise).
-    async fn reject_gating(&self, row: &SubmissionState) {
-        if let Some(g) = &self.gating {
-            let _ = g
-                .set_terminal(
-                    &gating_key(row.arch_id.as_deref()),
-                    &row.miner_hotkey,
-                    GatingState::Rejected,
-                    None,
-                )
-                .await;
-        }
-    }
-
-    /// Terminal failure: `failed` row + gating `blocked`. The
-    /// `NoScore(ChallengeInternal)` enters the emission outbox and lands in
-    /// the next epoch-boundary leaf set (`run_emitter`).
-    async fn fail_terminal(&self, row: &SubmissionState, class: &str, msg: &str) {
-        let _ = self
-            .store
-            .apply(
-                &row.id,
-                &StatePatch {
-                    status: Some(Stage::Failed),
-                    error_detail: Some(msg.to_owned()),
-                    final_score: Some(FinalScore::NoScore(
-                        NoScoreReasonCode::ChallengeInternal as u8,
-                    )),
-                    ..StatePatch::default()
-                },
-                Some(&StageEvent {
-                    stage: Stage::Failed,
-                    detail: Some(serde_json::json!({"class": class, "error": msg})),
-                    at_ms: 0,
-                }),
-            )
-            .await;
-        if let Some(g) = &self.gating {
-            let _ = g
-                .set_terminal(
-                    &gating_key(row.arch_id.as_deref()),
-                    &row.miner_hotkey,
-                    GatingState::Blocked,
-                    Some(class),
-                )
-                .await;
-        }
-    }
-
-    /// Returns `true` (row finalized terminal — caller stops) on a
-    /// harness-flagged parameter-cap breach: the row goes terminal
-    /// `rejected` Score(0) and the miner is gating-rejected. The breach is
-    /// miner-attributable and machine-verified at build time, so there is
-    /// no measured score and no review/similarity/agentic spend.
     async fn cap_terminal(&self, row: &SubmissionState, m: Option<&RemoteExecResult>) -> bool {
         let Some(m) = m.filter(|m| cap_flag(m)) else {
             return false;
@@ -422,13 +346,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             at_ms: 0,
         };
         let _ = self.store.apply(&row.id, &patch, Some(&event)).await;
-        self.reject_gating(row).await;
+        reject_gating(self.gating.as_ref(), row).await;
         true
     }
 
-    /// Terminal stage event for a finalized row: agentic audit blob plus the
-    /// scoring mode + version the final score was computed under (v2 shadow,
-    /// v3 composite).
     fn terminal_event(&self, status: Stage, agentic: &AgenticVerdict) -> StageEvent {
         StageEvent {
             stage: status,
@@ -441,16 +362,14 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    /// Process one submission end-to-end.
     pub async fn run_row(&self, row: SubmissionState) -> Result<(), String> {
         let id = row.id.clone();
         let _active = self.active.enter(&id);
         info!(submission_id = %id, miner = %row.miner_hotkey, "prism eval start");
 
-        let Some(pre) = self.pre_pod_screens(&id, &row).await else {
+        let Some((similarity, review)) = self.screens_or_resume(&id, &row).await else {
             return Ok(());
         };
-        let (similarity, review, _pre_agentic) = pre;
 
         let (measured, fresh) = match resume_measurement(&row) {
             Some(mr) => (Ok(mr), false),
@@ -463,7 +382,14 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 if self.maybe_auto_retry(&row, "install", &msg).await {
                     return Ok(());
                 }
-                self.fail_terminal(&row, "install", &msg).await;
+                fail_terminal(
+                    self.store.as_ref(),
+                    self.gating.as_ref(),
+                    &row,
+                    "install",
+                    &msg,
+                )
+                .await;
                 return Ok(());
             }
         };
@@ -489,7 +415,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             agentic.verdict,
             VerdictKind::Cheat | VerdictKind::Suspicious
         ) {
-            self.reject_gating(&row).await;
+            reject_gating(self.gating.as_ref(), &row).await;
         }
 
         let blob = metrics
@@ -546,10 +472,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Ok(())
     }
 
-    /// Pre-pod screens: copy → static → similarity → LLM quality → agentic.
-    /// Returns gates when the row may proceed to Lium rent; `None` when
-    /// already finalized (rejected / failed / retrying). OpenRouter / agentic
-    /// infra errors fail closed here — they must never rent a pod.
     async fn pre_pod_screens(
         &self,
         id: &str,
@@ -571,13 +493,17 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 if self.maybe_auto_retry(row, "ast_infra", &e).await {
                     return None;
                 }
-                self.fail_terminal(row, "ast_infra", &e).await;
+                fail_terminal(
+                    self.store.as_ref(),
+                    self.gating.as_ref(),
+                    row,
+                    "ast_infra",
+                    &e,
+                )
+                .await;
                 return None;
             }
         };
-        // Hard-reject LLM `Copied`, and high-confidence `Suspicious`
-        // (score ≥ 0.9 with non-trope evidence). Below-threshold / trope-only
-        // Suspicious is not a wipe — parser coercion + combine_final agree.
         if prism_review::cheap_similarity_hard_zeros(
             similarity.kind,
             similarity.score,
@@ -587,8 +513,15 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 "pre-pod similarity: {:?} score={:.2}",
                 similarity.kind, similarity.score
             );
-            self.reject_pre_pod(row, Some(similarity), None, detail)
-                .await;
+            reject_pre_pod(
+                self.store.as_ref(),
+                self.gating.as_ref(),
+                row,
+                Some(similarity),
+                None,
+                detail,
+            )
+            .await;
             return None;
         }
         let review = self.review_step(id, row).await?;
@@ -598,7 +531,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             VerdictKind::Cheat | VerdictKind::Suspicious
         ) {
             let detail = format!("pre-pod agentic: {:?}", agentic.verdict);
-            self.reject_pre_pod(
+            reject_pre_pod(
+                self.store.as_ref(),
+                self.gating.as_ref(),
                 row,
                 Some(similarity),
                 Some(serde_json::json!({
@@ -613,14 +548,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Some((similarity, review, agentic))
     }
 
-    /// Pre-LLM copy gate on `architecture.py`. Returns `true` when the row was
-    /// finalized terminal `rejected` (caller must stop processing).
-    ///
-    /// The corpus is **champions** (Score>0 current top + historical ex-tops),
-    /// ordered by store `created_at`; the published baseline is exempt by id
-    /// prefix inside [`copy_gate`]. Ties / unknown timestamps fall through to
-    /// the LLM similarity review. Training-only rows (`arch_id` set) skip the
-    /// gate entirely: their architecture is registry-identical by design.
     async fn copy_gate_step(&self, row: &SubmissionState) -> bool {
         if row.arch_id.is_some() {
             return false;
@@ -652,7 +579,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             }],
             prompt_version: prism_review::SIMILARITY_PROMPT_VERSION,
         };
-        self.reject_pre_pod(
+        reject_pre_pod(
+            self.store.as_ref(),
+            self.gating.as_ref(),
             row,
             Some(similarity),
             Some(serde_json::json!({
@@ -670,9 +599,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         true
     }
 
-    /// Static source cheat screen (`METRICS_JSON` / non-causal mix / telemetry
-    /// hooks; recipe 2.0: delta telemetry/network/eval-leak). Pre-pod.
-    /// Returns `true` when the row was finalized terminal `rejected`.
     async fn static_source_step(&self, row: &SubmissionState) -> bool {
         let patch = row
             .tree_blob
@@ -689,7 +615,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             rationale = %hit.rationale,
             "static source cheat rejected (pod skipped)"
         );
-        self.reject_pre_pod(
+        reject_pre_pod(
+            self.store.as_ref(),
+            self.gating.as_ref(),
             row,
             None,
             Some(serde_json::json!({
@@ -703,87 +631,83 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         true
     }
 
-    /// Terminal Score(0) reject before any Lium rent. Shared by copy gate,
-    /// static screens, and pre-pod similarity.
-    async fn reject_pre_pod(
+    async fn screens_or_resume(
         &self,
+        id: &str,
         row: &SubmissionState,
-        similarity: Option<SimilarityVerdict>,
-        detail: Option<serde_json::Value>,
-        error_detail: String,
-    ) {
-        let _ = self
-            .store
-            .apply(
-                &row.id,
-                &StatePatch {
-                    status: Some(Stage::Rejected),
-                    final_score: Some(FinalScore::Score(0)),
-                    similarity,
-                    error_detail: Some(error_detail),
-                    ..StatePatch::default()
-                },
-                Some(&StageEvent {
-                    stage: Stage::Rejected,
-                    detail,
-                    at_ms: 0,
-                }),
-            )
-            .await;
-        if let Some(g) = &self.gating {
-            let _ = g
-                .set_terminal(
-                    &gating_key(row.arch_id.as_deref()),
-                    &row.miner_hotkey,
-                    GatingState::Rejected,
-                    None,
+    ) -> Option<(SimilarityVerdict, prism_review::ReviewVerdict)> {
+        if mid_pod_resume(row) {
+            if let (Some(s), Some(r)) = (row.similarity.clone(), row.review.clone()) {
+                return Some((s, r));
+            }
+        }
+        let (s, r, _) = self.pre_pod_screens(id, row).await?;
+        if !mid_pod_resume(row) {
+            let _ = self
+                .store
+                .apply(
+                    id,
+                    &StatePatch {
+                        review: Some(r.clone()),
+                        similarity: Some(s.clone()),
+                        ..StatePatch::default()
+                    },
+                    Some(&StageEvent {
+                        stage: Stage::Provisioning,
+                        detail: Some(serde_json::json!({"checkpoint": "pre_measure"})),
+                        at_ms: 0,
+                    }),
                 )
                 .await;
         }
+        Some((s, r))
     }
 
-    /// Pod phase. Returns `(bpb, receipt)` on full success.
     async fn measure(
         &self,
         id: &str,
         row: &SubmissionState,
     ) -> Result<(prism_lium::RemoteExecResult, prism_lium::EvalReceipt), String> {
         self.to_stage(id, Stage::Provisioning).await?;
-
         let backend = self.backend_for(id)?;
-
-        let spec = InstanceSpec {
-            name: format!("prism-{}", &id[..12]),
-            max_lifetime_hours: self.cfg.max_lifetime_hours,
-            max_price_per_hour: self.cfg.max_price_per_hour,
-            gpu_count: 1,
-            image_digest: self.cfg.image_digest.clone(),
-            ssh_public_keys: self.cfg.ssh_public_keys.clone(),
-            ssh_key_name: Some("prism-mission-worker".into()),
-            preferred_offer_id: None,
-            template_id: None,
-            template_name: None, // default recipe template (prism-recipe-v2 w/ sshd)
+        let resume = mid_pod_resume(row);
+        let (pod_id, provider) = if let Some(pid) = row.pod_id.clone() {
+            (
+                pid,
+                row.pod_provider.clone().unwrap_or_else(|| "lium".into()),
+            )
+        } else {
+            let spec = InstanceSpec {
+                name: format!("prism-{}", &id[..12.min(id.len())]),
+                max_lifetime_hours: self.cfg.max_lifetime_hours,
+                max_price_per_hour: self.cfg.max_price_per_hour,
+                gpu_count: 1,
+                image_digest: self.cfg.image_digest.clone(),
+                ssh_public_keys: self.cfg.ssh_public_keys.clone(),
+                ssh_key_name: Some("prism-mission-worker".into()),
+                preferred_offer_id: None,
+                template_id: None,
+                template_name: None,
+            };
+            let inst = backend
+                .provision(&spec)
+                .await
+                .map_err(|e| format!("provision: {e}"))?;
+            (inst.id, inst.provider)
         };
         self.to_stage(id, Stage::Running).await?;
-
-        let inst = backend
-            .provision(&spec)
-            .await
-            .map_err(|e| format!("provision: {e}"))?;
-        let pod_id = inst.id.clone();
         let _ = self
             .store
             .apply(
                 id,
                 &StatePatch {
                     pod_id: Some(pod_id.clone()),
-                    pod_provider: Some(inst.provider.clone()),
+                    pod_provider: Some(provider.clone()),
                     ..StatePatch::default()
                 },
                 None,
             )
             .await;
-
         let stop_tx = spawn_log_watch(
             Arc::clone(&self.logs),
             Arc::clone(&self.store),
@@ -793,67 +717,34 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             pod_id.clone(),
             DEFAULT_LOG_POLL_SECS,
         );
-
-        #[rustfmt::skip]
-        let metrics = backend
-            .exec_eval(&pod_id, &row.architecture_py, &row.training_py, row.tree_blob.as_deref())
-            .await;
-        let _ = stop_tx.send(true);
-
-        if let Ok(ref m) = metrics {
-            let dest = prism_lium::artifact_dir_for(id);
-            match backend
-                .harvest_artifacts(&pod_id, &dest, id.as_bytes(), m.n_params)
-                .await
-            {
-                Ok(path) => {
-                    info!(
-                        submission_id = %id,
-                        path = %path.display(),
-                        n_params = ?m.n_params,
-                        "checkpoint secure-received"
-                    );
+        let (arch, train, tree) = (
+            row.architecture_py.as_str(),
+            row.training_py.as_str(),
+            row.tree_blob.as_deref(),
+        );
+        let metrics = if resume {
+            match backend.resume_eval(&pod_id).await {
+                Ok(m) => Ok(m),
+                Err(e) if e.to_string().contains(HARNESS_ABSENT) => {
+                    backend.exec_eval(&pod_id, arch, train, tree).await
                 }
-                Err(e) => {
-                    warn!(submission_id = %id, error = %e, "checkpoint secure receive failed");
-                }
+                Err(e) => Err(e),
             }
-        }
-
-        // Always terminate + verify (billing guard, receipt gate).
-        if let Err(e) = backend.terminate(&pod_id).await {
-            warn!(error = %e, %pod_id, "terminate failed");
-        }
-        let mut termination_verified = backend.verify_terminated(&pod_id).await.unwrap_or(false);
-        if !termination_verified {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            termination_verified = backend.verify_terminated(&pod_id).await.unwrap_or(false);
-        }
-        if let Some(p) = &self.payer {
-            p.vault.remove(id);
-        }
-
-        let receipt = prism_lium::EvalReceipt {
-            provider: inst.provider.clone(),
-            pod_id: pod_id.clone(),
-            image_digest: self.cfg.image_digest.clone().unwrap_or_default(),
-            submission_hash: prism_lium::EvalReceipt::hash_submission(
-                &row.architecture_py,
-                &row.training_py,
-            ),
-            metrics_hash: metrics.as_ref().ok().map_or_else(
-                || "none".into(),
-                |m| {
-                    prism_lium::EvalReceipt::hash_metrics_bytes(
-                        &serde_json::to_vec(m).unwrap_or_default(),
-                    )
-                },
-            ),
-            termination_verified,
+        } else {
+            backend.exec_eval(&pod_id, arch, train, tree).await
         };
-
-        let metrics = metrics.map_err(|e| format!("exec: {e}"))?;
-        Ok((metrics, receipt))
+        let _ = stop_tx.send(true);
+        finish_measure(
+            &backend,
+            self.payer.as_ref(),
+            id,
+            row,
+            &pod_id,
+            provider,
+            self.cfg.image_digest.clone().unwrap_or_default(),
+            metrics,
+        )
+        .await
     }
 
     async fn review_step(
@@ -873,7 +764,14 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 if self.maybe_auto_retry(row, "llm_infra", &msg).await {
                     return None;
                 }
-                self.fail_terminal(row, "llm_infra", &msg).await;
+                fail_terminal(
+                    self.store.as_ref(),
+                    self.gating.as_ref(),
+                    row,
+                    "llm_infra",
+                    &msg,
+                )
+                .await;
                 None
             }
         }
@@ -885,9 +783,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         row: &SubmissionState,
     ) -> Result<SimilarityVerdict, String> {
         self.to_stage(id, Stage::Similarity).await?;
-        // Training-only rows train a registry architecture: similarity is
-        // exempt by definition (the arch copy judgment happened when the
-        // owner's architecture submission was reviewed).
         if let Some(a) = &row.arch_id {
             return Ok(SimilarityVerdict {
                 kind: prism_review::SimilarityKind::Original,
@@ -906,7 +801,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .map_err(|e| format!("similarity: {e}"))
     }
 
-    /// Agentic anti-cheat on sources + metrics/receipt. Fail-closed on error.
     async fn agentic_step(
         &self,
         id: &str,
@@ -952,7 +846,14 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 if self.maybe_auto_retry(row, "llm_infra", &msg).await {
                     return None;
                 }
-                self.fail_terminal(row, "llm_infra", &msg).await;
+                fail_terminal(
+                    self.store.as_ref(),
+                    self.gating.as_ref(),
+                    row,
+                    "llm_infra",
+                    &msg,
+                )
+                .await;
                 None
             }
         }
@@ -991,21 +892,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             architecture_py: BASELINE_ARCHITECTURE_PY.into(),
             training_py: BASELINE_TRAINING_PY.into(),
         }];
-        for r in recent {
-            if r.id == candidate.id || same_miner(candidate, &r) {
-                continue;
-            }
-            let label = if r.id.len() >= 8 {
-                format!("subm:{}", &r.id[..8])
-            } else {
-                format!("subm:{}", r.id)
-            };
-            v.push(SourceSnippet {
-                label,
-                architecture_py: r.architecture_py.clone(),
-                training_py: r.training_py.clone(),
-            });
-        }
+        v.extend(
+            recent
+                .into_iter()
+                .filter(|r| r.id != candidate.id && !same_miner(candidate, r))
+                .map(|r| SourceSnippet {
+                    label: format!("subm:{}", &r.id[..r.id.len().min(8)]),
+                    architecture_py: r.architecture_py,
+                    training_py: r.training_py,
+                }),
+        );
         v
     }
 
@@ -1032,8 +928,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Ok(())
     }
 
-    /// Emitter loop: one D24-complete leaf set per chain epoch (epoch-close
-    /// batching, exactly-once outbox — see `prism-emit` docs).
     pub async fn run_emitter(self: Arc<Self>)
     where
         C: Sync,
@@ -1046,21 +940,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    /// One emitter tick: read the live chain epoch + expected set, then let
-    /// the outbox recover/emit. `Ok(None)` = this epoch already emitted.
-    ///
-    /// # Errors
-    /// Chain / store / sign / submit failures (retried next tick).
     pub async fn emitter_tick(&self) -> Result<Option<prism_emit::EmitSummary>, String> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
-        // Label with the *current* chain epoch, not the pre-coinbase +1: the
-        // expected set below is pinned at `last_epoch_block` (the current
-        // epoch's start block), so a pre-run +1 label attaches the *previous*
-        // boundary's metagraph to the new epoch number. The other >0-bps
-        // challenge pins the same way, and D24 requires both same-label sets
-        // to cover the seal block's metagraph exactly — the +1 skew made
-        // every boundary churn a permanent 409 (`IncompleteParticipantSet`).
+        // Pin expected set at `last_epoch_block` (current epoch), not +1.
         let epoch = state.subnet_epoch_index;
         let block_hash = self
             .chain
@@ -1089,9 +972,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     }
 }
 
-/// Harness terminal payload flag: a miner-attributable parameter-cap breach
-/// (the harness refused the model at build and emitted a minimal
-/// METRICS_JSON instead of measuring; recipe ≥1.3.0).
 fn cap_flag(m: &RemoteExecResult) -> bool {
     m.extra
         .get("cap_exceeded")

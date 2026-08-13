@@ -3984,6 +3984,7 @@ dependencies = [
  "prism-lium-types",
  "prism-recipe",
  "prism-tree",
+ "serde_json",
 ]
 
 [[package]]
@@ -4019,6 +4020,7 @@ dependencies = [
  "prism-lium",
  "prism-lium-payer",
  "prism-pipeline",
+ "prism-review",
  "prism-store",
  "serde_json",
  "submission-gating",

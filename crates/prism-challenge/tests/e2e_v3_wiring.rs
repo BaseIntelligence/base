@@ -215,10 +215,9 @@ async fn cap_exceeded_is_terminal_score_zero() {
     let row = store.get(&id).await.unwrap().expect("row");
     assert_eq!(row.status, Stage::Rejected, "cap breach rejects terminally");
     assert_eq!(row.final_score, Some(FinalScore::Score(0)));
-    // Never a measured score and no LLM/similarity spend.
+    // Cap is measured at build; no bpb and no post-measure agentic re-spend.
+    // Pre-pod screens may already be checkpointed for resume durability.
     assert!(row.bpb.is_none(), "no measured bpb on a cap breach");
-    assert!(row.review.is_none(), "no review on a cap breach");
-    assert!(row.similarity.is_none(), "no similarity on a cap breach");
     assert_eq!(row.retry_count, 0, "miner-attributable: no auto-retry");
     let detail = row.error_detail.unwrap_or_default();
     assert!(

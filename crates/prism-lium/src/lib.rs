@@ -42,6 +42,10 @@ pub use prism_artifacts::{
     artifact_dir_for, artifact_root, checkpoint_path_for, ensure_artifact_root,
     write_sim_checkpoint, MAX_CHECKPOINT_BYTES, POD_WORKDIR,
 };
+pub use prism_lium_harness::{
+    classify_log, parse_harness_probe, parse_metrics_output, HarnessProbe, HarnessProgress,
+    HARNESS_ABSENT, TRAIN_DONE_MARKER,
+};
 pub use sim::SimLiumBackend;
 pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
 // The data contract lives in `prism-lium-types` (per-crate LOC cap); it is
@@ -92,6 +96,22 @@ pub trait EvalJobBackend: Send + Sync {
         Err(LiumError::Exec(
             "artifact harvest not supported on this backend".into(),
         ))
+    }
+
+    /// True when the provider still lists the instance as rentable/running.
+    async fn instance_running(&self, _instance_id: &str) -> Result<bool, LiumError> {
+        Ok(false)
+    }
+
+    /// Reattach to a detached harness already on `instance_id` (no re-upload).
+    ///
+    /// Returns [`LiumError::Exec`] containing [`HARNESS_ABSENT`] when the pod
+    /// is up but no harness log/pid exists — caller may start a fresh
+    /// [`Self::exec_eval`] on the same pod.
+    async fn resume_eval(&self, instance_id: &str) -> Result<RemoteExecResult, LiumError> {
+        Err(LiumError::Exec(format!(
+            "{HARNESS_ABSENT}: resume unsupported on this backend ({instance_id})"
+        )))
     }
 }
 

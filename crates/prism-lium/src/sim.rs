@@ -175,6 +175,25 @@ impl EvalJobBackend for SimLiumBackend {
     ) -> Result<std::path::PathBuf, LiumError> {
         prism_artifacts::write_sim_checkpoint(dest_dir, seed)
     }
+
+    async fn instance_running(&self, instance_id: &str) -> Result<bool, LiumError> {
+        let map = self
+            .pods
+            .lock()
+            .map_err(|_| LiumError::Api("sim lock poisoned".into()))?;
+        Ok(map.get(instance_id).copied().unwrap_or(false))
+    }
+
+    async fn resume_eval(&self, instance_id: &str) -> Result<RemoteExecResult, LiumError> {
+        if !self.instance_running(instance_id).await? {
+            return Err(LiumError::Exec(format!(
+                "{}: sim pod gone",
+                crate::HARNESS_ABSENT
+            )));
+        }
+        // Sim has no detached log; treat resume as a fresh deterministic eval.
+        self.exec_eval(instance_id, "resume", "resume", None).await
+    }
 }
 
 #[cfg(test)]

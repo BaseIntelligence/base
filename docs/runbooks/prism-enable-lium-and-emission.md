@@ -8,6 +8,13 @@
 4. Run inventory probe → single rent smoke → terminate → `verify_terminated`.
 5. Prod default is `PRISM_MAX_CONCURRENT_EVALS=8` (orchestrator worker count /
    semaphore). Dial down only if the Lium lease pool cannot absorb the load.
+6. **Control-plane restart / redeploy (GPU-safe):** keep
+   `PRISM_PAYER_VAULT_DIR` + `PRISM_PAYER_VAULT_KEY_FILE` on a durable volume.
+   Healthy mid-flight pods are resumed (not terminated). Do not manually kill
+   Lium pods after a routine `prism-challenge` bounce — only stop pods that
+   surface `control_plane_restart` / `harness_detached` (dead pod or expired
+   seal). Prefer rolling the challenge image when no pods are in
+   `provisioning`/`running`, or accept resume after boot.
 
 ## Emission ceremony (shared with design)
 
