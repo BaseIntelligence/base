@@ -85,9 +85,10 @@ pub struct Arena {
     pub best_score: String,
     /// Label above best score.
     pub best_score_label: String,
-    /// Emission share 0..1 (0 when unknown).
+    /// Configured trust-root emission share 0..1 (0 when unknown / paused).
     pub emission_share: f64,
-    /// Weight 0..1 (0 when unknown).
+    /// Effective sealed weight 0..1 delivered by this arena onto real miners
+    /// (excludes uid-0 burn from *this* challenge's share; not global burn).
     pub weight: f64,
     /// TAO/day (0 when unknown).
     pub rewards_per_day: f64,
