@@ -22,6 +22,8 @@ pub const GPT2_SMALL_PARAMS_M: f64 = 124.0;
 
 /// HellaSwag `acc_norm` for gpt2 (Eleuther harness; commonly cited 31.14%).
 pub const GPT2_HELLASWAG: f64 = 0.3114;
+/// ARC-Easy `acc` (zero-shot Eleuther-style gpt2).
+pub const GPT2_ARC_EASY: f64 = 0.4381;
 /// ARC-Challenge `acc_norm` (zero-shot Eleuther-style gpt2).
 pub const GPT2_ARC_CHALLENGE: f64 = 0.2270;
 /// PIQA `acc_norm` (zero-shot Eleuther-style gpt2).
@@ -41,6 +43,7 @@ pub fn prism_reference_baselines() -> Vec<PrismReferenceBaseline> {
         bpb: None,
         benchmarks: PrismBenchmarks {
             hellaswag: Some(GPT2_HELLASWAG),
+            arc_easy: Some(GPT2_ARC_EASY),
             arc_challenge: Some(GPT2_ARC_CHALLENGE),
             piqa: Some(GPT2_PIQA),
             winogrande: Some(GPT2_WINOGRANDE),
@@ -130,19 +133,99 @@ pub fn map_benchmarks(metrics: Option<&Value>) -> PrismBenchmarks {
         return PrismBenchmarks::default();
     };
     PrismBenchmarks {
-        hellaswag: metric_f64(metrics, &["org.g2.hellaswag_acc", "g2.hellaswag.acc_norm"]),
+        hellaswag: metric_f64(
+            metrics,
+            &[
+                "org.g2.hellaswag_acc",
+                "g2.hellaswag.acc_norm",
+                "g2.hellaswag.acc",
+            ],
+        ),
+        arc_easy: metric_f64(
+            metrics,
+            &[
+                "org.g2.arc_easy_acc",
+                "g2.arc_easy.acc_norm",
+                "g2.arc_easy.acc",
+            ],
+        ),
         arc_challenge: metric_f64(
             metrics,
-            &["org.g2.arc_challenge_acc", "g2.arc_challenge.acc_norm"],
+            &[
+                "org.g2.arc_challenge_acc",
+                "g2.arc_challenge.acc_norm",
+                "g2.arc_challenge.acc",
+            ],
         ),
-        piqa: metric_f64(metrics, &["org.g2.piqa_acc", "g2.piqa.acc_norm"]),
-        winogrande: metric_f64(metrics, &["org.g2.winogrande_acc", "g2.winogrande.acc"]),
-        boolq: metric_f64(metrics, &["org.g2.boolq_acc", "g2.boolq.acc"]),
+        piqa: metric_f64(
+            metrics,
+            &["org.g2.piqa_acc", "g2.piqa.acc_norm", "g2.piqa.acc"],
+        ),
+        winogrande: metric_f64(
+            metrics,
+            &[
+                "org.g2.winogrande_acc",
+                "g2.winogrande.acc_norm",
+                "g2.winogrande.acc",
+            ],
+        ),
+        boolq: metric_f64(
+            metrics,
+            &["org.g2.boolq_acc", "g2.boolq.acc_norm", "g2.boolq.acc"],
+        ),
     }
 }
 
+/// Flatten `GET /v1/submissions/{id}/metrics?zone=a` → object keyed by metric name.
+///
+/// Zone-A rows are `{ key, value | point }` arrays; challenge detail sometimes
+/// omits flattened `org.g2.*` on `submission.metrics` even when the eval store
+/// has them. Callers merge this into bench mapping so the FE still surfaces.
+#[must_use]
+pub fn metrics_object_from_zone_a(zone: &Value) -> Option<Value> {
+    let rows = zone.get("metrics")?.as_array()?;
+    let mut map = serde_json::Map::new();
+    for row in rows {
+        let key = row.get("key").and_then(Value::as_str)?;
+        let val = row
+            .get("value")
+            .cloned()
+            .or_else(|| row.get("point").cloned())
+            .filter(|v| !v.is_null())?;
+        map.insert(key.to_owned(), val);
+    }
+    if map.is_empty() {
+        return None;
+    }
+    Some(Value::Object(map))
+}
+
+/// Resolve public benches from detail metrics and optional zone-A payload.
+#[must_use]
+pub fn resolve_benchmarks(detail: &Value, zone_a: Option<&Value>) -> PrismBenchmarks {
+    let root = detail.get("submission").unwrap_or(detail);
+    let mut benches = map_benchmarks(root.get("metrics").filter(|m| !m.is_null()));
+    // Battery blob may nest under metrics without top-level org.* copies.
+    if benches.is_empty() {
+        if let Some(battery_metrics) = root.pointer("/metrics/battery/metrics") {
+            benches = map_benchmarks(Some(battery_metrics));
+        }
+    }
+    if let Some(zone) = zone_a {
+        if let Some(obj) = metrics_object_from_zone_a(zone) {
+            let from_zone = map_benchmarks(Some(&obj));
+            benches.merge_missing(&from_zone);
+        }
+    }
+    benches
+}
+
 /// Copy era / pin / eval groups / benches from a detail payload onto a board row.
-pub fn enrich_leaderboard_row_from_detail(row: &mut LeaderboardRow, detail: &Value) {
+pub fn enrich_leaderboard_row_from_detail_with_zone(
+    row: &mut LeaderboardRow,
+    detail: &Value,
+    zone_a: Option<&Value>,
+) {
     let root = detail.get("submission").unwrap_or(detail);
     let era = infer_recipe_era(detail);
     row.recipe_era = Some(era);
@@ -152,14 +235,18 @@ pub fn enrich_leaderboard_row_from_detail(row: &mut LeaderboardRow, detail: &Val
     if let Some(groups) = map_eval_groups(root.get("eval").filter(|e| !e.is_null())) {
         row.eval_groups = Some(groups);
     }
-    let benches = map_benchmarks(root.get("metrics").filter(|m| !m.is_null()));
+    let benches = resolve_benchmarks(detail, zone_a);
     if !benches.is_empty() {
         row.benchmarks = Some(benches);
     }
 }
 
 /// Apply detail fan-out fields onto a list [`Submission`].
-pub fn enrich_submission_from_detail(sub: &mut Submission, detail: &Value) {
+pub fn enrich_submission_from_detail_with_zone(
+    sub: &mut Submission,
+    detail: &Value,
+    zone_a: Option<&Value>,
+) {
     let root = detail.get("submission").unwrap_or(detail);
     let era = infer_recipe_era(detail);
     sub.recipe_era = Some(era);
@@ -172,7 +259,7 @@ pub fn enrich_submission_from_detail(sub: &mut Submission, detail: &Value) {
         sub.eval_groups = Some(groups);
     }
     let metrics = root.get("metrics").filter(|m| !m.is_null());
-    let benches = map_benchmarks(metrics);
+    let benches = resolve_benchmarks(detail, zone_a);
     if !benches.is_empty() {
         sub.benchmarks = Some(benches);
     }
@@ -196,12 +283,15 @@ pub fn enrich_submission_from_detail(sub: &mut Submission, detail: &Value) {
     }
 }
 
-/// Map challenge `GET /v1/submissions/{id}` → public [`PrismSubmissionDetail`].
+/// Map challenge `GET /v1/submissions/{id}` (+ optional Zone-A) → public detail.
 #[must_use]
-pub fn prism_submission_detail(detail: &Value) -> Option<PrismSubmissionDetail> {
+pub fn prism_submission_detail_with_zone(
+    detail: &Value,
+    zone_a: Option<&Value>,
+) -> Option<PrismSubmissionDetail> {
     let root = detail.get("submission")?;
     let mut sub = prism_submission(root)?;
-    enrich_submission_from_detail(&mut sub, detail);
+    enrich_submission_from_detail_with_zone(&mut sub, detail, zone_a);
     let eval = root
         .get("eval")
         .filter(|e| !e.is_null())
@@ -290,18 +380,15 @@ fn metric_f64(metrics: &Value, keys: &[&str]) -> Option<f64> {
         if let Some(v) = lookup_metric(metrics, key) {
             return Some(v);
         }
-        // Nested under battery.groups.g2.metrics
-        if let Some(v) = metrics
-            .pointer(&format!("/battery/groups/g2/metrics/{key}"))
-            .and_then(as_f64_val)
-        {
-            return Some(v);
-        }
-        if let Some(v) = metrics
-            .pointer(&format!("/battery/metrics/{key}"))
-            .and_then(as_f64_val)
-        {
-            return Some(v);
+        // Nested under battery.groups.g2.metrics / battery.metrics (METRICS_JSON v2).
+        for path in [
+            format!("/battery/groups/g2/metrics/{key}"),
+            format!("/battery/metrics/{key}"),
+            format!("/groups/g2/metrics/{key}"),
+        ] {
+            if let Some(v) = metrics.pointer(&path).and_then(as_metric_node) {
+                return Some(v);
+            }
         }
     }
     None
@@ -309,7 +396,13 @@ fn metric_f64(metrics: &Value, keys: &[&str]) -> Option<f64> {
 
 fn lookup_metric(metrics: &Value, key: &str) -> Option<f64> {
     let v = metrics.get(key)?;
-    as_f64_val(v).or_else(|| v.get("value").and_then(as_f64_val))
+    as_metric_node(v)
+}
+
+fn as_metric_node(v: &Value) -> Option<f64> {
+    as_f64_val(v)
+        .or_else(|| v.get("value").and_then(as_f64_val))
+        .or_else(|| v.get("point").and_then(as_f64_val))
 }
 
 fn as_f64_val(v: &Value) -> Option<f64> {
@@ -343,18 +436,46 @@ mod tests {
         let m = json!({
             "org.g2.hellaswag_acc": {"value": 0.31},
             "org.g2.piqa_acc": {"value": 0.62},
+            "org.g2.arc_easy_acc": {"value": 0.44},
             "battery": {"groups": {"g2": {"metrics": {
                 "g2.arc_challenge.acc_norm": 0.22,
-                "g2.winogrande.acc": 0.51,
+                "g2.winogrande.acc_norm": 0.51,
                 "g2.boolq.acc": 0.60
             }}}}
         });
         let b = map_benchmarks(Some(&m));
         assert!((b.hellaswag.unwrap() - 0.31).abs() < f64::EPSILON);
         assert!((b.piqa.unwrap() - 0.62).abs() < f64::EPSILON);
+        assert!((b.arc_easy.unwrap() - 0.44).abs() < f64::EPSILON);
         assert!((b.arc_challenge.unwrap() - 0.22).abs() < f64::EPSILON);
         assert!((b.winogrande.unwrap() - 0.51).abs() < f64::EPSILON);
         assert!((b.boolq.unwrap() - 0.60).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zone_a_metrics_fill_missing_benches() {
+        let detail = json!({
+            "submission": {
+                "id": "z1",
+                "miner_hotkey": "aa".repeat(32),
+                "epoch": 1,
+                "status": "terminated",
+                "label": "z",
+                "bpb": 1.1,
+                "created_at_ms": 1u64,
+                "metrics": { "bpb": 1.1, "recipe": "2.0.0" }
+            }
+        });
+        let zone = json!({
+            "zone": "a",
+            "metrics": [
+                {"key": "org.g2.hellaswag_acc", "value": 0.33},
+                {"key": "org.g2.arc_easy_acc", "point": 0.41}
+            ]
+        });
+        let b = resolve_benchmarks(&detail, Some(&zone));
+        assert!((b.hellaswag.unwrap() - 0.33).abs() < 1e-9);
+        assert!((b.arc_easy.unwrap() - 0.41).abs() < 1e-9);
     }
 
     #[test]
@@ -418,7 +539,7 @@ mod tests {
             },
             "events": []
         });
-        let d = prism_submission_detail(&detail).unwrap();
+        let d = prism_submission_detail_with_zone(&detail, None).unwrap();
         assert_eq!(d.submission.recipe_era, Some(RecipeEra::Automodel));
         assert_eq!(d.submission.pin_id.as_deref(), Some("automodel@v0.5.0"));
         assert!((d.submission.benchmarks.as_ref().unwrap().hellaswag.unwrap() - 0.4).abs() < 1e-9);
