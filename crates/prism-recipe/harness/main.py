@@ -156,19 +156,17 @@ def _eval_battery_status():
 
 
 def _detect_flow():
-    """v1 (legacy single invocation) vs v3 (two-phase train/eval).
+    """v1 (legacy single invocation) vs v3 (two-phase train/eval + G1–G8).
 
-    Explicit `PRISM_FLOW=v1|v3` wins. Otherwise the flow stays
-    v1-compatible until the operator stages private assets or a secret
-    seed — the battery then runs in the v3 child with the public dev
-    family when assets are absent (`eval_tier: "public_dev"`).
+    Explicit `PRISM_FLOW=v1|v3` wins. Default is **v3** so scored runs always
+    execute the public battery (full pack when `PRISM_EVAL_ASSETS_DIR` is
+    staged; otherwise `eval_tier=public_dev` fixtures — never silent BPB-only).
+    Set `PRISM_FLOW=v1` only for legacy single-shot compatibility.
     """
     f = os.environ.get("PRISM_FLOW", "").strip().lower()
     if f in ("v1", "v3"):
         return f
-    if os.environ.get("PRISM_EVAL_ASSETS_DIR") or os.environ.get("PRISM_EVAL_SECRET_SEED"):
-        return "v3"
-    return "v1"
+    return "v3"
 
 
 def _cheatguard():

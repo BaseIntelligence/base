@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 EVIDENCE="${EVIDENCE:-/tmp/prism-overnight-$(date -u +%Y%m%dT%H%M%SZ)}"
-PACK_DIR="${PRISM_EVAL_ASSETS_DIR:-/tmp/prism-eval-assets}"
+PACK_DIR="${PRISM_EVAL_ASSETS_DIR:-/var/lib/prism/eval-assets}"
 ARTIFACT_DIR="${PRISM_ARTIFACT_DIR:-/tmp/prism-artifacts}"
 OVERRIDE="${PRISM_OVERNIGHT_OVERRIDE:-/tmp/prism-overnight-compose.override.yml}"
 PRISM_URL="${PRISM_URL:-http://127.0.0.1:28092}"

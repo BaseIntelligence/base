@@ -53,6 +53,19 @@ chmod 0400 deploy/secrets/design/annotator_tokens deploy/secrets/openrouter/api_
   `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`/run/base/github/token`); missing or
   empty file = top-model publish silently disabled. Mode **0400**, uid
   **65532** — never commit it.
+- `huggingface/token` — prism-challenge HuggingFace top-model publisher: Hub
+  **write** token for `BaseIntelligence/prism-top-model` (override
+  `PRISM_TOPMODEL_HF_REPO`). Read via `PRISM_TOPMODEL_HF_TOKEN_FILE`
+  (`/run/base/huggingface/token`); missing or empty = HF publish no-ops.
+  Mode **0400**, uid **65532** — never commit it.
+
+```bash
+mkdir -p deploy/secrets/huggingface
+touch deploy/secrets/huggingface/token
+chown 65532:65532 deploy/secrets/huggingface/token
+chmod 0400 deploy/secrets/huggingface/token
+```
+
 - `prism/admin_tokens` — one operator bearer per line for Prism
   `/v1/submissions/{id}/retry`, `POST /v1/admin/playground/complete`,
   `POST /v1/admin/gating/{hotkey}/reset`, and

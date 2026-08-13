@@ -1,9 +1,7 @@
-//! Post-run review-stage failures must never re-run the pod job (E12):
-//! the completed measurement is persisted at measure time and survives the
-//! retry reset, so an `llm_infra` auto-retry resumes at the review stages.
-//! An exhausted retry budget finalizes `NoScore(ChallengeInternal)`
-//! (fail-closed, per PRISM.md §4 "missing / unparseable") — never a
-//! miner-zero, never an infinite retrain loop.
+//! Review-stage failures must never burn GPU:
+//! - Pre-pod agentic/LLM infra fails closed **before** Lium rent.
+//! - A metrics-aware agentic failure after a completed measurement must
+//!   resume without re-provisioning (E12).
 
 #![forbid(unsafe_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -14,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chain::{AxonInfo, ChainError, Metagraph, WeightsTlockPayload};
 use chain::{ChainClient, FakeChain, FakeChainConfig};
-use challenge_agentic::{AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest};
+use challenge_agentic::{AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest, VerdictKind};
 use crypto::KEY_LEN;
 use prism_challenge::{
     FinalScore, GatewayClient, GatewayClientConfig, MemoryPrismStore, Orchestrator,
@@ -133,8 +131,7 @@ impl EvalJobBackend for CountingBackend {
     }
 }
 
-/// Agentic backend that always dies the way the live `transformer_pp`
-/// verification run did (budget exhausted mid-review, no verdict).
+/// Always dies the way a live `OpenRouter` budget exhaustion does.
 struct BudgetDeadAgent;
 
 #[async_trait]
@@ -146,8 +143,43 @@ impl AgenticBackend for BudgetDeadAgent {
     }
 }
 
+/// Pre-pod (no metrics) succeeds; metrics-aware pass fails with infra error.
+struct MetricsPassDeadAgent;
+
+#[async_trait]
+impl AgenticBackend for MetricsPassDeadAgent {
+    async fn review(&self, req: &ReviewRequest) -> Result<AgenticVerdict, AgenticError> {
+        if req.metrics_relpath.is_none() {
+            return Ok(AgenticVerdict {
+                verdict: VerdictKind::Clean,
+                cheat_codes: vec![],
+                nearest_id: None,
+                similarity_bps: 0,
+                rationale: "pre-pod structural clean".into(),
+            });
+        }
+        Err(AgenticError::NoVerdict(
+            "token budget exhausted (39869)".into(),
+        ))
+    }
+}
+
+fn training_with_hooks() -> &'static str {
+    concat!(
+        "import prism_telemetry\n",
+        "def train(model, ctx):\n",
+        "    prism_telemetry.report(loss=1.0, step=1)\n",
+        "    prism_telemetry.finish_evaluation()\n",
+        "    return {'loss': 1.0}\n",
+    )
+}
+
+fn architecture_py() -> &'static str {
+    "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n"
+}
+
 #[tokio::test]
-async fn agentic_infra_retry_resumes_without_remeasure() {
+async fn agentic_infra_pre_pod_never_provisions() {
     let store = Arc::new(MemoryPrismStore::new());
     let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
     let gateway = Arc::new(
@@ -177,16 +209,91 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
         sk,
     );
 
-    let architecture_py = "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
-    // Telemetry hooks keep the pre-pod static screen out of the way: this test
-    // is about the review-stage retry, not the contract.
-    let training_py = concat!(
-        "import prism_telemetry\n",
-        "def train(model, ctx):\n",
-        "    prism_telemetry.report(loss=1.0, step=1)\n",
-        "    prism_telemetry.finish_evaluation()\n",
-        "    return {'loss': 1.0}\n",
+    let id = "agentic-pre-pod-no-rent".to_owned();
+    store
+        .insert_queued(&SubmissionState {
+            id: id.clone(),
+            miner_hotkey: "11".repeat(32),
+            miner_coldkey: None,
+            epoch: 7,
+            netuid: 541,
+            status: Stage::Queued,
+            architecture_py: architecture_py().into(),
+            training_py: training_with_hooks().into(),
+            tree_blob: None,
+            label: Some("agentic-pre-pod".into()),
+            pod_id: None,
+            pod_provider: None,
+            receipt: None,
+            metrics_json: None,
+            bpb: None,
+            arch_id: None,
+            review: None,
+            similarity: None,
+            final_score: None,
+            retry_count: 0,
+            error_detail: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        })
+        .await
+        .unwrap();
+
+    assert!(orch.cycle_once().await.unwrap());
+    let row = store.get(&id).await.unwrap().expect("row");
+    assert_eq!(row.status, Stage::Queued, "auto-retried: {row:?}");
+    assert_eq!(row.retry_count, 1);
+    assert!(row.receipt.is_none() && row.metrics_json.is_none());
+    assert_eq!(
+        backend.provisions.load(Ordering::SeqCst),
+        0,
+        "pre-pod agentic infra must not rent a pod"
     );
+
+    assert!(orch.cycle_once().await.unwrap());
+    assert_eq!(backend.provisions.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.exec_calls.load(Ordering::SeqCst), 0);
+    let row = store.get(&id).await.unwrap().expect("row");
+    assert_eq!(row.status, Stage::Failed, "{row:?}");
+    assert_eq!(
+        row.final_score,
+        Some(FinalScore::NoScore(6)),
+        "review-inconclusive terminal = NoScore(ChallengeInternal), got {:?}",
+        row.final_score
+    );
+}
+
+#[tokio::test]
+async fn agentic_infra_retry_resumes_without_remeasure() {
+    let store = Arc::new(MemoryPrismStore::new());
+    let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
+    let gateway = Arc::new(
+        GatewayClient::new(GatewayClientConfig {
+            base_url: "dry-run".into(),
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
+        })
+        .unwrap(),
+    );
+    let mut sk = [7u8; KEY_LEN];
+    sk[0] = 0x42;
+    let backend = Arc::new(CountingBackend::new());
+    let orch = Orchestrator::new(
+        OrchestratorConfig {
+            netuid: 541,
+            auto_retry_max: 1,
+            claim_poll: std::time::Duration::from_millis(10),
+            ..Default::default()
+        },
+        Arc::clone(&store) as Arc<dyn PrismStore>,
+        Arc::clone(&backend) as Arc<dyn EvalJobBackend>,
+        Arc::new(SimReviewer::new()),
+        Arc::new(MetricsPassDeadAgent),
+        &gateway,
+        chain,
+        sk,
+    );
+
     let id = "agentic-retry-resume".to_owned();
     store
         .insert_queued(&SubmissionState {
@@ -196,8 +303,8 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,
-            architecture_py: architecture_py.into(),
-            training_py: training_py.into(),
+            architecture_py: architecture_py().into(),
+            training_py: training_with_hooks().into(),
             tree_blob: None,
             label: Some("agentic-retry".into()),
             pod_id: None,
@@ -217,8 +324,7 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
         .await
         .unwrap();
 
-    // Cycle 1: the pod job runs once, then the review-stage failure
-    // auto-retries. The measurement must survive the retry reset.
+    // Cycle 1: pre-pod agentic clean → pod once → metrics agentic fails → retry.
     assert!(orch.cycle_once().await.unwrap());
     let row = store.get(&id).await.unwrap().expect("row");
     assert_eq!(row.status, Stage::Queued, "auto-retried: {row:?}");
@@ -228,18 +334,17 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
         "measurement must survive the post-run retry reset: {row:?}"
     );
 
-    // Cycle 2: resumes at the review stages — no fresh pod, no re-measure —
-    // then the exhausted budget finalizes fail-closed.
+    // Cycle 2: resumes measurement — no fresh pod — then fail-closed.
     assert!(orch.cycle_once().await.unwrap());
     assert_eq!(
         backend.provisions.load(Ordering::SeqCst),
         1,
-        "a review-stage retry must not provision a second pod"
+        "a metrics-review retry must not provision a second pod"
     );
     assert_eq!(
         backend.exec_calls.load(Ordering::SeqCst),
         1,
-        "a review-stage retry must not re-measure"
+        "a metrics-review retry must not re-measure"
     );
     let row = store.get(&id).await.unwrap().expect("row");
     assert_eq!(row.status, Stage::Failed, "{row:?}");

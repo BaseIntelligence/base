@@ -60,16 +60,21 @@ services:
       PRISM_FORCE_SIM: "true"
       PRISM_TEST_TRAIN_MINUTES: "15"
       PRISM_TEST_MAX_PARAMS: "2000000"
+      # v3 battery even under short-train knobs (tiny grids via default
+      # PRISM_TEST_* → tiny_caps; set CAPS=0 for full G1–G8 on real Lium).
+      PRISM_FLOW: "v3"
       # Same pin path as prod when testing live AutoModel intake on staging
       # (stage with deploy/scripts/stage-automodel-pin.sh). Sim/fixture pins
       # still work when miners submit automodel@fixture-v1.
       PRISM_AUTOMODEL_PIN_DIR: "/var/lib/prism/automodel-pin"
       PRISM_PAYER_VAULT_DIR: "/var/lib/prism/payer-vault"
       PRISM_PAYER_VAULT_KEY_FILE: "/run/secrets/prism_payer_vault_key"
+      PRISM_TOPMODEL_HF_TOKEN_FILE: "/run/base/huggingface/token"
     volumes:
       - /var/lib/prism/automodel-pin:/var/lib/prism/automodel-pin:ro
       - /var/lib/prism/payer-vault:/var/lib/prism/payer-vault
       - ./deploy/secrets/prism/payer_vault_key:/run/secrets/prism_payer_vault_key:ro
+      - ./deploy/secrets/huggingface:/run/base/huggingface:ro
   design-challenge:
     environment:
       BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"

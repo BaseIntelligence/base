@@ -1,5 +1,8 @@
-//! Lium job orchestrator: claim→screen→pod→review→score; epoch emitter via
+//! Lium job orchestrator: claim→screen→review→pod→score; epoch emitter via
 //! [`Orchestrator::run_emitter`]. State in store; API is a projection.
+//!
+//! Pre-pod order is fail-closed: copy/static/similarity + LLM quality +
+//! agentic (sources) must pass before any Lium rent.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -444,9 +447,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         let _active = self.active.enter(&id);
         info!(submission_id = %id, miner = %row.miner_hotkey, "prism eval start");
 
-        let Some(similarity) = self.pre_pod_screens(&id, &row).await else {
+        let Some(pre) = self.pre_pod_screens(&id, &row).await else {
             return Ok(());
         };
+        let (similarity, review, _pre_agentic) = pre;
 
         let (measured, fresh) = match resume_measurement(&row) {
             Some(mr) => (Ok(mr), false),
@@ -472,10 +476,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
         let bpb = metrics.as_ref().map(|m| m.bpb);
 
-        let Some(review) = self.review_step(&id, &row).await else {
-            return Ok(());
-        };
-
+        // Metrics-aware agentic pass (inconsistent_metrics / eval forge).
+        // Structural cheats already failed closed pre-pod — this never rents.
         let Some(agentic) = self
             .agentic_step(&id, &row, metrics.as_ref(), receipt.as_ref())
             .await
@@ -544,10 +546,19 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Ok(())
     }
 
-    /// Pre-pod screens: copy gate → static cheat → AST similarity.
-    /// Returns `Some(similarity)` when the row may proceed to Lium rent;
-    /// `None` when already finalized (rejected / failed / retrying).
-    async fn pre_pod_screens(&self, id: &str, row: &SubmissionState) -> Option<SimilarityVerdict> {
+    /// Pre-pod screens: copy → static → similarity → LLM quality → agentic.
+    /// Returns gates when the row may proceed to Lium rent; `None` when
+    /// already finalized (rejected / failed / retrying). OpenRouter / agentic
+    /// infra errors fail closed here — they must never rent a pod.
+    async fn pre_pod_screens(
+        &self,
+        id: &str,
+        row: &SubmissionState,
+    ) -> Option<(
+        SimilarityVerdict,
+        prism_review::ReviewVerdict,
+        AgenticVerdict,
+    )> {
         if self.copy_gate_step(row).await {
             return None;
         }
@@ -580,7 +591,26 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 .await;
             return None;
         }
-        Some(similarity)
+        let review = self.review_step(id, row).await?;
+        let agentic = self.agentic_step(id, row, None, None).await?;
+        if matches!(
+            agentic.verdict,
+            VerdictKind::Cheat | VerdictKind::Suspicious
+        ) {
+            let detail = format!("pre-pod agentic: {:?}", agentic.verdict);
+            self.reject_pre_pod(
+                row,
+                Some(similarity),
+                Some(serde_json::json!({
+                    "gate": "agentic_pre_pod",
+                    "agentic": serde_json::to_value(&agentic).unwrap_or_default(),
+                })),
+                detail,
+            )
+            .await;
+            return None;
+        }
+        Some((similarity, review, agentic))
     }
 
     /// Pre-LLM copy gate on `architecture.py`. Returns `true` when the row was

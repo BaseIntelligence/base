@@ -213,10 +213,17 @@ services:
       # Top-model GitHub publish (BaseIntelligence/prism top-model/): no-op
       # when the token file is absent/empty.
       PRISM_TOPMODEL_GITHUB_TOKEN_FILE: /run/base/github/token
+      # Top-model HuggingFace publish (BaseIntelligence/prism-top-model): no-op
+      # when the token file is absent/empty.
+      PRISM_TOPMODEL_HF_TOKEN_FILE: /run/base/huggingface/token
+      PRISM_TOPMODEL_HF_REPO: "${PRISM_TOPMODEL_HF_REPO:-BaseIntelligence/prism-top-model}"
       # Require harvested checkpoint for top-model journal (set 0 for source-only).
       PRISM_TOPMODEL_REQUIRE_WEIGHTS: "${PRISM_TOPMODEL_REQUIRE_WEIGHTS:-1}"
       # Parked checkpoints harvested from Lium pods (master-local).
       PRISM_ARTIFACT_DIR: /var/lib/prism/artifacts
+      # G1–G8 eval assets pack (optional; harness falls back to public_dev).
+      PRISM_EVAL_ASSETS_DIR: "${PRISM_EVAL_ASSETS_DIR:-}"
+      PRISM_FLOW: "${PRISM_FLOW:-v3}"
       # Recipe 2.0 AutoModel pin checkout (deploy/scripts/stage-automodel-pin.sh).
       # Required for live AutoModel intake; unset → pin unavailable (fail-closed).
       PRISM_AUTOMODEL_PIN_DIR: "${PRISM_AUTOMODEL_PIN_DIR:-}"
@@ -234,6 +241,7 @@ services:
       - ./deploy/secrets/lium:/run/base/lium:ro
       - ./deploy/secrets/openrouter:/run/base/openrouter:ro
       - ./deploy/secrets/github:/run/base/github:ro
+      - ./deploy/secrets/huggingface:/run/base/huggingface:ro
       - ./deploy/secrets/prism:/run/base/prism:ro
       - prism-artifacts:/var/lib/prism/artifacts
     expose:
