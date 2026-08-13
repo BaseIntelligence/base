@@ -216,7 +216,7 @@ services:
       # Top-model HuggingFace publish (BaseIntelligence/prism-top-model): no-op
       # when the token file is absent/empty.
       PRISM_TOPMODEL_HF_TOKEN_FILE: /run/base/huggingface/token
-      PRISM_TOPMODEL_HF_REPO: "${PRISM_TOPMODEL_HF_REPO:-BaseIntelligence/prism-top-model}"
+      PRISM_TOPMODEL_HF_REPO: "${PRISM_TOPMODEL_HF_REPO:-BaseIntelligence/top-prism-architecture}"
       # Require harvested checkpoint for top-model journal (set 0 for source-only).
       PRISM_TOPMODEL_REQUIRE_WEIGHTS: "${PRISM_TOPMODEL_REQUIRE_WEIGHTS:-1}"
       # Parked checkpoints harvested from Lium pods (master-local).

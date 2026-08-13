@@ -54,7 +54,7 @@ chmod 0400 deploy/secrets/design/annotator_tokens deploy/secrets/openrouter/api_
   empty file = top-model publish silently disabled. Mode **0400**, uid
   **65532** — never commit it.
 - `huggingface/token` — prism-challenge HuggingFace top-model publisher: Hub
-  **write** token for `BaseIntelligence/prism-top-model` (override
+  **write** token for `BaseIntelligence/top-prism-architecture` (override
   `PRISM_TOPMODEL_HF_REPO`). Read via `PRISM_TOPMODEL_HF_TOKEN_FILE`
   (`/run/base/huggingface/token`); missing or empty = HF publish no-ops.
   Mode **0400**, uid **65532** — never commit it.
