@@ -221,9 +221,12 @@ pub(crate) async fn last_publication(
 }
 
 pub(crate) async fn best_scored_bpb(pool: &PgPool) -> Result<Option<f64>, StoreError> {
-    let row: (Option<f64>,) = sqlx::query_as(
-        "SELECT MIN(bpb) FROM prism_submission WHERE kind = 'score' AND score > 0 AND bpb IS NOT NULL",
-    )
+    let row: (Option<f64>,) = sqlx::query_as(&format!(
+        "SELECT MIN(bpb) FROM prism_submission \
+         WHERE kind = 'score' AND score > 0 AND bpb IS NOT NULL \
+           AND {}",
+        crate::emit::WEIGHT_ELIGIBLE_SQL
+    ))
     .fetch_one(pool)
     .await
     .map_err(backend)?;

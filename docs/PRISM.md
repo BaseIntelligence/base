@@ -194,9 +194,16 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
 - *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
   Prism's emission share (50% of the subnet) goes entirely to that **submitter**
   (best BPB → that submission's miner UID).
+- *Recipe 2.0 / AutoModel weight eligibility* (fail-closed): only submissions
+  with recipe major ≥ 2, an `automodel@…` pin signal, or a packed tree
+  containing `.prism/automodel.patch` may carry into the competition set or
+  win WTA. Legacy 1.x positives remain in Postgres / site FE history but are
+  treated as `Score(0)` for emission; if every positive score is ineligible,
+  the epoch projects all-zero (burn / hold) — never emit Prism share to 1.x.
 
 **Top-model publish + secure receive.** The master tracks the global best
-bpb across all scored submissions. After a successful Lium eval it
+bpb across **weight-eligible** (recipe 2.0 / AutoModel) scored submissions.
+After a successful Lium eval it
 **pulls** `checkpoint.pt` from the pod over SSH (master-initiated; the pod
 never pushes) and stages it through the secure receive hook into
 `$PRISM_ARTIFACT_DIR/<submission_id>/` **before** terminate. Staging

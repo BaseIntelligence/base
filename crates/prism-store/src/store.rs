@@ -424,6 +424,7 @@ impl PrismStore for MemoryPrismStore {
                     miner_hotkey: r.miner_hotkey.clone(),
                     arch_id: r.arch_id.clone(),
                     final_score: r.final_score.clone().unwrap_or(FinalScore::Score(0)),
+                    weight_eligible: r.weight_eligible(),
                 });
             }
         }
@@ -448,6 +449,7 @@ impl PrismStore for MemoryPrismStore {
                 miner_hotkey: r.miner_hotkey.clone(),
                 arch_id: r.arch_id.clone(),
                 final_score: r.final_score.clone().unwrap_or(FinalScore::Score(0)),
+                weight_eligible: r.weight_eligible(),
             })
             .collect())
     }
@@ -459,12 +461,13 @@ impl PrismStore for MemoryPrismStore {
             .map_err(|_| StoreError::Backend("poison".into()))?;
         Ok(rows
             .iter()
-            .filter(|r| r.netuid == netuid)
+            .filter(|r| r.netuid == netuid && r.weight_eligible())
             .filter_map(|r| match &r.final_score {
                 Some(FinalScore::Score(v)) if *v > 0 => Some(EpochScoreRow {
                     miner_hotkey: r.miner_hotkey.clone(),
                     arch_id: r.arch_id.clone(),
                     final_score: FinalScore::Score(*v),
+                    weight_eligible: true,
                 }),
                 _ => None,
             })
@@ -608,6 +611,7 @@ impl PrismStore for MemoryPrismStore {
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .iter()
+            .filter(|r| r.weight_eligible())
             .filter(|r| matches!(r.final_score, Some(FinalScore::Score(v)) if v > 0))
             .filter_map(|r| r.bpb)
             .min_by(f64::total_cmp))
@@ -677,7 +681,8 @@ mod tests {
             pod_id: None,
             pod_provider: None,
             receipt: None,
-            metrics_json: None,
+            // Default test rows are recipe 2.0 eligible (emission carry / WTA).
+            metrics_json: Some(serde_json::json!({"recipe": "2.0.0"})),
             bpb: None,
             arch_id: None,
             review: None,

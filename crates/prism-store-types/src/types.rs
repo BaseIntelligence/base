@@ -225,6 +225,81 @@ pub enum PublishArchOutcome {
     Duplicate(String),
 }
 
+/// Packed-tree / USTAR path marker for recipe 2.0 `AutoModel` patch artifacts.
+const AUTOMODEL_PATCH_MARKER: &[u8] = b".prism/automodel.patch";
+
+/// Fail-closed emission eligibility: recipe **2.0 / `AutoModel`** only.
+///
+/// Legacy 1.x (`architecture.py` / `training.py` era) may remain visible on
+/// the site FE and in the DB, but must not win WTA leaf emission or displace
+/// an `AutoModel` champion via score carry. Unknown / missing signals are
+/// **not** eligible.
+#[must_use]
+pub fn submission_weight_eligible(
+    metrics_json: Option<&serde_json::Value>,
+    tree_blob: Option<&[u8]>,
+) -> bool {
+    if let Some(m) = metrics_json {
+        if recipe_major_ge2(m) || automodel_pin_signal(m) {
+            return true;
+        }
+    }
+    tree_blob.is_some_and(tree_blob_has_automodel_patch)
+}
+
+fn recipe_major_ge2(m: &serde_json::Value) -> bool {
+    for path in ["recipe", "/pod_manifest/recipe"] {
+        let raw = if path.starts_with('/') {
+            m.pointer(path).and_then(|v| v.as_str())
+        } else {
+            m.get(path).and_then(|v| v.as_str())
+        };
+        if let Some(s) = raw {
+            if let Some(maj) = s
+                .trim()
+                .split('.')
+                .next()
+                .and_then(|p| p.parse::<u32>().ok())
+            {
+                if maj >= 2 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn automodel_pin_signal(m: &serde_json::Value) -> bool {
+    for path in [
+        "/pod_manifest/automodel_base",
+        "/pod_manifest/pin_id",
+        "/pin_id",
+        "/automodel_base",
+    ] {
+        if m.pointer(path)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.trim().starts_with("automodel@"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn tree_blob_has_automodel_patch(blob: &[u8]) -> bool {
+    blob.windows(AUTOMODEL_PATCH_MARKER.len())
+        .any(|w| w == AUTOMODEL_PATCH_MARKER)
+}
+
+impl SubmissionState {
+    /// Whether this row may receive on-chain Prism weight (`AutoModel` 2.0).
+    #[must_use]
+    pub fn weight_eligible(&self) -> bool {
+        submission_weight_eligible(self.metrics_json.as_ref(), self.tree_blob.as_deref())
+    }
+}
+
 /// One scored row inside an emission batch (competition scoring input).
 /// Batches are epoch-close assignments (see [`PrismStore::assign_emit_batch`]),
 /// not acceptance-epoch lookups: a row's acceptance `epoch` is intake metadata.
@@ -236,6 +311,52 @@ pub struct EpochScoreRow {
     pub arch_id: Option<String>,
     /// Final lattice score (or absence).
     pub final_score: FinalScore,
+    /// Recipe 2.0 / `AutoModel` only — legacy positive scores must not win WTA.
+    pub weight_eligible: bool,
+}
+
+#[cfg(test)]
+mod weight_eligible_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn recipe_2_metrics_eligible() {
+        assert!(submission_weight_eligible(
+            Some(&json!({"recipe": "2.0.0"})),
+            None
+        ));
+    }
+
+    #[test]
+    fn automodel_pin_eligible() {
+        assert!(submission_weight_eligible(
+            Some(&json!({"pod_manifest": {"automodel_base": "automodel@v0.5.0"}})),
+            None
+        ));
+    }
+
+    #[test]
+    fn tree_patch_marker_eligible() {
+        let mut blob = b"ustar....".to_vec();
+        blob.extend_from_slice(b".prism/automodel.patch");
+        blob.extend_from_slice(b"....tail");
+        assert!(submission_weight_eligible(None, Some(&blob)));
+    }
+
+    #[test]
+    fn legacy_and_unknown_fail_closed() {
+        assert!(!submission_weight_eligible(
+            Some(&json!({"recipe": "1.4.0"})),
+            None
+        ));
+        assert!(!submission_weight_eligible(None, None));
+        assert!(!submission_weight_eligible(
+            Some(&json!({"bpb": 4.2})),
+            Some(b"no-patch-here")
+        ));
+    }
 }
 
 /// Top-model publication journal row (migration 0010).

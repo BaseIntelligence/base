@@ -290,7 +290,7 @@ async fn emit_and_submit_covers_expected_set() {
             pod_id: None,
             pod_provider: None,
             receipt: None,
-            metrics_json: None,
+            metrics_json: Some(serde_json::json!({"recipe": "2.0.0"})),
             bpb: Some(2.0),
             arch_id: None,
             review: None,
