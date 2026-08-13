@@ -225,7 +225,12 @@ impl HfTopModelPublisher {
     }
 
     /// LFS batch + PUT for one large file (Hub oid = hex sha256, no prefix).
-    async fn upload_lfs(&self, path: &str, bytes: &[u8], oid_hex: &str) -> Result<(), PublishError> {
+    async fn upload_lfs(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        oid_hex: &str,
+    ) -> Result<(), PublishError> {
         let batch_url = format!("{}/{}.git/info/lfs/objects/batch", self.api_base, self.repo);
         let batch = serde_json::json!({
             "operation": "upload",
@@ -293,9 +298,7 @@ impl HfTopModelPublisher {
         if !put.status().is_success() {
             let st = put.status();
             let t = put.text().await.unwrap_or_default();
-            return Err(PublishError::Api(format!(
-                "hf lfs put {st} ({path}): {t}"
-            )));
+            return Err(PublishError::Api(format!("hf lfs put {st} ({path}): {t}")));
         }
         // Optional verify action.
         if let Some(verify) = actions.get("verify") {
@@ -710,9 +713,6 @@ mod tests {
     #[test]
     fn sanitize_rejects_traversal() {
         assert!(sanitize_hub_path("../evil.py").is_empty());
-        assert_eq!(
-            sanitize_hub_path("foo/bar.py"),
-            "sources/foo/bar.py"
-        );
+        assert_eq!(sanitize_hub_path("foo/bar.py"), "sources/foo/bar.py");
     }
 }
