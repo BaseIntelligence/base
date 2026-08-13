@@ -23,11 +23,26 @@ fn backend(e: sqlx::Error) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
-type EmitSqlRow = (String, Option<String>, String, Option<i64>, Option<i16>);
+/// SQL predicate: recipe 2.0 / `AutoModel` pin / `.prism/automodel.patch` in tree.
+pub(crate) const WEIGHT_ELIGIBLE_SQL: &str = "(\
+COALESCE(metrics_json->>'recipe','') LIKE '2.%' \
+OR COALESCE(metrics_json#>>'{pod_manifest,automodel_base}','') LIKE 'automodel@%' \
+OR COALESCE(metrics_json#>>'{pod_manifest,pin_id}','') LIKE 'automodel@%' \
+OR (tree_blob IS NOT NULL AND position('\\x2e707269736d2f6175746f6d6f64656c2e7061746368'::bytea in tree_blob) > 0)\
+)";
+
+type EmitSqlRow = (
+    String,
+    Option<String>,
+    String,
+    Option<i64>,
+    Option<i16>,
+    bool,
+);
 
 fn rows_to_epoch(rows: Vec<EmitSqlRow>) -> Vec<EpochScoreRow> {
     rows.into_iter()
-        .filter_map(|(hk, arch_id, kind, score, absence)| {
+        .filter_map(|(hk, arch_id, kind, score, absence, weight_eligible)| {
             let final_score = match kind.as_str() {
                 "score" => score.map(|s| FinalScore::Score(s.cast_unsigned())),
                 "no_score" => absence.map(|a| FinalScore::NoScore(u8::try_from(a).unwrap_or(0))),
@@ -37,6 +52,7 @@ fn rows_to_epoch(rows: Vec<EmitSqlRow>) -> Vec<EpochScoreRow> {
                 miner_hotkey: hk,
                 arch_id,
                 final_score,
+                weight_eligible,
             })
         })
         .collect()
@@ -50,11 +66,12 @@ pub(crate) async fn assign_emit_batch(
     netuid: i32,
     epoch: i64,
 ) -> Result<Vec<EpochScoreRow>, StoreError> {
-    let rows: Vec<EmitSqlRow> = sqlx::query_as(
+    let rows: Vec<EmitSqlRow> = sqlx::query_as(&format!(
         "UPDATE prism_submission SET emitted_epoch = $2, updated_at = now() \
          WHERE netuid = $1 AND kind IS NOT NULL AND emitted_epoch IS NULL \
-         RETURNING miner_hotkey, arch_id, kind, score, absence_reason",
-    )
+         RETURNING miner_hotkey, arch_id, kind, score, absence_reason, \
+         {WEIGHT_ELIGIBLE_SQL} AS weight_eligible"
+    ))
     .bind(netuid)
     .bind(epoch)
     .fetch_all(pool)
@@ -69,11 +86,12 @@ pub(crate) async fn emit_batch(
     netuid: i32,
     epoch: i64,
 ) -> Result<Vec<EpochScoreRow>, StoreError> {
-    let rows: Vec<EmitSqlRow> = sqlx::query_as(
-        "SELECT miner_hotkey, arch_id, kind, score, absence_reason \
+    let rows: Vec<EmitSqlRow> = sqlx::query_as(&format!(
+        "SELECT miner_hotkey, arch_id, kind, score, absence_reason, \
+         {WEIGHT_ELIGIBLE_SQL} AS weight_eligible \
          FROM prism_submission \
-         WHERE netuid = $1 AND emitted_epoch = $2 AND kind IS NOT NULL",
-    )
+         WHERE netuid = $1 AND emitted_epoch = $2 AND kind IS NOT NULL"
+    ))
     .bind(netuid)
     .bind(epoch)
     .fetch_all(pool)
@@ -84,19 +102,20 @@ pub(crate) async fn emit_batch(
 
 /// Positive lattice scores still eligible for epoch-close competition carry.
 ///
-/// `Score(0)` rejects and `NoScore` absences are excluded — they must not
-/// displace a prior valid winner when an epoch's fresh outbox is empty or
-/// burn-only. Competition aggregation takes `max` over the union of the
-/// fresh batch and this set, so a better later score supersedes naturally.
+/// `Score(0)` rejects, `NoScore` absences, and legacy 1.x positives are
+/// excluded. Competition aggregation takes `max` over the union of the fresh
+/// batch and this set, so a better later score supersedes naturally.
 pub(crate) async fn active_score_rows(
     pool: &PgPool,
     netuid: i32,
 ) -> Result<Vec<EpochScoreRow>, StoreError> {
-    let rows: Vec<EmitSqlRow> = sqlx::query_as(
-        "SELECT miner_hotkey, arch_id, kind, score, absence_reason \
+    let rows: Vec<EmitSqlRow> = sqlx::query_as(&format!(
+        "SELECT miner_hotkey, arch_id, kind, score, absence_reason, \
+         {WEIGHT_ELIGIBLE_SQL} AS weight_eligible \
          FROM prism_submission \
-         WHERE netuid = $1 AND kind = 'score' AND score > 0",
-    )
+         WHERE netuid = $1 AND kind = 'score' AND score > 0 \
+           AND {WEIGHT_ELIGIBLE_SQL}"
+    ))
     .bind(netuid)
     .fetch_all(pool)
     .await

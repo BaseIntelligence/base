@@ -318,6 +318,7 @@ mod tests {
             miner_hotkey: hex::encode(hk),
             arch_id: arch.map(str::to_owned),
             final_score: FinalScore::Score(score),
+            weight_eligible: true,
         }
     }
 

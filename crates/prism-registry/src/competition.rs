@@ -15,6 +15,10 @@
 //! - **WTA leaf emission**: [`apply_wta`] keeps a single positive `Score`
 //!   (argmax; lexicographically smallest hotkey on ties). Prism's emission
 //!   share goes to that submitter.
+//! - **Recipe 2.0 / AutoModel only**: rows with `weight_eligible == false`
+//!   (legacy 1.x) contribute `Score(0)` only — never win WTA. If every
+//!   positive score is ineligible, emission fail-closes to an all-zero /
+//!   burn projection (no 1.x winner).
 
 use std::collections::BTreeMap;
 
@@ -35,6 +39,8 @@ pub const OWNER_ARCH_CREDIT_ENABLED: bool = false;
 /// Compute per-hotkey emission for one epoch.
 ///
 /// `arch_owners` is ignored while [`OWNER_ARCH_CREDIT_ENABLED`] is `false`.
+/// Legacy (non-[`EpochScoreRow::weight_eligible`]) positive scores are
+/// treated as `Score(0)` so they cannot win WTA or carry emission.
 #[must_use]
 pub fn competition_scores(
     rows: &[EpochScoreRow],
@@ -50,12 +56,14 @@ pub fn competition_scores(
     for r in rows {
         match &r.final_score {
             FinalScore::Score(v) => {
+                // Fail-closed: legacy 1.x never receives emission credit.
+                let v = if r.weight_eligible { *v } else { 0 };
                 let e = own.entry(r.miner_hotkey.clone()).or_insert(0);
-                *e = (*e).max(*v);
-                if OWNER_ARCH_CREDIT_ENABLED {
+                *e = (*e).max(v);
+                if OWNER_ARCH_CREDIT_ENABLED && r.weight_eligible {
                     if let Some(a) = r.arch_id.as_deref() {
                         let e = arch_best.entry(a).or_insert(0);
-                        *e = (*e).max(*v);
+                        *e = (*e).max(v);
                     }
                 }
             }
@@ -138,6 +146,16 @@ mod tests {
             miner_hotkey: hk.into(),
             arch_id: arch.map(str::to_owned),
             final_score: FinalScore::Score(score),
+            weight_eligible: true,
+        }
+    }
+
+    fn legacy_row(hk: &str, score: u64) -> EpochScoreRow {
+        EpochScoreRow {
+            miner_hotkey: hk.into(),
+            arch_id: None,
+            final_score: FinalScore::Score(score),
+            weight_eligible: false,
         }
     }
 
@@ -205,6 +223,7 @@ mod tests {
                 miner_hotkey: "cc".into(),
                 arch_id: None,
                 final_score: FinalScore::NoScore(6),
+                weight_eligible: true,
             },
             row("aa", None, 100_000),
         ];
@@ -245,5 +264,29 @@ mod tests {
         let wta = apply_wta(credits);
         assert_eq!(wta.get("aa"), Some(&FinalScore::Score(900_000)));
         assert_eq!(wta.get("bb"), Some(&FinalScore::Score(0)));
+    }
+
+    #[test]
+    fn legacy_positive_scores_cannot_win_wta() {
+        // Legacy 1.x tops the lattice but is weight-ineligible; AutoModel
+        // runner with a lower score still wins. Fail-closed vs 1.x emission.
+        let rows = vec![legacy_row("legacy", 900_000), row("auto", None, 100_000)];
+        let out = competition_scores(&rows, &BTreeMap::new());
+        assert_eq!(out.get("legacy"), Some(&FinalScore::Score(0)));
+        assert_eq!(out.get("auto"), Some(&FinalScore::Score(100_000)));
+        let wta = apply_wta(out);
+        assert_eq!(wta.get("auto"), Some(&FinalScore::Score(100_000)));
+        assert_eq!(wta.get("legacy"), Some(&FinalScore::Score(0)));
+    }
+
+    #[test]
+    fn only_legacy_tops_fail_closed_to_burn() {
+        // No AutoModel-eligible positive → no WTA winner (burn / hold).
+        let rows = vec![legacy_row("aa", 900_000), legacy_row("bb", 800_000)];
+        let out = competition_scores(&rows, &BTreeMap::new());
+        assert_eq!(out.get("aa"), Some(&FinalScore::Score(0)));
+        assert_eq!(out.get("bb"), Some(&FinalScore::Score(0)));
+        let wta = apply_wta(out);
+        assert!(wta.values().all(|s| matches!(s, FinalScore::Score(0))));
     }
 }

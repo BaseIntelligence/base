@@ -13,6 +13,6 @@
 mod types;
 
 pub use types::{
-    ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome, Stage, StageEvent,
-    StatePatch, StoreError, SubmissionId, SubmissionState, TopModelPublication,
+    submission_weight_eligible, ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome,
+    Stage, StageEvent, StatePatch, StoreError, SubmissionId, SubmissionState, TopModelPublication,
 };

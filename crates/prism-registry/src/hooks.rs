@@ -86,6 +86,15 @@ pub async fn post_score_hooks(
     // (3) Top-model publish on a new global best — GitHub (optional) + HF
     // (optional). GitHub weights require secure receive (RECEIPT.json);
     // HF publishes sources regardless so the champion card stays current.
+    // Recipe 2.0 / AutoModel only — legacy 1.x never becomes the published
+    // top-model champion (historical FE rows stay in Postgres).
+    if !row.weight_eligible() {
+        info!(
+            submission_id = %row.id,
+            "top-model: skip legacy / non-AutoModel row (weight-ineligible)"
+        );
+        return;
+    }
     let last = store.last_publication_bpb().await.unwrap_or(None);
     let global = store.best_scored_bpb().await.unwrap_or(None);
     let is_global_best = global.is_some_and(|g| bpb <= g);
