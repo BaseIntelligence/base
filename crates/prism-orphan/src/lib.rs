@@ -1,9 +1,10 @@
-//! Mid-flight orphan detection for Prism after control-plane restarts.
+//! Mid-flight orphan / resume for Prism after control-plane restarts.
 //!
 //! Workers register in [`ActiveJobs`] for the whole `run_row` hold. On boot
-//! (and periodically) [`reconcile_once`] fails provisioning/running rows whose
-//! worker is gone, best-effort terminates the pod when the BYOK vault still
-//! has a key, and requeues post-measure review stages so they can resume.
+//! (and periodically) [`reconcile_once`] **resume-first**: mid-pod rows whose
+//! Lium instance is still alive are requeued with `pod_id` kept (no terminate).
+//! Only unreattachable rows fail-closed (`control_plane_restart` /
+//! `harness_detached`). Post-measure review stages requeue as before.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -13,6 +14,7 @@
 mod active;
 mod logs;
 mod reconcile;
+mod terminal;
 
 pub use active::{ActiveGuard, ActiveJobs};
 pub use logs::{logs_json, LogBuffer, LogLine};
@@ -20,6 +22,7 @@ pub use reconcile::{
     midflight_rows, reconcile_once, ReconcileReport, CLASS_ORPHAN, REASON_CONTROL_PLANE_RESTART,
     REASON_HARNESS_DETACHED,
 };
+pub use terminal::{fail_terminal, finish_measure, reject_gating, reject_pre_pod};
 
 /// Default detach grace for periodic reconcile (seconds). Boot uses zero.
 pub const DEFAULT_ORPHAN_GRACE_SECS: u64 = 90;
@@ -110,7 +113,24 @@ mod tests {
     };
     use prism_store::{FinalScore, MemoryPrismStore, PrismStore, Stage, SubmissionState};
 
-    struct NoopBackend;
+    struct NoopBackend {
+        running: bool,
+        terminates: std::sync::Mutex<u32>,
+    }
+    impl NoopBackend {
+        fn dead() -> Self {
+            Self {
+                running: false,
+                terminates: std::sync::Mutex::new(0),
+            }
+        }
+        fn alive() -> Self {
+            Self {
+                running: true,
+                terminates: std::sync::Mutex::new(0),
+            }
+        }
+    }
     #[async_trait]
     impl EvalJobBackend for NoopBackend {
         async fn list_offers(
@@ -123,6 +143,7 @@ mod tests {
             Err(LiumError::Exec("noop".into()))
         }
         async fn terminate(&self, _instance_id: &str) -> Result<(), LiumError> {
+            *self.terminates.lock().unwrap() += 1;
             Ok(())
         }
         async fn verify_terminated(&self, _instance_id: &str) -> Result<bool, LiumError> {
@@ -136,6 +157,9 @@ mod tests {
             _tree_blob: Option<&[u8]>,
         ) -> Result<RemoteExecResult, LiumError> {
             Err(LiumError::Exec("noop".into()))
+        }
+        async fn instance_running(&self, _instance_id: &str) -> Result<bool, LiumError> {
+            Ok(self.running)
         }
     }
 
@@ -168,7 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn boot_reconcile_marks_running_orphan_failed() {
+    async fn boot_reconcile_marks_dead_pod_orphan_failed() {
         let store: Arc<dyn PrismStore> = Arc::new(MemoryPrismStore::default());
         let r = row("deadbeefdeadbeef", Stage::Running, Some("pod-1"));
         store.insert_queued(&r).await.unwrap();
@@ -187,11 +211,12 @@ mod tests {
             .unwrap();
 
         let active = Arc::new(ActiveJobs::new());
-        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend);
+        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend::dead());
         let report = reconcile_once(store.as_ref(), &active, None, be, 0, true, None)
             .await
             .unwrap();
         assert_eq!(report.failed, 1);
+        assert_eq!(report.resumed, 0);
         let got = store.get(&r.id).await.unwrap().unwrap();
         assert_eq!(got.status, Stage::Failed);
         let err = got.error_detail.unwrap();
@@ -201,6 +226,39 @@ mod tests {
                 && (err.contains("stop") || err.contains("Stop") || err.contains("resubmit"))
         );
         assert!(matches!(got.final_score, Some(FinalScore::NoScore(_))));
+    }
+
+    #[tokio::test]
+    async fn boot_reconcile_resumes_alive_pod_without_terminate() {
+        let store: Arc<dyn PrismStore> = Arc::new(MemoryPrismStore::default());
+        let r = row("cafebabecafebabe", Stage::Running, Some("pod-live"));
+        store.insert_queued(&r).await.unwrap();
+        store
+            .apply(
+                &r.id,
+                &prism_store::StatePatch {
+                    status: Some(Stage::Running),
+                    pod_id: Some("pod-live".into()),
+                    pod_provider: Some("lium".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let active = Arc::new(ActiveJobs::new());
+        let be = Arc::new(NoopBackend::alive());
+        let be_trait: Arc<dyn EvalJobBackend> = be.clone();
+        let report = reconcile_once(store.as_ref(), &active, None, be_trait, 0, true, None)
+            .await
+            .unwrap();
+        assert_eq!(report.resumed, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.terminate_attempts, 0);
+        assert_eq!(*be.terminates.lock().unwrap(), 0);
+        let got = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(got.status, Stage::Queued);
+        assert_eq!(got.pod_id.as_deref(), Some("pod-live"));
     }
 
     #[tokio::test]
@@ -222,11 +280,12 @@ mod tests {
             .unwrap();
         let active = Arc::new(ActiveJobs::new());
         let _g = active.enter(&r.id);
-        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend);
+        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend::alive());
         let report = reconcile_once(store.as_ref(), &active, None, be, 90, false, None)
             .await
             .unwrap();
         assert_eq!(report.failed, 0);
+        assert_eq!(report.resumed, 0);
         assert_eq!(
             store.get(&r.id).await.unwrap().unwrap().status,
             Stage::Running
@@ -283,7 +342,7 @@ mod tests {
             .await
             .unwrap();
         let active = Arc::new(ActiveJobs::new());
-        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend);
+        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend::dead());
         let report = reconcile_once(store.as_ref(), &active, None, be, 0, true, None)
             .await
             .unwrap();

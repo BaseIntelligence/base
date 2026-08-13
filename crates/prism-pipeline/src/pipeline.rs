@@ -167,6 +167,12 @@ pub fn resume_measurement(
     Some((metrics, receipt))
 }
 
+/// True when a mid-pod row should reattach (has `pod_id`, no completed measure).
+#[must_use]
+pub fn mid_pod_resume(row: &prism_store::SubmissionState) -> bool {
+    row.pod_id.is_some() && resume_measurement(row).is_none()
+}
+
 /// Store patch persisting a completed measurement (receipt + metrics + bpb);
 /// the metrics blob also lands the per-step telemetry series master-side.
 #[must_use]

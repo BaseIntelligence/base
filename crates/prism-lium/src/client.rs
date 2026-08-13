@@ -18,24 +18,19 @@ fn rent_pool() -> &'static RentPool {
 
 use crate::ssh::{
     parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, ssh_exec_stdin,
-    ssh_exec_streaming, truncate_tail, SshTarget,
+    truncate_tail, SshTarget,
 };
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 use prism_lium_harness::{
-    eval_assets_dir, harness_env_pairs, harness_upload_tar, random_seed_hex, EVAL_ASSETS_POD_DIR,
-    HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
+    classify_log, detach_launch_cmd, eval_assets_dir, harness_env_pairs, harness_upload_tar,
+    parse_harness_probe, parse_metrics_output, random_seed_hex, HarnessProgress,
+    EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD, HARNESS_PROBE_CMD,
+    TRAIN_DONE_MARKER,
 };
 use prism_lium_types::{CostGuardrailError, LiumError};
 use prism_lium_types::{
     GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
 };
-
-/// Parent-emitted marker line: the train-phase process group is dead and
-/// the parent gate is (about to be) waiting for eval assets. Matched as an
-/// exact raw line — miner stdout is relayed with an `[harness] v3| ` prefix
-/// by the runner, so a miner cannot forge it. The harness side emits this
-/// via a bare `print` at the gate (see module docs / E5 report).
-const DEFAULT_TRAIN_DONE_MARKER: &str = "PHASE_TRAIN_DONE";
 
 // cu13.0.2-dinD: sshd from image init (empty startup). Other marketplace
 // images lack a stable sshd under Lium's metachar-free startup rules.
@@ -406,29 +401,11 @@ impl LiumClient {
         })
     }
 
-    /// Live recipe eval: wait RUNNING → SSH nvidia-smi → stage the harness
-    /// package ([`prism_recipe::HARNESS_FILES`]) + miner sources as a tar
-    /// over ssh stdin → run `main.py` → parse `METRICS_JSON` (v1 and v2
-    /// payloads both accepted).
+    /// Live recipe eval: wait RUNNING → stage harness → **detach** `main.py`
+    /// → poll `harness.log` (survives control-plane restart / SSH drop).
     ///
-    /// The harness trains the miner's code on the pinned fineweb-edu shard and
-    /// scores the frozen val cut; no metric comes from hashing sources.
-    ///
-    /// **Two-phase (private tier)**: when the master-side
-    /// `PRISM_EVAL_ASSETS_DIR` env points at the operator's private
-    /// eval-assets directory, the run switches to the streaming flow in
-    /// [`Self::exec_eval_two_phase`]: harness output is consumed line-by-line
-    /// and on the parent-emitted train-done marker
-    /// ([`DEFAULT_TRAIN_DONE_MARKER`], exact raw line — unforgeable by the
-    /// miner) the client (a) streams the assets tar into
-    /// [`EVAL_ASSETS_POD_DIR`] over a second ssh channel, (b) writes
-    /// `SECRET_SEED` (fresh 128-bit hex, file-only — env delivery would leak
-    /// it to the train-phase child via inherited env), and (c) touches
-    /// `.ready`. The harness env names the pod assets dir
-    /// (`PRISM_EVAL_ASSETS_DIR`) so its post-train gate holds for `.ready`
-    /// instead of falling back. A run that completes without staging while
-    /// assets were configured is refused (fail-closed against a silent
-    /// public-tier downgrade).
+    /// Private-tier assets: when `PRISM_EVAL_ASSETS_DIR` is set, the poller
+    /// stages the pack on [`TRAIN_DONE_MARKER`] (exact raw line).
     async fn exec_eval_live(
         &self,
         instance_id: &str,
@@ -444,8 +421,6 @@ impl LiumClient {
 
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
         let timeout_secs = train_cap_secs.saturating_add(3600);
-        // Stage the harness tar over ssh stdin before the run: argv-embedded
-        // base64 payloads exceeded MAX_ARG_STRLEN at local spawn (BUG-5).
         let tar = harness_upload_tar(architecture_py, training_py, tree_blob)?;
         let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
         ssh_exec_stdin(&target, &key, HARNESS_EXTRACT_CMD, &tar, att, rty, 300).await?;
@@ -454,107 +429,150 @@ impl LiumClient {
         #[allow(clippy::format_collect)]
         let env: String = pairs
             .iter()
-            .map(|(k, v)| format!("{k}='{v}' \\\n"))
+            .map(|(k, v)| format!("export {k}='{v}'\n"))
             .collect();
-        let remote =
-            format!("{HARNESS_BOOTSTRAP}cd /tmp/prism_eval\n{env}timeout --kill-after=60 {timeout_secs} python3 main.py");
-
-        self.exec_eval_stream(
+        let launch = format!(
+            "{HARNESS_BOOTSTRAP}{}",
+            detach_launch_cmd(&env, timeout_secs)
+        );
+        let out = ssh_exec_allow_fail(&target, &key, &launch, att, rty, 120).await?;
+        if !out.stdout.contains("DETACH_STARTED")
+            && !out.stdout.contains("DETACH_ALREADY")
+            && !out.stdout.contains("DETACH_DONE")
+        {
+            return Err(LiumError::Exec(format!(
+                "detach launch failed: {}",
+                truncate_tail(&out.stderr, 400)
+            )));
+        }
+        self.poll_detached_eval(
             instance_id,
             &target,
             &key,
-            &remote,
             assets.as_deref(),
             train_cap_secs.saturating_add(3900),
         )
         .await
     }
 
-    /// Stream the harness run line-by-line (stderr merged remote-side with
-    /// `2>&1`). With `assets` (private tier), the parent-emitted train-done
-    /// marker triggers [`Self::stage_eval_assets`] over a second ssh channel
-    /// while the train-phase process group is dead. Fail-closed: a run that
-    /// completes without staging while assets were configured, or that then
-    /// reports a non-private tier, is rejected.
-    async fn exec_eval_stream(
+    /// Reattach: probe harness, refuse if absent, else poll to terminal.
+    async fn resume_eval_live(&self, instance_id: &str) -> Result<RemoteExecResult, LiumError> {
+        let _running = self.wait_until_running(instance_id).await?;
+        let target = self.resolve_ssh_target(instance_id).await?;
+        let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
+        let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
+        let probe_out =
+            ssh_exec_allow_fail(&target, &key, HARNESS_PROBE_CMD, att.max(1), rty, 60).await?;
+        let probe = parse_harness_probe(&probe_out.stdout);
+        if !probe.attachable() {
+            return Err(LiumError::Exec(format!(
+                "{HARNESS_ABSENT}: no harness on pod {instance_id}"
+            )));
+        }
+        let assets = eval_assets_dir();
+        let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
+        self.poll_detached_eval(
+            instance_id,
+            &target,
+            &key,
+            assets.as_deref(),
+            train_cap_secs.saturating_add(3900),
+        )
+        .await
+    }
+
+    /// Poll `harness.log` until metrics, staging assets on train-done.
+    async fn poll_detached_eval(
         &self,
         instance_id: &str,
         target: &SshTarget,
         key: &Path,
-        remote: &str,
         assets: Option<&Path>,
         timeout_secs: u64,
     ) -> Result<RemoteExecResult, LiumError> {
-        let marker = std::env::var("PRISM_TRAIN_DONE_MARKER")
-            .unwrap_or_else(|_| DEFAULT_TRAIN_DONE_MARKER.to_owned());
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        // Miner stdout is relayed with an `[harness] v3| ` prefix, so only an
-        // exact raw line (parent-emitted) trips staging — never miner output.
-        let mut on_line = move |line: &str| {
-            if assets.is_some() && line.trim_end() == marker {
-                let _ = tx.send(());
-            }
-        };
-        let remote = format!("{remote} 2>&1");
-        let run = ssh_exec_streaming(target, key, &remote, timeout_secs, &mut on_line);
-        tokio::pin!(run);
+        let start = Instant::now();
+        let period = Duration::from_secs(20);
         let mut staged = false;
-        let out = loop {
-            tokio::select! {
-                _ = rx.recv(), if !staged => {
+        let marker = std::env::var("PRISM_TRAIN_DONE_MARKER")
+            .unwrap_or_else(|_| TRAIN_DONE_MARKER.to_owned());
+        loop {
+            if start.elapsed() >= Duration::from_secs(timeout_secs) {
+                let h = self
+                    .harvest_logs_inner(instance_id)
+                    .await
+                    .unwrap_or_default();
+                return Err(LiumError::Exec(format!(
+                    "harness poll timed out after {timeout_secs}s; harvested: {}",
+                    truncate_tail(&h, 4000)
+                )));
+            }
+            let rty = self.ssh.ssh_retry_secs;
+            let probe_out = ssh_exec_allow_fail(target, key, HARNESS_PROBE_CMD, 1, rty, 45).await?;
+            let probe = parse_harness_probe(&probe_out.stdout);
+            if probe.assets_ready {
+                staged = true;
+            }
+            let log = self
+                .harvest_logs_inner(instance_id)
+                .await
+                .unwrap_or_default();
+            // Prefer exact configured marker when present in full log harvest.
+            let train_line = log.lines().any(|l| l.trim_end() == marker);
+            match classify_log(&log, assets.is_some(), staged || probe.assets_ready) {
+                HarnessProgress::Done(res) => {
+                    if assets.is_some() && !staged && !probe.assets_ready {
+                        return Err(LiumError::Exec(
+                            "eval assets configured but harness never emitted the train-done marker — refusing public-tier result under PRISM_EVAL_ASSETS_DIR".into(),
+                        ));
+                    }
+                    let tier_ok = matches!(res.eval_tier.as_deref(), Some("public" | "private"));
+                    if (staged || probe.assets_ready) && !tier_ok {
+                        return Err(LiumError::Exec(format!(
+                            "eval assets staged but harness reported eval_tier={:?} (want \"public\"|\"private\")",
+                            res.eval_tier
+                        )));
+                    }
+                    return Ok(*res);
+                }
+                HarnessProgress::NeedsAssets | HarnessProgress::Running
+                    if assets.is_some()
+                        && !staged
+                        && !probe.assets_ready
+                        && (train_line || probe.train_done) =>
+                {
                     if let Some(a) = assets {
                         self.stage_eval_assets(target, key, a).await?;
                         staged = true;
-                        info!("eval assets staged post-train (seed written, .ready touched)");
+                        info!("eval assets staged post-train (detached poll)");
                     }
                 }
-                r = &mut run => match r {
-                    Ok(o) => break o,
-                    Err(e) => {
-                        // Session timed out / dropped — a second ssh pulls the
-                        // on-pod log so the fatal tail survives the dead pipe.
-                        let h = self.harvest_logs_inner(instance_id).await.unwrap_or_default();
-                        return Err(LiumError::Exec(if h.trim().is_empty() {
-                            format!("harness transport: {e}")
-                        } else {
-                            format!("harness transport: {e}; harvested: {h}")
-                        }));
+                HarnessProgress::Failed(msg) => {
+                    return Err(LiumError::Exec(msg));
+                }
+                HarnessProgress::Running | HarnessProgress::NeedsAssets => {
+                    if !probe.pid_alive && probe.has_log && !probe.terminal {
+                        // Process died without terminal markers.
+                        let _ = parse_metrics_output(&log, 1, &log)?;
+                        return Err(LiumError::Exec(format!(
+                            "harness exited without EVAL_OK; harvested: {}",
+                            truncate_tail(&log, 4000)
+                        )));
                     }
-                },
+                }
             }
-        };
-        let tail: String = out
-            .stdout
-            .lines()
-            .rev()
-            .take(40)
-            .collect::<Vec<_>>()
-            .join("\n");
-        // Nothing came back over the channel: fall back to the on-pod log so the
-        // failure detail is not an empty string.
-        let tail = if tail.trim().is_empty() {
-            self.harvest_logs_inner(instance_id)
-                .await
-                .unwrap_or_default()
-        } else {
-            tail
-        };
-        let res = parse_metrics_output(&out.stdout, out.returncode, &tail)?;
-        if assets.is_some() && !staged {
-            return Err(LiumError::Exec(
-                "eval assets configured but harness never emitted the train-done marker — refusing public-tier result under PRISM_EVAL_ASSETS_DIR".into(),
-            ));
+            sleep(period).await;
         }
-        // Staged packs default to `public` (HF held-out). `private` remains
-        // valid for optional contamination / secret-seed mirrors.
-        let tier_ok = matches!(res.eval_tier.as_deref(), Some("public" | "private"));
-        if staged && !tier_ok {
-            return Err(LiumError::Exec(format!(
-                "eval assets staged but harness reported eval_tier={:?} (want \"public\"|\"private\")",
-                res.eval_tier
-            )));
+    }
+
+    async fn instance_running_live(&self, instance_id: &str) -> Result<bool, LiumError> {
+        match self.status(instance_id).await {
+            Ok(inst) => {
+                let st = inst.status.to_ascii_uppercase();
+                Ok(RUNNING_STATUSES.iter().any(|s| st == *s))
+            }
+            Err(LiumError::Api(_)) => Ok(false),
+            Err(e) => Err(e),
         }
-        Ok(res)
     }
 
     /// Stage the operator assets into the pod workdir post-train in a single
@@ -653,43 +671,6 @@ impl LiumClient {
             .trim()
             .to_owned())
     }
-}
-
-/// Parse the harness run output: `EVAL_OK` gate, `METRICS_JSON=` line, bpb
-/// sanity. `stderr_tail` feeds the failure message (legacy path: ssh
-/// stderr; detached path: the run-log tail).
-fn parse_metrics_output(
-    stdout: &str,
-    returncode: i32,
-    stderr_tail: &str,
-) -> Result<RemoteExecResult, LiumError> {
-    // Miner-attributable param-cap breach: the harness emits the exact
-    // `CAP_EXCEEDED` line + a minimal METRICS_JSON (bpb sentinel 0) instead
-    // of measuring. Not EVAL_OK — but a valid terminal parse.
-    if !stdout.contains("EVAL_OK") && !stdout.contains("CAP_EXCEEDED") {
-        return Err(LiumError::Exec(format!(
-            "harness failed (code {}): {}",
-            returncode,
-            truncate(stderr_tail, 4000)
-        )));
-    }
-    let line = stdout
-        .lines()
-        .find(|l| l.starts_with("METRICS_JSON="))
-        .ok_or_else(|| LiumError::Exec("harness EVAL_OK without METRICS_JSON".into()))?;
-    let v: RemoteExecResult = serde_json::from_str(&line["METRICS_JSON=".len()..])
-        .map_err(|e| LiumError::Exec(format!("metrics json: {e}")))?;
-    // Terminal cap payload: skip the bpb gate (sentinel 0 by design).
-    if v.extra.get("cap_exceeded").and_then(Value::as_bool) == Some(true) {
-        return Ok(v);
-    }
-    if !v.bpb.is_finite() || v.bpb <= 0.0 {
-        return Err(LiumError::Exec(format!(
-            "harness bpb not finite: {}",
-            v.bpb
-        )));
-    }
-    Ok(v)
 }
 
 /// First string value found at any of `keys` (top-level object lookups).
@@ -970,6 +951,14 @@ impl EvalJobBackend for LiumClient {
     ) -> Result<RemoteExecResult, LiumError> {
         self.exec_eval_live(instance_id, architecture_py, training_py, tree_blob)
             .await
+    }
+
+    async fn instance_running(&self, instance_id: &str) -> Result<bool, LiumError> {
+        self.instance_running_live(instance_id).await
+    }
+
+    async fn resume_eval(&self, instance_id: &str) -> Result<RemoteExecResult, LiumError> {
+        self.resume_eval_live(instance_id).await
     }
 
     async fn harvest_logs(&self, instance_id: &str) -> Result<String, LiumError> {
@@ -1340,7 +1329,7 @@ mod tests {
     fn train_done_marker_match_is_exact_line_only() {
         // Miner stdout is relayed with the `[harness] v3| ` prefix, so a
         // forged marker inside miner output must NOT match.
-        let m = DEFAULT_TRAIN_DONE_MARKER;
+        let m = TRAIN_DONE_MARKER;
         assert!("[harness] v3| PHASE_TRAIN_DONE".trim_end() != m);
         assert!(" PHASE_TRAIN_DONE".trim_end() != m);
         assert_eq!("PHASE_TRAIN_DONE".trim_end(), m);
@@ -1360,42 +1349,6 @@ mod tests {
         assert_eq!(eval_assets_dir().as_deref(), Some(dir.as_path()));
         std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn parse_metrics_output_gates_eval_ok_and_bpb() {
-        let good = "noise\nMETRICS_JSON={\"bpb\":2.5,\"tokens_seen\":1,\"wall_clock_seconds\":1.0,\"gpu_type\":null,\"notes\":\"n\",\"eval_tier\":\"public\"}\nEVAL_OK\n";
-        let v = parse_metrics_output(good, 0, "").unwrap();
-        assert_eq!(v.eval_tier.as_deref(), Some("public"));
-        assert!(parse_metrics_output("no ok line", 1, "boom")
-            .unwrap_err()
-            .to_string()
-            .contains("harness failed"));
-        let bad = "METRICS_JSON={\"bpb\":-1.0,\"tokens_seen\":1,\"wall_clock_seconds\":1.0,\"gpu_type\":null,\"notes\":\"n\"}\nEVAL_OK\n";
-        assert!(parse_metrics_output(bad, 0, "")
-            .unwrap_err()
-            .to_string()
-            .contains("not finite"));
-    }
-
-    #[test]
-    fn parse_metrics_output_accepts_cap_exceeded_terminal() {
-        // No EVAL_OK; the exact CAP_EXCEEDED line + JSON flag skip the bpb
-        // gate (the cap payload carries a bpb sentinel 0 by design).
-        let out = "noise\nMETRICS_JSON={\"bpb\":0.0,\"tokens_seen\":0,\"wall_clock_seconds\":3.0,\"gpu_type\":null,\"notes\":\"parameter cap exceeded\",\"n_params\":999000000,\"cap_exceeded\":true}\nCAP_EXCEEDED\n";
-        let v = parse_metrics_output(out, 3, "").unwrap();
-        assert_eq!(
-            v.extra.get("cap_exceeded").and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(v.n_params, Some(999_000_000));
-        // The bare line without the JSON flag is not a terminal parse: it
-        // falls through to the bpb gate and is rejected (forge/incomplete).
-        let missing_flag = "METRICS_JSON={\"bpb\":0.0,\"tokens_seen\":0,\"wall_clock_seconds\":3.0,\"gpu_type\":null,\"notes\":\"n\"}\nCAP_EXCEEDED\n";
-        assert!(parse_metrics_output(missing_flag, 3, "")
-            .unwrap_err()
-            .to_string()
-            .contains("not finite"));
     }
 
     #[test]
@@ -1537,16 +1490,15 @@ mod tests {
         assert!(HARNESS_EXTRACT_CMD.len() < 1024);
         let mut env = String::new();
         for (k, v) in harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", true) {
-            let _ = writeln!(env, "{k}='{v}' \\");
+            let _ = writeln!(env, "export {k}='{v}'");
         }
-        let remote = format!(
-            "{HARNESS_BOOTSTRAP}cd /tmp/prism_eval\n{env}timeout --kill-after=60 25200 python3 main.py"
-        );
+        let remote = format!("{HARNESS_BOOTSTRAP}{}", detach_launch_cmd(&env, 25200));
         assert!(
             remote.len() < 8 * 1024,
             "run argv is {} bytes",
             remote.len()
         );
+        assert!(remote.contains("setsid"));
         assert!(!remote.contains("base64"), "no payload embedding in argv");
         // The stdin payload scales with miner size; argv never does.
         let big = harness_upload_tar(&"a".repeat(200_000), &"t".repeat(200_000), None).unwrap();

@@ -73,15 +73,20 @@ stateDiagram-v2
 ```
 
 All transitions are append-only events in `prism_stage_event`; the row state
-lives in `prism_submission`. On boot (and every ~30s) `recover_on_boot` /
-orphan reconcile fails mid-flight `provisioning`/`running` rows whose worker
-is not alive in this process (`control_plane_restart` / `harness_detached`),
-best-effort terminates the pod when the BYOK vault still has a key (memory +
-optional short-TTL sealed file under `PRISM_PAYER_VAULT_DIR`), and requeues
-post-measure review stages. The stuck sweeper remains a **10h** backstop
-(aligned above wait-RUNNING + 6h train + SSH margin) and skips live workers.
-`GET /v1/submissions/{id}/logs?since=` exposes harvested harness tails +
-heartbeats while a pod is measuring.
+lives in `prism_submission`. Live measure runs the harness **detached** on the
+pod (`setsid` + `harness.log` / `harness.pid`) so a control-plane restart does
+not SIGHUP GPU work. On boot (and every ~30s) orphan reconcile is
+**resume-first**: mid-flight `provisioning`/`running` rows whose Lium pod is
+still alive and whose BYOK key can be restored from the short-TTL sealed vault
+(`PRISM_PAYER_VAULT_DIR`) are requeued with `pod_id` kept — the orchestrator
+reattaches (log/event poll → wait terminal → harvest → score) without
+terminating the pod. Only unreattachable rows fail-closed
+(`control_plane_restart` / `harness_detached`) with best-effort terminate.
+Post-measure review stages still requeue. Residual gap: expired seal + no
+operator fallback ⇒ cannot call Lium API ⇒ fail-orphan (miner must stop the
+pod and resubmit). The stuck sweeper remains a **10h** backstop and skips live
+workers. `GET /v1/submissions/{id}/logs?since=` exposes harvested harness tails
++ heartbeats while a pod is measuring.
 
 Evaluation (Lium / Sim, review, agentic, leaf emit) is **master-only**.
 Validators never run `prism-challenge` — they fetch sealed weights only.

@@ -1,11 +1,11 @@
-//! Fail / requeue mid-flight rows whose worker is not alive in this process.
+//! Resume-first mid-flight reconcile; fail only when unreattachable.
 
 use std::sync::Arc;
 
 use bundle::NoScoreReasonCode;
 use prism_lium::EvalJobBackend;
 use prism_lium_payer::PayerBackendFactory;
-use prism_pipeline::resume_measurement;
+use prism_pipeline::{mid_pod_resume, resume_measurement};
 use prism_store::{FinalScore, PrismStore, Stage, StageEvent, StatePatch, SubmissionState};
 use submission_gating::{GatingState, GatingStore};
 use tracing::{info, warn};
@@ -24,6 +24,8 @@ pub struct ReconcileReport {
     pub failed: u32,
     /// Post-measure review rows requeued.
     pub requeued: u32,
+    /// Mid-pod rows requeued for resume (pod left running).
+    pub resumed: u32,
     /// Pods where terminate was attempted.
     pub terminate_attempts: u32,
 }
@@ -49,8 +51,9 @@ pub async fn midflight_rows(store: &dyn PrismStore) -> Result<Vec<SubmissionStat
 
 /// Reconcile orphans once.
 ///
-/// `boot=true` treats every inactive mid-flight row as detached immediately.
-/// Otherwise a row must be inactive (or heartbeat-stale beyond `grace_secs`).
+/// Resume-first for `provisioning`/`running` with a live pod + reattachable
+/// payer/SSH: requeue to `queued` **keeping** `pod_id` (no terminate).
+/// Fail-closed only when the pod is dead or there is no way to reattach.
 pub async fn reconcile_once(
     store: &dyn PrismStore,
     active: &crate::ActiveJobs,
@@ -96,7 +99,19 @@ pub async fn reconcile_once(
             }
             continue;
         }
-        // Mid-pod or pre-measure: fail fast, best-effort stop pod.
+        if mid_pod_resume(&row) {
+            match try_resume(store, payer, Arc::clone(&operator), &row, reason).await {
+                Ok(true) => {
+                    report.resumed = report.resumed.saturating_add(1);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(submission_id = %row.id, error = %e, "pod resume probe failed");
+                }
+            }
+        }
+        // Unreattachable mid-pod or pre-measure without pod: fail + best-effort stop.
         let mut terminated = false;
         let key_present = payer.is_some_and(|p| p.vault.get(&row.id).is_some());
         if let Some(pod) = row.pod_id.as_deref() {
@@ -126,6 +141,55 @@ pub async fn reconcile_once(
     Ok(report)
 }
 
+/// Probe pod + vault; on success requeue to `queued` keeping `pod_id`.
+async fn try_resume(
+    store: &dyn PrismStore,
+    payer: Option<&PayerBackendFactory>,
+    operator: Arc<dyn EvalJobBackend>,
+    row: &SubmissionState,
+    reason: &str,
+) -> Result<bool, String> {
+    let Some(pod) = row.pod_id.as_deref() else {
+        return Ok(false);
+    };
+    if let Some(p) = payer {
+        if p.vault.get(&row.id).is_none() && !p.allow_operator_fallback {
+            return Ok(false);
+        }
+    }
+    let be = match payer {
+        Some(p) => p.resolve(&row.id, Arc::clone(&operator))?,
+        None => operator,
+    };
+    let alive = be.instance_running(pod).await.map_err(|e| e.to_string())?;
+    if !alive {
+        return Ok(false);
+    }
+    // Keep pod_id / screens; workers claim Queued and call resume_eval.
+    store
+        .apply(
+            &row.id,
+            &StatePatch {
+                status: Some(Stage::Queued),
+                error_detail: None,
+                ..StatePatch::default()
+            },
+            Some(&StageEvent {
+                stage: Stage::Queued,
+                detail: Some(serde_json::json!({
+                    "pod_resume": true,
+                    "reason": reason,
+                    "pod_id": pod,
+                })),
+                at_ms: 0,
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    info!(submission_id = %row.id, %pod, reason, "mid-pod resume queued (pod left running)");
+    Ok(true)
+}
+
 fn should_skip(
     row: &SubmissionState,
     active: &crate::ActiveJobs,
@@ -137,7 +201,7 @@ fn should_skip(
         const WEDGE_SECS: u64 = 30 * 60;
         return active.age_secs(&row.id).is_none_or(|age| age < WEDGE_SECS);
     }
-    // Process restart: every inactive mid-flight row is an orphan immediately.
+    // Process restart: every inactive mid-flight row is considered immediately.
     if boot {
         return false;
     }
