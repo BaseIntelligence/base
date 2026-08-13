@@ -161,6 +161,9 @@ pub struct PrismBenchmarks {
     /// HellaSwag accuracy (prefer `acc_norm` / `org.g2.hellaswag_acc`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hellaswag: Option<f64>,
+    /// ARC-Easy accuracy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_easy: Option<f64>,
     /// ARC-Challenge accuracy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arc_challenge: Option<f64>,
@@ -180,10 +183,33 @@ impl PrismBenchmarks {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.hellaswag.is_none()
+            && self.arc_easy.is_none()
             && self.arc_challenge.is_none()
             && self.piqa.is_none()
             && self.winogrande.is_none()
             && self.boolq.is_none()
+    }
+
+    /// Merge non-empty fields from `other` into `self` (fill gaps only).
+    pub fn merge_missing(&mut self, other: &Self) {
+        if self.hellaswag.is_none() {
+            self.hellaswag = other.hellaswag;
+        }
+        if self.arc_easy.is_none() {
+            self.arc_easy = other.arc_easy;
+        }
+        if self.arc_challenge.is_none() {
+            self.arc_challenge = other.arc_challenge;
+        }
+        if self.piqa.is_none() {
+            self.piqa = other.piqa;
+        }
+        if self.winogrande.is_none() {
+            self.winogrande = other.winogrande;
+        }
+        if self.boolq.is_none() {
+            self.boolq = other.boolq;
+        }
     }
 }
 

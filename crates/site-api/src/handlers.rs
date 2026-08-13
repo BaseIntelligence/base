@@ -11,8 +11,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::prism_enrich::{
-    enrich_leaderboard_row_from_detail, enrich_submission_from_detail, pin_id_from_payload,
-    prism_reference_baselines, prism_submission_detail,
+    enrich_leaderboard_row_from_detail_with_zone, enrich_submission_from_detail_with_zone,
+    map_benchmarks, pin_id_from_payload, prism_reference_baselines,
+    prism_submission_detail_with_zone,
 };
 use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
@@ -454,8 +455,8 @@ async fn prism_leaderboard_json(
     let details = fetch_prism_details(st, &ids).await;
     for row in &mut board {
         if let Some(id) = row.submission_id.as_ref() {
-            if let Some(detail) = details.get(id) {
-                enrich_leaderboard_row_from_detail(row, detail);
+            if let Some(fan) = details.get(id) {
+                enrich_leaderboard_row_from_detail_with_zone(row, &fan.detail, fan.zone_a.as_ref());
             }
         }
         if row.recipe_era.is_none() {
@@ -480,8 +481,14 @@ async fn prism_leaderboard_json(
     })
 }
 
+/// Detail fan-out payload (+ optional Zone-A metrics when detail lacks G2 benches).
+struct PrismDetailFanout {
+    detail: Value,
+    zone_a: Option<Value>,
+}
+
 /// Fetch bounded challenge detail payloads keyed by submission id.
-async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, Value> {
+async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, PrismDetailFanout> {
     let mut out = HashMap::new();
     for id in ids {
         if id.is_empty() {
@@ -502,10 +509,26 @@ async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, 
                     }
                 }
             }
-            out.insert(id.clone(), detail);
+            let zone_a = fetch_prism_zone_a_if_needed(st, id, &detail).await;
+            out.insert(id.clone(), PrismDetailFanout { detail, zone_a });
         }
     }
     out
+}
+
+/// When detail metrics omit public G2 benches, pull Zone-A rows from the eval store.
+async fn fetch_prism_zone_a_if_needed(st: &SiteState, id: &str, detail: &Value) -> Option<Value> {
+    let root = detail.get("submission").unwrap_or(detail);
+    let benches = map_benchmarks(root.get("metrics").filter(|m| !m.is_null()));
+    if !benches.is_empty() {
+        return None;
+    }
+    if let Some(battery_metrics) = root.pointer("/metrics/battery/metrics") {
+        if !map_benchmarks(Some(battery_metrics)).is_empty() {
+            return None;
+        }
+    }
+    upstream::get_json_opt(st, PRISM, &format!("/v1/submissions/{id}/metrics?zone=a")).await
 }
 
 async fn get_leaderboard(
@@ -576,8 +599,8 @@ async fn get_submissions(
             ids.truncate(PRISM_CHAMPION_DETAIL_FANOUT);
             let details = fetch_prism_details(&st, &ids).await;
             for item in &mut items {
-                if let Some(detail) = details.get(&item.id) {
-                    enrich_submission_from_detail(item, detail);
+                if let Some(fan) = details.get(&item.id) {
+                    enrich_submission_from_detail_with_zone(item, &fan.detail, fan.zone_a.as_ref());
                 } else if item.recipe_era.is_none() {
                     // Pre-2.0 / unknown → legacy so era tabs are not empty.
                     item.recipe_era = Some(RecipeEra::Legacy);
@@ -841,7 +864,8 @@ async fn get_prism_submission_detail(
             }
         }
     }
-    match prism_submission_detail(&detail) {
+    let zone_a = fetch_prism_zone_a_if_needed(&st, &id, &detail).await;
+    match prism_submission_detail_with_zone(&detail, zone_a.as_ref()) {
         Some(d) => Json(d).into_response(),
         None => json_err(
             StatusCode::NOT_FOUND,

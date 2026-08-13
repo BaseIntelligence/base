@@ -51,7 +51,7 @@ Champion list / leaderboard rows may carry (when detail fan-out succeeds):
 | `recipeEra` | `"automodel"` \| `"legacy"` — AutoModel if `pin_id` / recipe major ≥ 2 / diff shape; else legacy |
 | `pinId` | AutoModel pin (`automodel@…`) when era is automodel |
 | `evalGroups` | `{ group: "g1"…"g8", g }` from composite `eval.groups` |
-| `benchmarks` | Public G2 subset: `hellaswag`, `arcChallenge`, `piqa`, `winogrande`, `boolq` from `org.g2.*` / battery keys |
+| `benchmarks` | Public G2 subset: `hellaswag`, `arcEasy`, `arcChallenge`, `piqa`, `winogrande`, `boolq` from `org.g2.*` / battery keys (Zone-A `/metrics?zone=a` fan-in when detail omits them) |
 | `submissionId` | (leaderboard) best-BPB champion id for the detail modal |
 
 Additional Prism routes:
