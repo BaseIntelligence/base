@@ -37,11 +37,11 @@ use std::time::{Duration, Instant};
 
 use parity_scale_codec::Encode;
 
-/// Lockfile-pinned spec version (`metadata/testnet.lock` → 443).
-const SPEC_VERSION: u32 = 443;
-/// Lockfile-pinned transaction version (1).
-const TRANSACTION_VERSION: u32 = 1;
 /// Lockfile-pinned commit-reveal version (CRV4 = 4).
+///
+/// `spec_version` / `transaction_version` are **not** pinned here: signing
+/// always uses the live values from `state_getRuntimeVersion` so a Finney
+/// runtime bump cannot stall weight submits waiting for a lockfile bump.
 const COMMIT_REVEAL_VERSION: u16 = 4;
 /// Default netuid (lockfile `snapshot_netuid` = 1).
 const DEFAULT_NETUID: u16 = 1;
@@ -91,8 +91,6 @@ struct MetagraphCache {
 pub struct LiveChainClient {
     rpc: LiveChainRpc,
     netuid: u16,
-    spec_version: u32,
-    tx_version: u32,
     signing_key: Option<[u8; 32]>,
     metagraph_cache: Mutex<MetagraphCache>,
     /// Overrideable for tests; production always uses [`METAGRAPH_CACHE_TTL`].
@@ -103,8 +101,6 @@ impl std::fmt::Debug for LiveChainClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveChainClient")
             .field("netuid", &self.netuid)
-            .field("spec_version", &self.spec_version)
-            .field("tx_version", &self.tx_version)
             .field(
                 "signing_key",
                 &self.signing_key.as_ref().map(|_| "<redacted>"),
@@ -130,8 +126,6 @@ impl LiveChainClient {
         Ok(Self {
             rpc,
             netuid: DEFAULT_NETUID,
-            spec_version: SPEC_VERSION,
-            tx_version: TRANSACTION_VERSION,
             signing_key: None,
             metagraph_cache: Mutex::new(MetagraphCache::default()),
             metagraph_cache_ttl: METAGRAPH_CACHE_TTL,
@@ -255,27 +249,19 @@ impl LiveChainClient {
             .ok_or_else(|| ChainError::Other("no signing key loaded (use with_signing_key)".into()))
     }
 
-    /// Check live runtime version against lockfile pins before signing.
-    fn check_runtime_version(&self) -> Result<(), ChainError> {
+    /// Fetch live `(spec_version, transaction_version)` for signed extrinsics.
+    ///
+    /// Always trusts the chain tip — never compares against a local pin. Call
+    /// indices / CRV4 shape still come from the committed lockfile; only the
+    /// additional-signed runtime versions are dynamic.
+    fn live_runtime_version(&self) -> Result<(u32, u32), ChainError> {
         let rt = self.rpc.state_get_runtime_version()?;
         tracing::debug!(
             spec = rt.spec_version,
             tx = rt.transaction_version,
-            "runtime version check"
+            "live runtime version for signing"
         );
-        if rt.spec_version != self.spec_version {
-            return Err(ChainError::Other(format!(
-                "spec_version mismatch: live {} vs lockfile {} — refusing to sign",
-                rt.spec_version, self.spec_version
-            )));
-        }
-        if rt.transaction_version != self.tx_version {
-            return Err(ChainError::Other(format!(
-                "transaction_version mismatch: live {} vs lockfile {} — refusing to sign",
-                rt.transaction_version, self.tx_version
-            )));
-        }
-        Ok(())
+        Ok((rt.spec_version, rt.transaction_version))
     }
 
     /// Read `commit_reveal_weights_enabled` from hyperparams v3 runtime API.
@@ -442,9 +428,9 @@ impl LiveChainClient {
     /// Returns the extrinsic hash / subscription ID from the node.
     ///
     /// # Errors
-    /// Runtime-version drift, missing signing key, transport failure.
+    /// Missing signing key, transport failure, or runtime-version RPC failure.
     pub fn serve_axon(&self, params: &extrinsic::ServeAxonParams) -> Result<String, ChainError> {
-        self.check_runtime_version()?;
+        let (spec_version, tx_version) = self.live_runtime_version()?;
         let key = self.require_key()?;
         let genesis_hash = self.block_hash(0)?;
         let pubkey = extrinsic::derive_public_key(&key)?;
@@ -455,8 +441,8 @@ impl LiveChainClient {
             &Era::Immortal,
             &genesis_hash,
             &genesis_hash,
-            self.spec_version,
-            self.tx_version,
+            spec_version,
+            tx_version,
             params,
         )?;
         self.submit_extrinsic(&ext)
@@ -568,7 +554,7 @@ pub(crate) fn parse_commit_reveal_enabled_v3(bytes: &[u8]) -> Option<bool> {
     let after = pos.checked_add(NEEDLE.len())?;
     let tag = *bytes.get(after)?;
     let val = *bytes.get(after.checked_add(1)?)?;
-    // Variant 0 = Bool in the hyperparam value enum (verified on Finney v443).
+    // Variant 0 = Bool in the hyperparam value enum (verified on Finney v445).
     if tag != 0 {
         return None;
     }
@@ -713,7 +699,7 @@ impl ChainClient for LiveChainClient {
                 alternate: "set_weights",
             });
         }
-        self.check_runtime_version()?;
+        let (spec_version, tx_version) = self.live_runtime_version()?;
         let key = self.require_key()?;
 
         // CRV4: encrypt SCALE WeightsTlockPayload with Drand TLE (same wire
@@ -735,8 +721,8 @@ impl ChainClient for LiveChainClient {
             &Era::Immortal,
             &genesis_hash,
             &genesis_hash,
-            self.spec_version,
-            self.tx_version,
+            spec_version,
+            tx_version,
             self.netuid,
             mecid,
             &commit,
@@ -782,7 +768,7 @@ impl ChainClient for LiveChainClient {
                 "set_weights refused: commit_reveal is enabled — never downgrade".into(),
             ));
         }
-        self.check_runtime_version()?;
+        let (spec_version, tx_version) = self.live_runtime_version()?;
         let key = self.require_key()?;
         let genesis_hash = self.block_hash(0)?;
         let pubkey = extrinsic::derive_public_key(&key)?;
@@ -793,8 +779,8 @@ impl ChainClient for LiveChainClient {
             &Era::Immortal,
             &genesis_hash,
             &genesis_hash,
-            self.spec_version,
-            self.tx_version,
+            spec_version,
+            tx_version,
             netuid,
             &uids,
             &values,

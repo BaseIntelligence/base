@@ -976,7 +976,7 @@ mod tests {
             snapshot_netuid: 1,
             chain: ChainSnapshot {
                 spec_name: "node-subtensor".into(),
-                spec_version: 443,
+                spec_version: 445,
                 transaction_version: 1,
                 ss58_prefix: 42,
             },
