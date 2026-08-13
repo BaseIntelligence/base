@@ -7,10 +7,10 @@
 //! the same fail-closed posture as `/v1/weights/latest`, without duplicating
 //! its burn payload.
 
-use bundle::EpochBundleV1;
+use bundle::{EpochBundleBodyV1, EpochBundleV1, ScoreOrAbsence};
 use site_types::{EmissionShare, HotkeyWeight, SiteWeights};
 use trustroot::{ChallengesBody, BPS_DENOM};
-use weights_api::SealRecord;
+use weights_api::{SealRecord, BURN_UID};
 
 /// Configured emission split from the trust root (`slug → 0..1`), sorted by slug.
 #[must_use]
@@ -121,22 +121,100 @@ pub fn site_weights(
     }
 }
 
-/// Effective on-chain weight of one arena: configured share scaled by the
-/// non-burn fraction of the sealed vector (0 when nothing is sealed).
+/// Effective on-chain weight of one arena for the latest seal.
+///
+/// This is the fraction of the sealed vector that challenge `slug` actually
+/// placed on real miners (not uid-0 burn). It equals the configured trust-root
+/// share when that challenge's positive scores all map to non-burn UIDs, and
+/// is lower (possibly `0`) when its share burns — e.g. empty / unknown-hotkey
+/// leaves. Scaling every arena by the *global* burn fraction is wrong: when
+/// design burns 50% and prism lands 50%, prism must stay `0.5`, not `0.25`.
+///
+/// Returns `0` when nothing is sealed or the bundle cannot be decoded.
 #[must_use]
 pub fn arena_weight(
     challenges: Option<&ChallengesBody>,
     latest: Option<(Vec<u8>, SealRecord)>,
     slug: &str,
 ) -> f64 {
-    let share = configured_shares(challenges)
-        .into_iter()
-        .find(|(s, _)| s == slug)
-        .map_or(0.0, |(_, v)| v);
-    match sealed_view(latest) {
-        Some(view) => share * (1.0 - view.burn_share),
-        None => 0.0,
+    // Unknown to the trust root → never invent a weight (coding / paused arenas).
+    if configured_shares(challenges)
+        .iter()
+        .all(|(s, _)| s != slug)
+    {
+        return 0.0;
     }
+    let Some((bytes, _)) = latest else {
+        return 0.0;
+    };
+    let Ok(bundle) = EpochBundleV1::decode_bytes(&bytes) else {
+        return 0.0;
+    };
+    delivered_arena_weight(&bundle.body, slug)
+}
+
+/// Mass of the sealed vector attributable to `slug`'s scored, mapped miners.
+fn delivered_arena_weight(body: &EpochBundleBodyV1, slug: &str) -> f64 {
+    let slug_bytes = slug.as_bytes();
+    let Some((_, bps)) = body
+        .emission_shares
+        .iter()
+        .find(|(id, _)| id.as_slice() == slug_bytes)
+    else {
+        return 0.0;
+    };
+    let share = f64::from(*bps) / f64::from(BPS_DENOM);
+    if share <= 0.0 {
+        return 0.0;
+    }
+
+    // Collapse duplicate hotkeys (last-writer in aggregate is sum-via-BTreeMap).
+    let mut by_hotkey: Vec<([u8; 32], u64)> = Vec::new();
+    for leaf in &body.leaves {
+        if leaf.challenge_id.as_slice() != slug_bytes {
+            continue;
+        }
+        let ScoreOrAbsence::Score { value } = leaf.score_or_absence else {
+            continue;
+        };
+        if value == 0 {
+            continue;
+        }
+        if let Some((_, acc)) = by_hotkey
+            .iter_mut()
+            .find(|(hk, _)| *hk == leaf.miner_hotkey)
+        {
+            *acc = acc.saturating_add(value);
+        } else {
+            by_hotkey.push((leaf.miner_hotkey, value));
+        }
+    }
+    let raw_total: u128 = by_hotkey.iter().map(|(_, v)| u128::from(*v)).sum();
+    if raw_total == 0 {
+        return 0.0;
+    }
+
+    // Same within-challenge normalisation as aggregate_python: each positive
+    // score owns raw/total of the challenge share; unmapped / burn-uid miners
+    // drop their slice (it burns), so delivered ≤ configured share.
+    #[allow(clippy::cast_precision_loss)]
+    let total_f = raw_total as f64;
+    by_hotkey.into_iter().fold(0.0, |acc, (hk, raw)| {
+        let Some(uid) = body
+            .uid_map
+            .iter()
+            .find(|(k, _)| *k == hk)
+            .map(|(_, uid)| *uid)
+        else {
+            return acc;
+        };
+        if uid == BURN_UID {
+            return acc;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let w = (raw as f64) / total_f;
+        acc + share * w
+    })
 }
 
 #[cfg(test)]
@@ -156,11 +234,27 @@ mod tests {
     }
 
     fn leaf(challenge: &str, hk: u8) -> LeafV1 {
+        leaf_score(challenge, hk, 42)
+    }
+
+    fn leaf_score(challenge: &str, hk: u8, value: u64) -> LeafV1 {
         LeafV1 {
             challenge_id: challenge.as_bytes().to_vec(),
             miner_hotkey: [hk; 32],
             epoch: 7,
-            score_or_absence: bundle::ScoreOrAbsence::Score { value: 42 },
+            score_or_absence: bundle::ScoreOrAbsence::Score { value },
+            challenge_sig: [0u8; 64],
+        }
+    }
+
+    fn leaf_absent(challenge: &str, hk: u8) -> LeafV1 {
+        LeafV1 {
+            challenge_id: challenge.as_bytes().to_vec(),
+            miner_hotkey: [hk; 32],
+            epoch: 7,
+            score_or_absence: bundle::ScoreOrAbsence::NoScore {
+                reason: bundle::NoScoreReasonCode::NotAttempted,
+            },
             challenge_sig: [0u8; 64],
         }
     }
@@ -220,7 +314,7 @@ mod tests {
         assert_eq!(view.hotkeys.len(), 1);
         assert!((view.hotkeys[0].1 - 1.0).abs() < 0.001);
         assert!(view.burn_share.abs() < 0.001);
-        // Arena weight = configured share × non-burn fraction.
+        // Both challenges delivered their full configured share onto miners.
         let root = trust_root();
         let latest = sealed_bundle();
         assert!((arena_weight(Some(&root), Some(latest.clone()), "design") - 0.5).abs() < 0.001);
@@ -229,6 +323,47 @@ mod tests {
         assert!(w.sealed);
         assert_eq!(w.hotkey_weights.len(), 1);
         assert!(w.hotkey_weights[0].hotkey.starts_with('5'));
+    }
+
+    #[test]
+    fn arena_weight_does_not_tax_prism_for_design_burn() {
+        // Prod-shaped seal: design leaves are NoScore (share burns to uid 0),
+        // prism WTA lands its full 0.5 on one miner. Global burn_share == 0.5,
+        // but prism's arena weight must remain 0.5 — not share*(1-burn)=0.25.
+        let body = EpochBundleBodyV1 {
+            protocol_version: 1,
+            epoch: 7,
+            netuid: 100,
+            block_b: 4242,
+            block_hash: [1u8; 32],
+            metagraph_root: [2u8; 32],
+            algorithm_version: bundle::ALGORITHM_VERSION,
+            emission_shares: vec![(b"design".to_vec(), 5_000), (b"prism".to_vec(), 5_000)],
+            measurements_digest: [3u8; 32],
+            uid_map: vec![([0xAAu8; 32], 0), ([0xBBu8; 32], 157)],
+            leaves: vec![leaf_absent("design", 0xAA), leaf_score("prism", 0xBB, 99)],
+            merkle_root: [4u8; 32],
+            final_vector: vec![(0, 32_768), (157, 32_767)],
+            gateway_hotkey: [5u8; 32],
+        };
+        let bytes = EpochBundleV1 {
+            body,
+            gateway_sig: [6u8; 64],
+        }
+        .encode_bytes();
+        let latest = (
+            bytes,
+            SealRecord {
+                sealed_at_micros: 1_785_572_565_992_448,
+                revision: 1,
+            },
+        );
+        let root = trust_root();
+        let view = sealed_view(Some(latest.clone())).unwrap();
+        assert!((view.burn_share - 0.5).abs() < 0.01);
+        assert!((arena_weight(Some(&root), Some(latest.clone()), "prism") - 0.5).abs() < 0.001);
+        assert!(arena_weight(Some(&root), Some(latest), "design").abs() < 0.001);
+        assert!(arena_weight(Some(&root), Some(sealed_bundle()), "coding").abs() < f64::EPSILON);
     }
 
     #[test]
