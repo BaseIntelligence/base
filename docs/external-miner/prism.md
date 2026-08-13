@@ -209,7 +209,8 @@ The global-best model (sources + `ARTIFACT.json` / checkpoint release) is
 published to
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism)
 `top-model/` and (when configured) a HuggingFace model repo
-`BaseIntelligence/prism-top-model`. See [`PRISM.md`](../PRISM.md).
+`BaseIntelligence/top-prism-architecture` (custom-arch / AutoModel novelty +
+weights, `trust_remote_code`). See [`PRISM.md`](../PRISM.md).
 
 ## v3 scoring (shadow-by-default)
 

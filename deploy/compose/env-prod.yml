@@ -75,7 +75,7 @@ services:
       BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
       # Top-model HuggingFace publish (optional; no-op without token file).
       PRISM_TOPMODEL_HF_TOKEN_FILE: "/run/base/huggingface/token"
-      PRISM_TOPMODEL_HF_REPO: "BaseIntelligence/prism-top-model"
+      PRISM_TOPMODEL_HF_REPO: "BaseIntelligence/top-prism-architecture"
     volumes:
       - /var/lib/prism/automodel-pin:/var/lib/prism/automodel-pin:ro
       - /var/lib/prism/payer-vault:/var/lib/prism/payer-vault

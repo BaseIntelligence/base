@@ -48,6 +48,9 @@ pub struct TopModelRequest {
     /// Master-parked checkpoint path (harvested from the Lium pod).
     /// When absent and weights are required, publish is refused.
     pub checkpoint_path: Option<std::path::PathBuf>,
+    /// Extra source files for Hub publish (AutoModel novelty / tree_blob
+    /// modules). Paths are relative; HF publisher nests them under `sources/`.
+    pub extra_files: Vec<(String, Vec<u8>)>,
 }
 
 /// GitHub contents-API publisher. Token is never `Debug`/`Display`'d.
@@ -273,6 +276,7 @@ mod tests {
                 "telemetry": {"finish_reason": "finish_evaluation", "loss_series": [{"step": 1, "loss": 2.0}]},
             })),
             checkpoint_path: None,
+            extra_files: Vec::new(),
         }
     }
 

@@ -70,6 +70,7 @@ services:
       PRISM_PAYER_VAULT_DIR: "/var/lib/prism/payer-vault"
       PRISM_PAYER_VAULT_KEY_FILE: "/run/secrets/prism_payer_vault_key"
       PRISM_TOPMODEL_HF_TOKEN_FILE: "/run/base/huggingface/token"
+      PRISM_TOPMODEL_HF_REPO: "BaseIntelligence/top-prism-architecture"
     volumes:
       - /var/lib/prism/automodel-pin:/var/lib/prism/automodel-pin:ro
       - /var/lib/prism/payer-vault:/var/lib/prism/payer-vault

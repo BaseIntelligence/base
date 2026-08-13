@@ -9,9 +9,9 @@
 //!   public `BaseIntelligence/prism` GitHub repo under `top-model/`, via a
 //!   token read from a deploy secret file (`PRISM_TOPMODEL_GITHUB_TOKEN_FILE`;
 //!   graceful no-op when absent).
-//! - [`HfTopModelPublisher`] — same trigger, commits sources to HuggingFace
-//!   (`PRISM_TOPMODEL_HF_TOKEN_FILE`; default repo
-//!   `BaseIntelligence/prism-top-model`).
+//! - [`HfTopModelPublisher`] — same trigger, commits a reloadable custom-arch
+//!   pack to HuggingFace (`PRISM_TOPMODEL_HF_TOKEN_FILE`; default repo
+//!   `BaseIntelligence/top-prism-architecture`).
 
 #![forbid(unsafe_code)]
 #![allow(clippy::cast_precision_loss)]

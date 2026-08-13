@@ -122,6 +122,9 @@ pub async fn post_score_hooks(
         training_py: row.training_py.clone(),
         metrics_json: row.metrics_json.clone(),
         checkpoint_path: ckpt,
+        // Novel AutoModel / tree modules so HF cards reload without a stock
+        // transformers arch already on the Hub.
+        extra_files: crate::hf::extra_files_from_tree_blob(row.tree_blob.as_deref()),
     };
     let mut journaled = false;
     if let Some(publisher) = publisher {

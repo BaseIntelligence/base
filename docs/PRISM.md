@@ -229,10 +229,13 @@ publishes `architecture.py` + `training.py` + `METRICS.json` +
 `ARTIFACT.json` + a `README.md` block to the public
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) repo
 under `top-model/` via the GitHub contents API; large checkpoints upload as
-a mutable Release tag `prism-top-model`. The same trigger also commits
-sources to HuggingFace (`PRISM_TOPMODEL_HF_TOKEN_FILE`, default repo
-`BaseIntelligence/prism-top-model`) when that token file is present. The
-publication is journaled (`prism_topmodel_publication`). GitHub token:
+a mutable Release tag `prism-top-model`. The same trigger also commits a
+**reloadable custom-arch pack** to HuggingFace
+(`PRISM_TOPMODEL_HF_TOKEN_FILE`, default repo
+`BaseIntelligence/top-prism-architecture`): seam sources, AutoModel novelty
+under `sources/`, `config.json` + `trust_remote_code` wrappers, and
+`checkpoint.pt` (LFS when large). The publication is journaled
+(`prism_topmodel_publication`). GitHub token:
 `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`deploy/secrets/github/token`);
 absent/empty → publish no-op. With `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1`
 (default), a missing/invalid receipt fails the publish (no journal).
