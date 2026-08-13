@@ -381,7 +381,7 @@ async fn mock_runtime_version_ok() {
             "jsonrpc": "2.0", "id": 1,
             "result": {
                 "specName": "node-subtensor",
-                "specVersion": 443,
+                "specVersion": 445,
                 "transactionVersion": 1
             }
         })))
@@ -396,7 +396,7 @@ async fn mock_runtime_version_ok() {
     .await
     .expect("spawn_blocking")
     .expect("runtime version");
-    assert_eq!(rt.spec_version, 443);
+    assert_eq!(rt.spec_version, 445);
     assert_eq!(rt.transaction_version, 1);
 }
 
@@ -490,7 +490,7 @@ async fn set_weights_rejected_when_cr_enabled() {
 }
 
 #[tokio::test]
-async fn set_weights_refuses_on_spec_version_mismatch() {
+async fn set_weights_accepts_any_live_spec_version() {
     let server = MockServer::start().await;
 
     // Mock CommitRevealWeightsEnabled(1) → false (0x00)
@@ -508,7 +508,7 @@ async fn set_weights_refuses_on_spec_version_mismatch() {
         .mount(&server)
         .await;
 
-    // Mock runtime version with mismatched spec_version (441 instead of 443)
+    // Live tip can be any spec_version — signing must not fail-closed on pin drift.
     Mock::given(method("POST"))
         .and(body_partial_json(
             json!({"method": "state_getRuntimeVersion"}),
@@ -517,8 +517,8 @@ async fn set_weights_refuses_on_spec_version_mismatch() {
             "jsonrpc": "2.0", "id": 1,
             "result": {
                 "specName": "node-subtensor",
-                "specVersion": 441,
-                "transactionVersion": 1
+                "specVersion": 999_001,
+                "transactionVersion": 7
             }
         })))
         .mount(&server)
@@ -532,10 +532,19 @@ async fn set_weights_refuses_on_spec_version_mismatch() {
     .await
     .expect("spawn_blocking");
 
-    let err = result.expect_err("must refuse");
+    // Without a signing key we still fail, but never on spec_version mismatch.
+    let err = result.expect_err("must fail closed without signing key");
     match err {
         ChainError::Other(msg) => {
-            assert!(msg.contains("spec_version mismatch"), "msg: {msg}");
+            assert!(
+                !msg.contains("spec_version mismatch")
+                    && !msg.contains("transaction_version mismatch"),
+                "must accept live runtime versions; got: {msg}"
+            );
+            assert!(
+                msg.contains("no signing key"),
+                "expected missing-key failure after live version fetch; got: {msg}"
+            );
         }
         other => panic!("expected Other, got {other}"),
     }
@@ -1271,7 +1280,7 @@ async fn submit_timelocked_ok_only_after_dispatch_confirmation() {
             "jsonrpc": "2.0", "id": 1,
             "result": {
                 "specName": "node-subtensor",
-                "specVersion": 443,
+                "specVersion": 445,
                 "transactionVersion": 1
             }
         })))
@@ -1515,7 +1524,7 @@ async fn mount_signing_path(server: &MockServer) {
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": {"specName": "node-subtensor", "specVersion": 443, "transactionVersion": 1}
+            "result": {"specName": "node-subtensor", "specVersion": 445, "transactionVersion": 1}
         })))
         .mount(server)
         .await;

@@ -5,11 +5,11 @@
   "snapshot_netuid": 1,
   "chain": {
     "spec_name": "node-subtensor",
-    "spec_version": 443,
+    "spec_version": 445,
     "transaction_version": 1,
     "ss58_prefix": 42
   },
-  "metadata_digest": "0x5d603ac2a84552035cc0434cd7a7b56781a26eab47245542dd43ef1c8ce9b046",
+  "metadata_digest": "0x25b0d497f71c915c622efe3a55a4d3b5d6aa405856df193bca7df0791cae5497",
   "call_indices": {
     "set_weights": {
       "pallet": "SubtensorModule",
