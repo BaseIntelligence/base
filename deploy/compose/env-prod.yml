@@ -56,6 +56,13 @@ services:
   prism-challenge:
     environment:
       PRISM_FORCE_SIM: "false"
+      # G1–G8 battery (two-phase train/eval). Default harness is v3; pin here
+      # so pods never silently fall back to BPB-only even on older images.
+      PRISM_FLOW: "v3"
+      # Full public pack (not tiny caps). Host path staged by
+      # deploy/scripts/prism-overnight-battery.sh / build_private_pack.
+      PRISM_EVAL_ASSETS_DIR: "/var/lib/prism/eval-assets"
+      PRISM_TEST_EVAL_CAPS: "0"
       # Recipe 2.0 AutoModel pin (stage with deploy/scripts/stage-automodel-pin.sh).
       # Fail-closed intake when unset/unmounted — miners see code=pin.
       PRISM_AUTOMODEL_PIN_DIR: "/var/lib/prism/automodel-pin"
@@ -66,10 +73,15 @@ services:
       PRISM_MAX_CONCURRENT_EVALS: "8"
       # Emitter/gating/epoch-feed chain reads share the gateway failover list.
       BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
+      # Top-model HuggingFace publish (optional; no-op without token file).
+      PRISM_TOPMODEL_HF_TOKEN_FILE: "/run/base/huggingface/token"
+      PRISM_TOPMODEL_HF_REPO: "BaseIntelligence/prism-top-model"
     volumes:
       - /var/lib/prism/automodel-pin:/var/lib/prism/automodel-pin:ro
       - /var/lib/prism/payer-vault:/var/lib/prism/payer-vault
+      - /var/lib/prism/eval-assets:/var/lib/prism/eval-assets:ro
       - ./deploy/secrets/prism/payer_vault_key:/run/secrets/prism_payer_vault_key:ro
+      - ./deploy/secrets/huggingface:/run/base/huggingface:ro
   design-challenge:
     environment:
       # Docker-only on prod. Never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM here.

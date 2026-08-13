@@ -191,6 +191,7 @@ rsync -az --delete \
 # absent; if a directory already poisoned the path, replace it with a file.
 ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
   '$REMOTE_DIR/deploy/secrets/openrouter' '$REMOTE_DIR/deploy/secrets/design' \
+  '$REMOTE_DIR/deploy/secrets/github' '$REMOTE_DIR/deploy/secrets/huggingface' \
   '$REMOTE_DIR/deploy/secrets/wallets' \
   && chmod 700 '$REMOTE_DIR/deploy/secrets' '$REMOTE_DIR/deploy/secrets/lium' \
   && for f in api_key ssh_ed25519 ssh_ed25519.pub; do \
@@ -198,6 +199,8 @@ ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
      done \
   && [ -e '$REMOTE_DIR/deploy/secrets/openrouter/api_key' ] || : > '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
   && [ -e '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' ] || : > '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
+  && [ -e '$REMOTE_DIR/deploy/secrets/github/token' ] || : > '$REMOTE_DIR/deploy/secrets/github/token' \
+  && [ -e '$REMOTE_DIR/deploy/secrets/huggingface/token' ] || : > '$REMOTE_DIR/deploy/secrets/huggingface/token' \
   && for sk in prism_sk design_sk; do \
        p='$REMOTE_DIR/deploy/secrets/'\$sk; \
        if [ -d \"\$p\" ]; then rm -rf \"\$p\"; fi; \
@@ -207,9 +210,13 @@ ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
   && chmod 400 '$REMOTE_DIR/deploy/secrets/lium/'* \
        '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
        '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
+       '$REMOTE_DIR/deploy/secrets/github/token' \
+       '$REMOTE_DIR/deploy/secrets/huggingface/token' \
   && chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/lium' \
        '$REMOTE_DIR/deploy/secrets/openrouter' \
        '$REMOTE_DIR/deploy/secrets/design' \
+       '$REMOTE_DIR/deploy/secrets/github' \
+       '$REMOTE_DIR/deploy/secrets/huggingface' \
   && chmod -R a-w '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; \
   chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; true"
 

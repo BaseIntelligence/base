@@ -83,9 +83,9 @@ pub async fn post_score_hooks(
         }
     }
 
-    // (3) Top-model publish on a new global best — only after secure receive
-    // (RECEIPT.json + sha256 match). Missing/bad receipt ⇒ no weight publish.
-    let Some(publisher) = publisher else { return };
+    // (3) Top-model publish on a new global best — GitHub (optional) + HF
+    // (optional). GitHub weights require secure receive (RECEIPT.json);
+    // HF publishes sources regardless so the champion card stays current.
     let last = store.last_publication_bpb().await.unwrap_or(None);
     let global = store.best_scored_bpb().await.unwrap_or(None);
     let is_global_best = global.is_some_and(|g| bpb <= g);
@@ -123,23 +123,54 @@ pub async fn post_score_hooks(
         metrics_json: row.metrics_json.clone(),
         checkpoint_path: ckpt,
     };
-    match publisher.publish(&req).await {
-        Ok(sha) => {
-            info!(submission_id = %row.id, bpb, commit = %sha, "top model published to GitHub");
-            let rec = TopModelPublication {
-                submission_id: row.id.clone(),
-                arch_id,
-                owner_hotkey: row.miner_hotkey.clone(),
-                bpb,
-                repo_path: TOPMODEL_REPO_PATH.to_owned(),
-                commit_sha: Some(sha),
-            };
-            if let Err(e) = store.record_publication(&rec).await {
-                warn!(submission_id = %row.id, error = %e, "publication journal failed");
+    let mut journaled = false;
+    if let Some(publisher) = publisher {
+        match publisher.publish(&req).await {
+            Ok(sha) => {
+                info!(submission_id = %row.id, bpb, commit = %sha, "top model published to GitHub");
+                let rec = TopModelPublication {
+                    submission_id: row.id.clone(),
+                    arch_id: arch_id.clone(),
+                    owner_hotkey: row.miner_hotkey.clone(),
+                    bpb,
+                    repo_path: TOPMODEL_REPO_PATH.to_owned(),
+                    commit_sha: Some(sha),
+                };
+                if let Err(e) = store.record_publication(&rec).await {
+                    warn!(submission_id = %row.id, error = %e, "publication journal failed");
+                } else {
+                    journaled = true;
+                }
+            }
+            Err(e) => {
+                warn!(submission_id = %row.id, error = %e, "top-model publish failed (will retry on next best)");
             }
         }
-        Err(e) => {
-            warn!(submission_id = %row.id, error = %e, "top-model publish failed (will retry on next best)");
+    }
+    if let Some(hf) = crate::hf::HfTopModelPublisher::from_env() {
+        match hf.publish(&req).await {
+            Ok(oid) => {
+                if !journaled {
+                    let rec = TopModelPublication {
+                        submission_id: row.id.clone(),
+                        arch_id,
+                        owner_hotkey: row.miner_hotkey.clone(),
+                        bpb,
+                        repo_path: format!("hf:{}", hf.repo_id()),
+                        commit_sha: Some(oid),
+                    };
+                    if let Err(e) = store.record_publication(&rec).await {
+                        warn!(submission_id = %row.id, error = %e, "hf publication journal failed");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    submission_id = %row.id,
+                    error = %e,
+                    "top-model HuggingFace publish failed (will retry on next best)"
+                );
+            }
         }
     }
 }

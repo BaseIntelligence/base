@@ -56,7 +56,7 @@ hypertraining B300 tournament code.
 stateDiagram-v2
     [*] --> Queued: POST /v1/submissions
     Queued --> Rejected: pre-pod screens (copy gate / static cheat / similarity)
-    Queued --> Provisioning: worker claims + pre-pod screens pass
+    Queued --> Provisioning: worker claims + pre-pod screens + LLM/agentic pass
     Provisioning --> Running: pod SSH + harness up
     Running --> Reviewing: METRICS_JSON collected
     Reviewing --> AgenticReview: quality + post-pod agentic
@@ -229,8 +229,10 @@ publishes `architecture.py` + `training.py` + `METRICS.json` +
 `ARTIFACT.json` + a `README.md` block to the public
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) repo
 under `top-model/` via the GitHub contents API; large checkpoints upload as
-a mutable Release tag `prism-top-model`. The publication is journaled
-(`prism_topmodel_publication`). Token:
+a mutable Release tag `prism-top-model`. The same trigger also commits
+sources to HuggingFace (`PRISM_TOPMODEL_HF_TOKEN_FILE`, default repo
+`BaseIntelligence/prism-top-model`) when that token file is present. The
+publication is journaled (`prism_topmodel_publication`). GitHub token:
 `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`deploy/secrets/github/token`);
 absent/empty → publish no-op. With `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1`
 (default), a missing/invalid receipt fails the publish (no journal).
@@ -373,7 +375,8 @@ still recorded on every v3 run (it is a G1 input and the shadow score).
 ## Agentic anti-cheat + AST + metrics gate
 
 Before any pod rent, **pre-pod screens** (no GPU, no private eval assets) run
-in order and terminal-reject with `Score(0)` on hit:
+in order and terminal-reject with `Score(0)` on hit (OpenRouter / agentic
+infra errors also fail closed here — they must **never** rent a pod):
 
 1. **Pre-LLM copy gate** — candidate `architecture.py` vs **champions**
    (current top + historical Score>0 ex-tops) from **other miners** (byte hash
@@ -393,13 +396,18 @@ in order and terminal-reject with `Score(0)` on hit:
    Below-threshold `Suspicious` (e.g. 0.7) does not wipe. Parsers coerce
    verdicts whose evidence is only standard LM components (RMSNorm / RoPE /
    SwiGLU / LayerNorm / gated or parallel residual, …).
+4. **LLM quality review** (`prism-review`) — audit-only for the bpb score;
+   infra failure fails closed (no rent).
+5. **Agentic anti-cheat (sources)** — shared `challenge-agentic` loop on
+   architecture / training / tree only (`cheat` / `suspicious` → `Score(0)`,
+   no rent).
 
-After measure, the LLM quality review and the shared `challenge-agentic` loop
-inspect sources + metrics/receipt with read-only tools (`list_dir`,
-`read_file`, `ast_summary`, `ast_diff_nearest`, `read_metrics`) against an
-**architecture-only** corpus of baseline + champions. Final judge is the
-mandatory `submit_verdict` function-call. Agentic must not treat generic
-modern-LM components as plagiarism; AST bands (`≥8500` suspicious /
+After measure, a second **metrics-aware** agentic pass inspects sources +
+metrics/receipt with read-only tools (`list_dir`, `read_file`, `ast_summary`,
+`ast_diff_nearest`, `read_metrics`) against an **architecture-only** corpus
+of baseline + champions (catches `inconsistent_metrics` / eval forge). Final
+judge is the mandatory `submit_verdict` function-call. Agentic must not treat
+generic modern-LM components as plagiarism; AST bands (`≥8500` suspicious /
 `≥9500` cheat) remain the structural copy thresholds.
 
 | Verdict | Leaf effect |

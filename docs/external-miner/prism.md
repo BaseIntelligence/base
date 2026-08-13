@@ -3,7 +3,7 @@
 # Prism challenge — HTTP AutoModel patch submit
 
 **challenge_id:** `prism`  
-**scoring_version:** `2` live (bpb-only; LLM review is an anti-cheat gate, not a grader). **v3 (opt-in, shadow-by-default):** composite scoring runs alongside — your run is also measured on the G1–G8 battery; see *v3 scoring* below.  
+**scoring_version:** `2` live (bpb leaf; LLM review is an anti-cheat gate, not a grader). **v3 harness (default):** every scored run executes the **G1–G8 battery** (leaf score stays bpb while `PRISM_SCORING_MODE=shadow`); see *v3 scoring* below.  
 **recipe_version:** `2.0.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) base + miner unified diff; legacy 1.x layouts rejected on live)  
 **Path:** HTTP only — **no Phala/CVM**
 
@@ -208,7 +208,8 @@ a better valid score supersedes them (WTA still collapses to one leaf winner).
 The global-best model (sources + `ARTIFACT.json` / checkpoint release) is
 published to
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism)
-`top-model/`. See [`PRISM.md`](../PRISM.md).
+`top-model/` and (when configured) a HuggingFace model repo
+`BaseIntelligence/prism-top-model`. See [`PRISM.md`](../PRISM.md).
 
 ## v3 scoring (shadow-by-default)
 
