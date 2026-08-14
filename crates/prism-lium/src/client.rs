@@ -1,20 +1,13 @@
 //! Real Lium HTTPS client + SSH-backed live eval.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use lium_rent_pool::RentPool;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
-
-fn rent_pool() -> &'static RentPool {
-    static POOL: OnceLock<RentPool> = OnceLock::new();
-    POOL.get_or_init(RentPool::new)
-}
 
 use crate::ssh::{
     parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, ssh_exec_stdin,
@@ -174,14 +167,13 @@ impl LiumClient {
                 .text()
                 .await
                 .map_err(|e| LiumError::Transport(sanitize_err(&e.to_string(), &self.api_key)))?;
-            // Rent POSTs are gated by `RentPool` — do not multi-retry (each
-            // attempt burns Lium's 60/h budget). Other endpoints keep backoff.
+            // Rent POSTs: do not multi-retry here — each attempt burns that
+            // API key's Lium budget. Miner BYOK keys are independent; there is
+            // no process-wide rent serialize queue. Other endpoints backoff.
             let is_rent = path.contains("/rent");
             if status.as_u16() == 429 {
                 let secs = retry_after.or_else(|| lium_rent_pool::parse_retry_secs(&text));
-                if is_rent {
-                    rent_pool().note_429(secs.unwrap_or(5));
-                } else if attempt < RATE_LIMIT_RETRIES {
+                if !is_rent && attempt < RATE_LIMIT_RETRIES {
                     attempt = attempt.saturating_add(1);
                     let wait_ms = secs.map_or(RATE_LIMIT_BASE_MS << (attempt - 1).min(3), |s| {
                         s.saturating_mul(1000).max(50)
@@ -870,7 +862,8 @@ impl EvalJobBackend for LiumClient {
                 "lium rent"
             );
             let body = make_body();
-            let permit = rent_pool().take().await;
+            // Fire rent immediately — BYOK keys must not share a process-wide
+            // queue with each other or with an operator fallback key.
             let rented = self
                 .request(
                     reqwest::Method::POST,
@@ -878,12 +871,6 @@ impl EvalJobBackend for LiumClient {
                     Some(&body),
                 )
                 .await;
-            if let Err(e) = &rented {
-                let es = e.to_string();
-                if lium_rent_pool::is_rate_limited(&es) {
-                    permit.rate_limited(&es);
-                }
-            }
             match rented {
                 Ok(v) => {
                     let id = match extract_pod_id(&v) {
@@ -908,9 +895,8 @@ impl EvalJobBackend for LiumClient {
                     last_err = e.to_string();
                     // 429/transport can still leave a PENDING pod under our name.
                     self.reclaim_pods_named(&spec.name).await;
-                    // A rent 429 consumed one of Lium's hourly calls. The pool
-                    // already recorded the cooldown; return after orphan
-                    // cleanup instead of walking more candidates.
+                    // A rent 429 consumed one call on *this* API key's budget.
+                    // Return after orphan cleanup — do not walk more offers.
                     if lium_rent_pool::is_rate_limited(&last_err) {
                         return Err(LiumError::Api(last_err));
                     }

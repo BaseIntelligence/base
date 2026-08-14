@@ -3,9 +3,10 @@
 //! **No Phala CVM.** Live GPU eval is **miner-funded by default** (see
 //! `prism-lium-payer` for `X-Lium-Api-Key` vault + factory). The operator may
 //! still hold `LIUM_API_KEY` for Sim fallback / opt-in operator billing
-//! (`PRISM_ALLOW_OPERATOR_LIUM=1`). Cost guardrails refuse unbounded lifetime /
-//! price **before** any rent call. Every provision path terminates + verifies
-//! on failure.
+//! (`PRISM_ALLOW_OPERATOR_LIUM=1`). Rents are **not** serialized through a
+//! process-wide queue (each BYOK key has its own Lium budget). Cost guardrails
+//! refuse unbounded lifetime / price **before** any rent call. Every provision
+//! path terminates + verifies on failure.
 //!
 //! # Backends
 //!
