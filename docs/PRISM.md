@@ -89,6 +89,17 @@ sweeper remains a **10h** backstop and skips live workers.
 `GET /v1/submissions/{id}/logs?since=` exposes harvested harness tails +
 heartbeats while a pod is measuring.
 
+**Metrics harvest (v3):** the harness writes `METRICS_JSON=` to stdout **and**
+`/tmp/prism_eval/metrics.json`. Master harvest prefers that sidecar (else
+`grep '^METRICS_JSON=' harness.log`) plus terminal markers — it must not rely
+on a fixed-byte `tail` of `harness.log` alone. Battery blobs often exceed
+32 KiB; a tail that keeps `EVAL_OK` but drops the `METRICS_JSON=` prefix
+falsely fails the run after GPU work. Failed rows whose `error_detail` only
+retains a truncated log (no recoverable `bpb` / `metrics_json`) **cannot** be
+offline-recovered from the DB — after deploying this fix, operators
+`POST /v1/submissions/{id}/retry` (admin Bearer) and
+`POST /v1/admin/gating/{hotkey}/reset` so the miner can re-run measure.
+
 Evaluation (Lium / Sim, review, agentic, leaf emit) is **master-only**.
 Validators never run `prism-challenge` — they fetch sealed weights only.
 

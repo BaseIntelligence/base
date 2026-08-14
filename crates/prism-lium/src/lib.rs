@@ -44,7 +44,7 @@ pub use prism_artifacts::{
 };
 pub use prism_lium_harness::{
     classify_log, parse_harness_probe, parse_metrics_output, HarnessProbe, HarnessProgress,
-    HARNESS_ABSENT, TRAIN_DONE_MARKER,
+    HARNESS_ABSENT, HARNESS_HARVEST_CMD, TRAIN_DONE_MARKER,
 };
 pub use sim::SimLiumBackend;
 pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
@@ -115,7 +115,10 @@ pub trait EvalJobBackend: Send + Sync {
     }
 }
 
-/// Tail bytes retained for harness stderr / harvested logs in error_detail.
+/// Tail bytes retained for harness stderr / error_detail snippets.
+///
+/// Live poll harvest uses [`HARNESS_HARVEST_CMD`] (sidecar / full
+/// `METRICS_JSON=` line) and must not apply this cap to the metrics blob.
 pub const HARNESS_LOG_RETAIN_BYTES: usize = 32_768;
 /// Default Lium API base URL.
 pub const LIUM_API_BASE_URL: &str = "https://lium.io/api";

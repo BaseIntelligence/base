@@ -687,6 +687,8 @@ mod tests {
             "eval_tier",
             "checkpoint.pt",
             "run_battery",
+            "metrics.json",
+            "_emit_metrics",
             "cantor",
             "prism_width_multiplier",
             "cheatguard",

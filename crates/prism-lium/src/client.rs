@@ -24,8 +24,8 @@ use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIF
 use prism_lium_harness::{
     classify_log, detach_launch_cmd, eval_assets_dir, harness_env_pairs, harness_upload_tar,
     parse_harness_probe, parse_metrics_output, random_seed_hex, HarnessProgress,
-    EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD, HARNESS_PROBE_CMD,
-    TRAIN_DONE_MARKER,
+    EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
+    HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, TRAIN_DONE_MARKER,
 };
 use prism_lium_types::{CostGuardrailError, LiumError};
 use prism_lium_types::{
@@ -647,11 +647,18 @@ impl LiumClient {
     async fn harvest_logs_inner(&self, instance_id: &str) -> Result<String, LiumError> {
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
-        let cmd = format!(
-            "tail -c {HARNESS_LOG_RETAIN_BYTES} /tmp/prism_eval/harness.log 2>/dev/null || true"
-        );
-        let out = ssh_exec_allow_fail(&target, &key, &cmd, 1, self.ssh.ssh_retry_secs, 45).await?;
-        Ok(truncate_tail(&out.stdout, HARNESS_LOG_RETAIN_BYTES))
+        // Do not truncate: METRICS_JSON may be ≫ HARNESS_LOG_RETAIN_BYTES.
+        // HARNESS_HARVEST_CMD pulls the full metrics line/sidecar + a small log tail.
+        let out = ssh_exec_allow_fail(
+            &target,
+            &key,
+            HARNESS_HARVEST_CMD,
+            1,
+            self.ssh.ssh_retry_secs,
+            45,
+        )
+        .await?;
+        Ok(out.stdout)
     }
 
     async fn gpu_smoke(&self, target: &SshTarget, key: &Path) -> Result<String, LiumError> {

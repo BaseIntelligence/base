@@ -62,6 +62,25 @@ log=0
 echo "STATE=ok alive=$alive done=$done train=$train ready=$ready log=$log"
 "#;
 
+/// Harvest metrics + status markers without relying on a fixed-byte log tail.
+///
+/// v3 `METRICS_JSON=` is often a single line ≫32 KiB (G5/G2 prompts embedded).
+/// A `tail -c 32768` of `harness.log` can keep `EVAL_OK` while dropping the
+/// `METRICS_JSON=` prefix, so classify sees a failed run after hours of GPU.
+/// Prefer the harness sidecar (`metrics.json`), else `grep` the full line.
+pub const HARNESS_HARVEST_CMD: &str = r"set +e
+cd /tmp/prism_eval 2>/dev/null || exit 0
+if [ -f metrics.json ]; then
+  printf 'METRICS_JSON='
+  cat metrics.json
+  printf '\n'
+elif [ -f harness.log ]; then
+  grep -m1 '^METRICS_JSON=' harness.log 2>/dev/null || true
+fi
+grep -E '^(EVAL_OK|CAP_EXCEEDED|PHASE_TRAIN_DONE)$' harness.log 2>/dev/null || true
+tail -c 8192 harness.log 2>/dev/null || true
+";
+
 /// Parsed probe from [`HARNESS_PROBE_CMD`].
 #[derive(Debug, Clone, Copy, Default)]
 #[allow(clippy::struct_excessive_bools)]
@@ -225,5 +244,40 @@ mod tests {
         assert!(cmd.contains("setsid"));
         assert!(cmd.contains("harness.pid"));
         assert!(cmd.contains("DETACH_ALREADY"));
+    }
+
+    #[test]
+    fn classify_log_survives_huge_metrics_json_line() {
+        // Regression: v3 battery METRICS_JSON often ≫32 KiB; a log-tail harvest
+        // that keeps EVAL_OK but drops the METRICS_JSON= prefix must not happen
+        // when the full line is present (sidecar / grep harvest).
+        let pad = "x".repeat(40_000);
+        let metrics = format!(
+            r#"{{"bpb":2.5,"tokens_seen":1,"wall_clock_seconds":1.0,"gpu_type":null,"notes":"{pad}","eval_tier":"public"}}"#
+        );
+        assert!(metrics.len() > 40_000);
+        let log = format!("noise\nMETRICS_JSON={metrics}\nEVAL_OK\n");
+        match classify_log(&log, false, false) {
+            HarnessProgress::Done(m) => assert!((m.bpb - 2.5).abs() < 1e-9),
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // Truncated tail that still has EVAL_OK but lost the METRICS_JSON= prefix
+        // (historical harvest bug) remains Failed — fix is harvest, not parse.
+        let truncated_tail = format!("{}\nEVAL_OK\n", &metrics[metrics.len() - 2000..]);
+        assert!(
+            matches!(
+                classify_log(&truncated_tail, false, false),
+                HarnessProgress::Failed(_)
+            ),
+            "EVAL_OK without METRICS_JSON= prefix must stay Failed"
+        );
+    }
+
+    #[test]
+    fn harvest_cmd_prefers_sidecar_and_greps_metrics() {
+        assert!(HARNESS_HARVEST_CMD.contains("metrics.json"));
+        assert!(HARNESS_HARVEST_CMD.contains("grep -m1 '^METRICS_JSON='"));
+        assert!(HARNESS_HARVEST_CMD.contains("EVAL_OK|CAP_EXCEEDED|PHASE_TRAIN_DONE"));
+        assert!(!HARNESS_HARVEST_CMD.contains("tail -c 32768"));
     }
 }

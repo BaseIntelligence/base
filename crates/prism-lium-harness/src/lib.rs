@@ -12,7 +12,7 @@ use prism_lium_types::LiumError;
 
 pub use detached::{
     classify_log, detach_launch_cmd, parse_harness_probe, parse_metrics_output, HarnessProbe,
-    HarnessProgress, HARNESS_ABSENT, HARNESS_PROBE_CMD, TRAIN_DONE_MARKER,
+    HarnessProgress, HARNESS_ABSENT, HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, TRAIN_DONE_MARKER,
 };
 
 /// Pod-side staging directory for eval assets.
