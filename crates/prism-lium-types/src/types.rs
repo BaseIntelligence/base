@@ -200,6 +200,24 @@ impl GpuPreference {
         }
         usize::MAX / 2
     }
+
+    /// Keep only pin + gpu-count matches, then sort (pin rank, count, price).
+    pub fn filter_sort_offers(&self, offers: &mut Vec<Offer>, requested_gpus: u32) {
+        offers.retain(|o| o.matches_gpu_count(requested_gpus) && self.matches_pin(&o.gpu_type));
+        offers.sort_by(|a, b| {
+            self.rank(&a.gpu_type)
+                .cmp(&self.rank(&b.gpu_type))
+                .then_with(|| {
+                    let ac = effective_gpu_count(a.gpu_count, &a.gpu_type);
+                    let bc = effective_gpu_count(b.gpu_count, &b.gpu_type);
+                    ac.cmp(&bc).then_with(|| {
+                        a.price_per_hour
+                            .partial_cmp(&b.price_per_hour)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                })
+        });
+    }
 }
 
 /// One telemetry point reported by the miner's `training.py` through the

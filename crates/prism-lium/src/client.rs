@@ -393,6 +393,24 @@ impl LiumClient {
         })
     }
 
+    /// Fail-closed: nvidia-smi must report the Prism SKU pin (1× RTX 5090).
+    async fn require_pin_gpu(
+        &self,
+        instance_id: &str,
+        target: &SshTarget,
+        key: &Path,
+    ) -> Result<String, LiumError> {
+        let gpu_type = self.gpu_smoke(target, key).await?;
+        if GpuPreference::default_prism().matches_pin(&gpu_type) {
+            return Ok(gpu_type);
+        }
+        warn!(instance_id, gpu = %gpu_type, "non-pin GPU — terminate for requeue");
+        let _ = self.terminate(instance_id).await;
+        Err(LiumError::Exec(format!(
+            "non-pin GPU ({gpu_type}); Prism requires 1× RTX 5090 — resubmit/retry"
+        )))
+    }
+
     /// Live recipe eval: wait RUNNING → stage harness → **detach** `main.py`
     /// → poll `harness.log` (survives control-plane restart / SSH drop).
     ///
@@ -408,18 +426,7 @@ impl LiumClient {
         let _running = self.wait_until_running(instance_id).await?;
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
-        let gpu_type = self.gpu_smoke(&target, &key).await?;
-        if !GpuPreference::default_prism().matches_pin(&gpu_type) {
-            warn!(
-                instance_id,
-                gpu = %gpu_type,
-                "nvidia-smi reported non-pin GPU — terminate for requeue"
-            );
-            let _ = self.terminate(instance_id).await;
-            return Err(LiumError::Exec(format!(
-                "non-pin GPU ({gpu_type}); Prism requires 1× RTX 5090 — resubmit/retry"
-            )));
-        }
+        let gpu_type = self.require_pin_gpu(instance_id, &target, &key).await?;
         self.ensure_python_deps(&target, &key).await?;
 
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
@@ -464,18 +471,7 @@ impl LiumClient {
         let _running = self.wait_until_running(instance_id).await?;
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
-        let gpu_type = self.gpu_smoke(&target, &key).await?;
-        if !GpuPreference::default_prism().matches_pin(&gpu_type) {
-            warn!(
-                instance_id,
-                gpu = %gpu_type,
-                "resume saw non-pin GPU — terminate for requeue"
-            );
-            let _ = self.terminate(instance_id).await;
-            return Err(LiumError::Exec(format!(
-                "non-pin GPU ({gpu_type}); Prism requires 1× RTX 5090 — resubmit/retry"
-            )));
-        }
+        let gpu_type = self.require_pin_gpu(instance_id, &target, &key).await?;
         let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
         let probe_out =
             ssh_exec_allow_fail(&target, &key, HARNESS_PROBE_CMD, att.max(1), rty, 60).await?;
@@ -551,11 +547,7 @@ impl LiumClient {
                         )));
                     }
                     let mut res = *res;
-                    if res
-                        .gpu_type
-                        .as_deref()
-                        .is_none_or(|g| g.is_empty() || g.eq_ignore_ascii_case("null"))
-                    {
+                    if res.gpu_type.as_deref().is_none_or(|g| g.is_empty()) {
                         if let Some(g) = fill_gpu {
                             res.gpu_type = Some(g.to_owned());
                         }
@@ -827,28 +819,8 @@ impl EvalJobBackend for LiumClient {
         }
 
         let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
-        // Hard-reject multi-GPU hosts when requesting a single GPU (and exact
-        // match otherwise). The old `gpu_count >= requested` filter + rent
-        // fallback to `selected.gpu_count` could silently rent 8×5090.
-        offers.retain(|o| o.matches_gpu_count(spec.gpu_count));
         let pref = GpuPreference::default_prism();
-        // Fail-closed SKU pin: never fall through to 4090/A100/H100 when 5090
-        // rent fails — that is ranking unfair under a wall-clock train cap.
-        offers.retain(|o| pref.matches_pin(&o.gpu_type));
-        offers.sort_by(|a, b| {
-            pref.rank(&a.gpu_type)
-                .cmp(&pref.rank(&b.gpu_type))
-                .then_with(|| {
-                    // Prefer true singles (effective count) then cheaper.
-                    let ac = prism_lium_types::effective_gpu_count(a.gpu_count, &a.gpu_type);
-                    let bc = prism_lium_types::effective_gpu_count(b.gpu_count, &b.gpu_type);
-                    ac.cmp(&bc).then_with(|| {
-                        a.price_per_hour
-                            .partial_cmp(&b.price_per_hour)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                })
-        });
+        pref.filter_sort_offers(&mut offers, spec.gpu_count); // 1×5090 hard pin
         let candidates: Vec<Offer> = match &spec.preferred_offer_id {
             Some(pref_id) => {
                 let matched: Vec<Offer> = offers
@@ -925,11 +897,7 @@ impl EvalJobBackend for LiumClient {
                         Ok(inst) => {
                             let labeled = inst.gpu_type.as_deref().unwrap_or("");
                             if !labeled.is_empty() && !pref.matches_pin(labeled) {
-                                warn!(
-                                    pod_id = %id,
-                                    gpu = %labeled,
-                                    "lium rented non-pin GPU — terminate and try next 5090 offer"
-                                );
+                                warn!(pod_id = %id, gpu = %labeled, "non-pin GPU after rent");
                                 let _ = self.terminate(&id).await;
                                 last_err = format!("non-pin GPU after rent: {labeled}");
                                 continue;
