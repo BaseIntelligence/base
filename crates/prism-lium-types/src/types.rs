@@ -160,7 +160,7 @@ pub struct Instance {
     pub ssh_connect_cmd: Option<String>,
 }
 
-/// Ordered GPU preference list (capability filter, not hard SKU lock).
+/// Ordered GPU preference list — Prism live rents are a **hard SKU pin**.
 #[derive(Debug, Clone, Default)]
 pub struct GpuPreference {
     /// Substrings matched against `Offer.gpu_type` (case-insensitive), first wins.
@@ -168,22 +168,25 @@ pub struct GpuPreference {
 }
 
 impl GpuPreference {
-    /// Default PRISM pin: **RTX 5090 first**, then an explicit ordered
-    /// fallback. The 5090 (Blackwell, 32 GB) is the price/performance sweet
-    /// spot for the ≤350M-param recipe; the fallback chain orders by
-    /// capability so provisioning never silently lands on whatever happens
-    /// to be cheapest when the pin is out of capacity.
+    /// Default PRISM pin: **1× RTX 5090 only** (fail-closed).
+    ///
+    /// Ranking fairness requires a single SKU: wall-capped trains on a slower
+    /// card (e.g. 4090) see fewer tokens → worse bpb. Non-5090 / multi-GPU
+    /// offers are rejected at rent time, not normalized after the fact.
     #[must_use]
     pub fn default_prism() -> Self {
         Self {
-            prefer: vec![
-                "RTX 5090".into(),
-                "B200".into(),
-                "H100".into(),
-                "A100".into(),
-                "RTX 4090".into(),
-            ],
+            prefer: vec!["RTX 5090".into()],
         }
+    }
+
+    /// True when `gpu_type` matches any pin needle (case-insensitive substring).
+    #[must_use]
+    pub fn matches_pin(&self, gpu_type: &str) -> bool {
+        let upper = gpu_type.to_ascii_uppercase();
+        self.prefer
+            .iter()
+            .any(|needle| upper.contains(&needle.to_ascii_uppercase()))
     }
 
     /// Rank offers: lower is better. Unmatched get large rank.
@@ -196,6 +199,24 @@ impl GpuPreference {
             }
         }
         usize::MAX / 2
+    }
+
+    /// Keep only pin + gpu-count matches, then sort (pin rank, count, price).
+    pub fn filter_sort_offers(&self, offers: &mut Vec<Offer>, requested_gpus: u32) {
+        offers.retain(|o| o.matches_gpu_count(requested_gpus) && self.matches_pin(&o.gpu_type));
+        offers.sort_by(|a, b| {
+            self.rank(&a.gpu_type)
+                .cmp(&self.rank(&b.gpu_type))
+                .then_with(|| {
+                    let ac = effective_gpu_count(a.gpu_count, &a.gpu_type);
+                    let bc = effective_gpu_count(b.gpu_count, &b.gpu_type);
+                    ac.cmp(&bc).then_with(|| {
+                        a.price_per_hour
+                            .partial_cmp(&b.price_per_hour)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                })
+        });
     }
 }
 
@@ -344,14 +365,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_prism_pins_5090_first_with_ordered_fallback() {
+    fn default_prism_hard_pins_5090_only() {
         let p = GpuPreference::default_prism();
-        assert_eq!(p.prefer.first().map(String::as_str), Some("RTX 5090"));
-        assert!(p.rank("NVIDIA GeForce RTX 5090") < p.rank("NVIDIA B200"));
-        assert!(p.rank("NVIDIA B200") < p.rank("NVIDIA H100-SXM5-80GB"));
-        assert!(p.rank("NVIDIA H100") < p.rank("NVIDIA A100-SXM4-80GB"));
-        assert!(p.rank("NVIDIA A100") < p.rank("NVIDIA GeForce RTX 4090"));
-        assert!(p.rank("NVIDIA GeForce RTX 4090") < p.rank("NVIDIA L4"));
+        assert_eq!(p.prefer.as_slice(), ["RTX 5090"]);
+        assert!(p.matches_pin("NVIDIA GeForce RTX 5090"));
+        assert!(!p.matches_pin("NVIDIA GeForce RTX 4090"));
+        assert!(!p.matches_pin("NVIDIA H100"));
+        assert!(!p.matches_pin("NVIDIA A100-SXM4-80GB"));
+        assert!(p.rank("NVIDIA GeForce RTX 5090") < p.rank("NVIDIA GeForce RTX 4090"));
     }
 
     #[test]

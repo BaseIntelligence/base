@@ -131,8 +131,12 @@ pub async fn finish_measure(
         tokio::time::sleep(Duration::from_secs(5)).await;
         termination_verified = backend.verify_terminated(pod_id).await.unwrap_or(false);
     }
-    if let Some(p) = payer {
-        p.vault.remove(id);
+    // Keep BYOK seal on measure Err so auto-/miner-retry can re-rent.
+    // Drop only after a successful metrics harvest (pod already terminated).
+    if metrics.is_ok() {
+        if let Some(p) = payer {
+            p.vault.remove(id);
+        }
     }
     let receipt = EvalReceipt {
         provider,

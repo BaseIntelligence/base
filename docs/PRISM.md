@@ -79,7 +79,9 @@ not SIGHUP GPU work. On boot (and every ~30s) orphan reconcile is
 **resume-first**: mid-flight `provisioning`/`running` rows whose Lium pod is
 still alive and whose BYOK key can be restored from the sealed vault
 (`PRISM_PAYER_VAULT_DIR`, default TTL ≥**36h** / train+eval+skew; heartbeats
-re-seal) are requeued with `pod_id` kept — the orchestrator reattaches
+re-seal; measure start refreshes the seal and **measure Err keeps the vault
+entry** so auto-/miner-retry can re-rent) are requeued with `pod_id` kept — the
+orchestrator reattaches
 (log/event poll → wait terminal → harvest → score) without terminating the
 pod. Only unreattachable rows fail-closed (`control_plane_restart` /
 `harness_detached`) with best-effort terminate. Post-measure review stages
@@ -551,7 +553,7 @@ the harness semantics listed above, and the baseline sources they may reuse.
 
 | Dimension | Real | Fallback |
 |-----------|------|----------|
-| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`) | `SimLiumBackend` |
+| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`). **Hard pin: 1× RTX 5090** (non-5090 / multi-GPU rejected at rent; no silent fallback) | `SimLiumBackend` |
 | Reviewer | `/run/base/openrouter/api_key` exists → OpenRouter LLM | `SimReviewer` (deterministic) |
 | Agentic | same OpenRouter key → `OpenRouterAgent` | `SimAgent` (AST + metrics heuristics) |
 | Store | `BASE_DATABASE_URL` set → Postgres w/ migrations | in-memory (dev only) |
