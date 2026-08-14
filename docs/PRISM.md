@@ -115,8 +115,8 @@ verdicts are terminal `rejected` (no retry). Retries of a **post-run** failure
 (`llm_infra` / `ast_infra` after the pod job completed) resume from the
 persisted measurement — the train+eval job is never re-run for a master-side
 review failure; only `install` retries re-provision. Lium **HTTP 429** on rent is
-special: `lium-rent-pool` serializes rents (≤**3 / 5s**, ≤**60 / hour**),
-waits on `Retry-After` / body hints, and the orchestrator **requeues without
+special: each miner `X-Lium-Api-Key` has its **own** Lium budget (no shared
+process-wide rent serialize queue). The orchestrator **requeues without
 burning** `retry_count` / gating attempts. A background tick re-queues
 failed 429 rows from the last **6 hours**. After an infra `blocked`, the
 miner may **resubmit for up to 30 minutes** (new `POST /v1/submissions` or
