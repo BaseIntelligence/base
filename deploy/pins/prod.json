@@ -1,8 +1,8 @@
 {
-  "commit_sha": "9290fa559bec443acf4dba7126df4c9d175fc128",
+  "commit_sha": "a121445b2ae57aab632aef4f6dba6f27692e24c7",
   "env": "prod",
   "previous": {
-    "commit_sha": "2205571abb09e2544c614b606af6dad2682f481f",
+    "commit_sha": "9290fa559bec443acf4dba7126df4c9d175fc128",
     "services": {
       "design-challenge": {
         "digest": "sha256:a0c145924c05efdce699e26218d867efbce309fe625fb7d88f6b2820c51a2c27",
@@ -15,8 +15,8 @@
         "repository": "ghcr.io/baseintelligence/base/gateway"
       },
       "prism-challenge": {
-        "digest": "sha256:dfba32224209d188e5ec7cdd864298121efb78ec1c2450cb714b3194a7684081",
-        "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:dfba32224209d188e5ec7cdd864298121efb78ec1c2450cb714b3194a7684081",
+        "digest": "sha256:919e708f83b126d35eefb63148499cd4a6c19b540811087fe4956d411bb06fdb",
+        "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:919e708f83b126d35eefb63148499cd4a6c19b540811087fe4956d411bb06fdb",
         "repository": "ghcr.io/baseintelligence/base/prism-challenge"
       },
       "updater": {
@@ -30,7 +30,7 @@
         "repository": "ghcr.io/baseintelligence/base/validator"
       }
     },
-    "updated_at": "2026-08-13T18:26:22Z"
+    "updated_at": "2026-08-14T04:34:59Z"
   },
   "services": {
     "design-challenge": {
@@ -44,8 +44,8 @@
       "repository": "ghcr.io/baseintelligence/base/gateway"
     },
     "prism-challenge": {
-      "digest": "sha256:919e708f83b126d35eefb63148499cd4a6c19b540811087fe4956d411bb06fdb",
-      "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:919e708f83b126d35eefb63148499cd4a6c19b540811087fe4956d411bb06fdb",
+      "digest": "sha256:7c606051527d8d0555324f67a65e474960457d97b5ba22d3d44ffa7a473a1806",
+      "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:7c606051527d8d0555324f67a65e474960457d97b5ba22d3d44ffa7a473a1806",
       "repository": "ghcr.io/baseintelligence/base/prism-challenge"
     },
     "updater": {
@@ -59,5 +59,5 @@
       "repository": "ghcr.io/baseintelligence/base/validator"
     }
   },
-  "updated_at": "2026-08-14T04:34:59Z"
+  "updated_at": "2026-08-14T08:34:45Z"
 }
