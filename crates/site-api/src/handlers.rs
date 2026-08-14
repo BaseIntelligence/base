@@ -1368,7 +1368,10 @@ mod tests {
         assert_eq!(v[0]["id"], "gpt2-large-774m");
         assert_eq!(v[0]["paramsM"], 774.0);
         assert!(v[0]["bpb"].as_f64().unwrap() > 1.0);
-        assert!(v[0]["disclaimer"].as_str().unwrap().contains("Prism-protocol"));
+        assert!(v[0]["disclaimer"]
+            .as_str()
+            .unwrap()
+            .contains("Prism-protocol"));
 
         let (s, v) = call(app, "/v1/site/arenas/prism/submissions/nope").await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
