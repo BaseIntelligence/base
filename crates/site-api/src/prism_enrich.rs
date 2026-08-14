@@ -11,36 +11,39 @@ use site_types::{
 use site_data::map::{prism_submission, prism_telemetry};
 use site_types::LeaderboardRow;
 
-/// EleutherAI lm-evaluation-harness (canonical published GPT-2 Small table).
-pub const GPT2_SOURCE_URL: &str = "https://github.com/EleutherAI/lm-evaluation-harness";
+/// HuggingFace model card for the GPT-2 Large reference weights.
+pub const GPT2_SOURCE_URL: &str = "https://huggingface.co/gpt2-large";
 
-/// Public disclaimer for the GPT-2 reference row.
-pub const GPT2_DISCLAIMER: &str = "Public GPT-2 Small (124M) — literature / Eleuther-style numbers; not a Prism-protocol run. BPB omitted: published GPT-2 bit-per-byte figures are not comparable to Prism validation BPB.";
+/// Public disclaimer for the GPT-2 Large Prism-protocol reference row.
+pub const GPT2_DISCLAIMER: &str = "Public GPT-2 Large (774M) — Prism-protocol eval-only on 1×RTX 5090 (HF `gpt2-large` weights, public eval pack, `PRISM_TEST_EVAL_CAPS=0`). Not a miner train; G6 has no train probe curve; G8 µP width knob unsupported (floor 0).";
 
-/// GPT-2 Small parameter count (millions).
-pub const GPT2_SMALL_PARAMS_M: f64 = 124.0;
+/// GPT-2 Large parameter count (millions) — measured `n_params` / 1e6.
+pub const GPT2_LARGE_PARAMS_M: f64 = 774.0;
 
-/// HellaSwag `acc_norm` for gpt2 (Eleuther harness; commonly cited 31.14%).
-pub const GPT2_HELLASWAG: f64 = 0.3114;
-/// ARC-Easy `acc` (zero-shot Eleuther-style gpt2).
-pub const GPT2_ARC_EASY: f64 = 0.4381;
-/// ARC-Challenge `acc_norm` (zero-shot Eleuther-style gpt2).
-pub const GPT2_ARC_CHALLENGE: f64 = 0.2270;
-/// PIQA `acc_norm` (zero-shot Eleuther-style gpt2).
-pub const GPT2_PIQA: f64 = 0.6251;
-/// WinoGrande `acc` (zero-shot Eleuther-style gpt2).
-pub const GPT2_WINOGRANDE: f64 = 0.5162;
-/// BoolQ `acc` (zero-shot Eleuther-style gpt2).
-pub const GPT2_BOOLQ: f64 = 0.6012;
+/// Measured Prism validation BPB (frozen FineWeb-edu val cut, gpt2 tokenizer).
+pub const GPT2_BPB: f64 = 4.163_851_322_121_356_4;
+
+/// HellaSwag `org.g2.hellaswag_acc` (Prism public pack).
+pub const GPT2_HELLASWAG: f64 = 0.395;
+/// ARC-Easy `org.g2.arc_easy_acc`.
+pub const GPT2_ARC_EASY: f64 = 0.28;
+/// ARC-Challenge `org.g2.arc_challenge_acc`.
+pub const GPT2_ARC_CHALLENGE: f64 = 0.28;
+/// PIQA `org.g2.piqa_acc`.
+pub const GPT2_PIQA: f64 = 0.69;
+/// WinoGrande `org.g2.winogrande_acc`.
+pub const GPT2_WINOGRANDE: f64 = 0.545;
+/// BoolQ `org.g2.boolq_acc`.
+pub const GPT2_BOOLQ: f64 = 0.64;
 
 /// Frozen public GPT-2 baseline(s) for `GET …/references`.
 #[must_use]
 pub fn prism_reference_baselines() -> Vec<PrismReferenceBaseline> {
     vec![PrismReferenceBaseline {
-        id: "gpt2-small-124m".into(),
-        label: "Public GPT-2 Small (124M)".into(),
-        params_m: GPT2_SMALL_PARAMS_M,
-        bpb: None,
+        id: "gpt2-large-774m".into(),
+        label: "Public GPT-2 Large (774M)".into(),
+        params_m: GPT2_LARGE_PARAMS_M,
+        bpb: Some(GPT2_BPB),
         benchmarks: PrismBenchmarks {
             hellaswag: Some(GPT2_HELLASWAG),
             arc_easy: Some(GPT2_ARC_EASY),
@@ -490,13 +493,16 @@ mod tests {
     }
 
     #[test]
-    fn gpt2_baseline_has_no_prism_bpb() {
+    fn gpt2_baseline_is_prism_protocol_large() {
         let refs = prism_reference_baselines();
         assert_eq!(refs.len(), 1);
-        assert!(refs[0].bpb.is_none());
-        assert!((refs[0].params_m - 124.0).abs() < f64::EPSILON);
+        assert_eq!(refs[0].id, "gpt2-large-774m");
+        assert!(refs[0].bpb.is_some());
+        assert!((refs[0].bpb.unwrap() - GPT2_BPB).abs() < 1e-9);
+        assert!((refs[0].params_m - 774.0).abs() < f64::EPSILON);
         assert!((refs[0].benchmarks.hellaswag.unwrap() - GPT2_HELLASWAG).abs() < f64::EPSILON);
-        assert!(refs[0].disclaimer.contains("not a Prism-protocol"));
+        assert!(refs[0].disclaimer.contains("Prism-protocol"));
+        assert!(refs[0].source_url.contains("gpt2-large"));
     }
 
     #[test]

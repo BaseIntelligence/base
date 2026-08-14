@@ -1365,10 +1365,13 @@ mod tests {
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/references").await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v.as_array().unwrap().len(), 1);
-        assert_eq!(v[0]["id"], "gpt2-small-124m");
-        assert_eq!(v[0]["paramsM"], 124.0);
-        assert!(v[0].get("bpb").is_none());
-        assert!(v[0]["disclaimer"].as_str().unwrap().contains("not a Prism"));
+        assert_eq!(v[0]["id"], "gpt2-large-774m");
+        assert_eq!(v[0]["paramsM"], 774.0);
+        assert!(v[0]["bpb"].as_f64().unwrap() > 1.0);
+        assert!(v[0]["disclaimer"]
+            .as_str()
+            .unwrap()
+            .contains("Prism-protocol"));
 
         let (s, v) = call(app, "/v1/site/arenas/prism/submissions/nope").await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{v}");

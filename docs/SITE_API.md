@@ -59,10 +59,10 @@ Additional Prism routes:
 | Path | Response |
 |------|----------|
 | `GET /v1/site/arenas/prism/submissions/{id}` | `PrismSubmissionDetail` — list fields + `eval` summary (status, groups, gates, composite) + telemetry + public `review` / `similarity` (quality/kind only). **No** raw patch text. |
-| `GET /v1/site/arenas/prism/references` | `PrismReferenceBaseline[]` — frozen **published** GPT-2 Small (124M) Eleuther-style accuracies + `sourceUrl` / `disclaimer`. **`bpb` omitted** (not Prism-protocol BPB). |
+| `GET /v1/site/arenas/prism/references` | `PrismReferenceBaseline[]` — frozen **Prism-protocol** GPT-2 Large (774M) reference: measured val **`bpb`** + G2 benches (`hellaswag` / `arcEasy` / …) from a 1×RTX 5090 eval-only run on the public pack + HF `gpt2-large` weights. Includes `sourceUrl` / `disclaimer`. |
 | `GET /v1/site/arenas/prism/submissions/{id}/telemetry` | Existing loss-curve payload (also embedded on detail). |
 
-GPT-2 constants live in `crates/site-api` (`prism_enrich`) so API and FE stay aligned; they are literature / Eleuther harness numbers, not a Prism battery run. List/leaderboard row shells still map in `crates/site-data`.
+GPT-2 Large constants live in `crates/site-api` (`prism_enrich`) so API and FE stay aligned; they are **measured Prism-protocol** numbers (eval-only, public pack), not Eleuther literature tables. List/leaderboard row shells still map in `crates/site-data`.
 
 `GET /v1/site/arenas/{slug}/submissions` and `/leaderboard` accept optional
 `?q=` — case-insensitive substring over miner hotkey (SS58 or hex), handle,
