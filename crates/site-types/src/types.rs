@@ -416,22 +416,22 @@ pub struct PrismSubmissionDetail {
     pub similarity: Option<PrismPublicSimilarity>,
 }
 
-/// Frozen public literature baseline (not a miner submission).
+/// Frozen public reference baseline (not a miner submission).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrismReferenceBaseline {
-    /// Stable id (`gpt2-small-124m`).
+    /// Stable id (`gpt2-large-774m`).
     pub id: String,
     /// Display label.
     pub label: String,
     /// Parameters in millions.
     pub params_m: f64,
-    /// Prism-protocol BPB is intentionally omitted (not comparable).
+    /// Prism-protocol validation BPB when measured on the same harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bpb: Option<f64>,
-    /// Literature / Eleuther-style accuracies.
+    /// G2 benches (`org.g2.*`) from the Prism public pack.
     pub benchmarks: PrismBenchmarks,
-    /// Canonical source for the published numbers.
+    /// Canonical source for the weights / protocol notes.
     pub source_url: String,
     /// Short disclaimer shown under the board / in the modal.
     pub disclaimer: String,
