@@ -362,6 +362,35 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
+    async fn fail_or_retry_measure(&self, row: &SubmissionState, err: String) -> Result<(), String> {
+        let msg = format!("measure: {err}");
+        // Harness EVAL_FAIL is miner/model code, not Lium infra — do not burn
+        // auto-retries (BYOK seal is kept on Err; see finish_measure).
+        if msg.contains("EVAL_FAIL") {
+            fail_terminal(
+                self.store.as_ref(),
+                self.gating.as_ref(),
+                row,
+                "install",
+                &msg,
+            )
+            .await;
+            return Ok(());
+        }
+        if self.maybe_auto_retry(row, "install", &msg).await {
+            return Ok(());
+        }
+        fail_terminal(
+            self.store.as_ref(),
+            self.gating.as_ref(),
+            row,
+            "install",
+            &msg,
+        )
+        .await;
+        Ok(())
+    }
+
     pub async fn run_row(&self, row: SubmissionState) -> Result<(), String> {
         let id = row.id.clone();
         let _active = self.active.enter(&id);
@@ -377,35 +406,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         };
         let (metrics, receipt) = match measured {
             Ok((m, r)) => (Some(m), Some(r)),
-            Err(e) => {
-                let msg = format!("measure: {e}");
-                // Harness EVAL_FAIL is miner/model code, not Lium infra — do not
-                // burn auto-retries (and never drop the BYOK seal on Err; see
-                // finish_measure).
-                if msg.contains("EVAL_FAIL") {
-                    fail_terminal(
-                        self.store.as_ref(),
-                        self.gating.as_ref(),
-                        &row,
-                        "install",
-                        &msg,
-                    )
-                    .await;
-                    return Ok(());
-                }
-                if self.maybe_auto_retry(&row, "install", &msg).await {
-                    return Ok(());
-                }
-                fail_terminal(
-                    self.store.as_ref(),
-                    self.gating.as_ref(),
-                    &row,
-                    "install",
-                    &msg,
-                )
-                .await;
-                return Ok(());
-            }
+            Err(e) => return self.fail_or_retry_measure(&row, e).await,
         };
 
         if self.cap_terminal(&row, metrics.as_ref()).await {
