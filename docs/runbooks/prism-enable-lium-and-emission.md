@@ -19,6 +19,17 @@
    seal). Prefer rolling the challenge image when no pods are in
    `provisioning`/`running`, or accept resume after boot.
 
+## Failed measure with EVAL_OK but no metrics (ops)
+
+If `error_detail` ends with cheatguard / `EVAL_OK` but has no parseable
+`METRICS_JSON=` / `bpb` (historical 32 KiB log-tail harvest bug), the row is
+**not** recoverable from Postgres alone — `metrics_json` was never written.
+After deploying the sidecar/grep harvest fix:
+
+1. `POST /v1/submissions/{id}/retry` with Prism admin Bearer (re-queues measure).
+2. `POST /v1/admin/gating/{hotkey}/reset` if the miner is still 1-max gated.
+3. Miner (or operator with sealed BYOK vault) must fund another Lium run.
+
 ## Emission ceremony (shared with design)
 
 Trust root today: **`prism = 5000` bps**, **`design = 5000` bps** (sum must stay

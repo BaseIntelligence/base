@@ -14,7 +14,8 @@ collect pod manifest -> spawn the miner subprocess (`unshare --net --
 python3 -m prismlib.miner_entry ctx.json` when available; plain subprocess
 fallback with a loud warning) -> read its one-line JSON result from the
 dedicated FD -> print `METRICS_JSON={...}` (v2) and `EVAL_OK` (or stage
-line + EVAL_FAIL).
+line + EVAL_FAIL). Also writes `/tmp/prism_eval/metrics.json` so Lium
+harvest can recover blobs larger than a fixed log-tail window.
 
 AutoModel fixture/sim (`PRISM_AUTOMODEL_FIXTURE=1`) exercises staging +
 entry gates only — never treat fixture markers as proof of a real train.
@@ -95,6 +96,9 @@ BUILD_TIMEOUT_S = float_env("PRISM_BUILD_TIMEOUT_S", 900.0)
 SCORE_TIMEOUT_S = float_env("PRISM_SCORE_TIMEOUT_S", 1800.0)
 EVAL_TIMEOUT_S = float_env("PRISM_EVAL_TIMEOUT_S", 3 * 3600.0)
 WORKDIR = os.environ.get("PRISM_WORKDIR", "/tmp/prism_eval")
+# Sidecar for Lium harvest: v3 METRICS_JSON lines can exceed the historical
+# 32 KiB log-tail window; master greps this file (or the full log line).
+METRICS_SIDECAR = os.path.join(WORKDIR, "metrics.json")
 # Two-phase private-tier staging (E5): with `$PRISM_EVAL_ASSETS_DIR` set the
 # parent announces train-done by printing this exact bare line (the Lium
 # client matches it as a raw line — a `log()` prefix would not match) and
@@ -211,6 +215,22 @@ def _jit_caches_reset():
         pass
 
 
+def _emit_metrics(out):
+    """Print `METRICS_JSON=` and write `metrics.json` sidecar for harvest.
+
+    Battery blobs often exceed the historical 32 KiB harness.log tail window;
+    the Lium client prefers this sidecar (else greps the full log line).
+    """
+    blob = json.dumps(out)
+    try:
+        os.makedirs(WORKDIR, exist_ok=True)
+        with open(METRICS_SIDECAR, "w", encoding="utf-8") as f:
+            f.write(blob)
+    except OSError:
+        pass
+    print("METRICS_JSON=" + blob)
+
+
 def _cap_exceeded_out(payload, manifest, t_start):
     """Miner-attributable parameter-cap breach: machine-readable terminal.
 
@@ -233,7 +253,7 @@ def _cap_exceeded_out(payload, manifest, t_start):
         "pod_manifest": manifest,
         "harness_files_sha256": manifest_mod.harness_files_sha256(),
     }
-    print("METRICS_JSON=" + json.dumps(out))
+    _emit_metrics(out)
     print("CAP_EXCEEDED")
     log(f"parameter cap exceeded: {payload.get('error', '')[:200]}")
 
@@ -397,7 +417,7 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
         "inference_traces": epayload.get("inference_traces") or {},
     }
     _cheatguard_call("post_eval", out)
-    print("METRICS_JSON=" + json.dumps(out))
+    _emit_metrics(out)
     print("EVAL_OK")
     log(f"v3 eval complete in {time.time()-t_start:.0f}s")
 
@@ -417,30 +437,27 @@ def _run_automodel_fixture_stub(t_start):
         fail("automodel_fixture", exc)
     manifest = prep["automodel"]
     unshare = probe_unshare()
-    print(
-        "METRICS_JSON="
-        + json.dumps(
-            {
-                "bpb": 0.0,
-                "tokens_seen": 0,
-                "wall_clock_seconds": time.time() - t_start,
-                "gpu_type": os.environ.get("PRISM_GPU_TYPE", "sim-fixture"),
-                "notes": "automodel fixture stub — not real train proof",
-                "val_rows": 0,
-                "n_params": 0,
-                "recipe": RECIPE_VERSION,
-                "metrics_version": 2,
-                "automodel_stub": True,
-                "real_train": False,
-                "netns": bool(unshare.get("available")),
-                "automodel": {
-                    "base": manifest.get("base"),
-                    "entry": manifest.get("entry"),
-                    "mode": manifest.get("mode"),
-                },
-                "harness_files_sha256": manifest_mod.harness_files_sha256(),
-            }
-        )
+    _emit_metrics(
+        {
+            "bpb": 0.0,
+            "tokens_seen": 0,
+            "wall_clock_seconds": time.time() - t_start,
+            "gpu_type": os.environ.get("PRISM_GPU_TYPE", "sim-fixture"),
+            "notes": "automodel fixture stub — not real train proof",
+            "val_rows": 0,
+            "n_params": 0,
+            "recipe": RECIPE_VERSION,
+            "metrics_version": 2,
+            "automodel_stub": True,
+            "real_train": False,
+            "netns": bool(unshare.get("available")),
+            "automodel": {
+                "base": manifest.get("base"),
+                "entry": manifest.get("entry"),
+                "mode": manifest.get("mode"),
+            },
+            "harness_files_sha256": manifest_mod.harness_files_sha256(),
+        }
     )
     print("AUTOMODEL_FIXTURE_OK")
     # Deliberately no EVAL_OK — fixture markers are not scored proof.
@@ -600,7 +617,7 @@ def main():
         "harness_files_sha256": manifest_mod.harness_files_sha256(),
         "tokenizer": payload.get("tokenizer", {}),
     }
-    print("METRICS_JSON=" + json.dumps(out))
+    _emit_metrics(out)
     print("EVAL_OK")
     log(f"eval complete in {time.time()-t_start:.0f}s")
 
