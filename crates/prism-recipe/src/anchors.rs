@@ -28,8 +28,22 @@ use thiserror::Error;
 /// Embedded v0 anchor set (PLACEHOLDER values — see module docs).
 pub const ANCHOR_SET_V0_JSON: &str = include_str!("../anchors/v0.json");
 
-/// Latest anchor-set version known to this build.
-pub const LATEST_ANCHOR_VERSION: u16 = 0;
+/// Embedded v1 anchor set (Prism **v2.1** additions; PLACEHOLDER values).
+///
+/// v1 = v0 plus two battery keys — `org.g7.reasoning_throughput`
+/// (compute-normalized reasoning) and `org.g8.mup_scaling_slope` (local
+/// scaling-exponent probe) — with identical group weights, gates, mirror
+/// and bootstrap parameters. Selected at runtime via `PRISM_ANCHOR_VERSION`
+/// (default 0); like every placeholder set it must be measured on the E6
+/// baselines and pre-registered before scoring against it.
+pub const ANCHOR_SET_V1_JSON: &str = include_str!("../anchors/v1.json");
+
+/// Latest anchor-set version known to this build (v2.1 additions).
+pub const LATEST_ANCHOR_VERSION: u16 = 1;
+
+/// The anchor-set version live scoring defaults to (`PRISM_ANCHOR_VERSION`
+/// absent). Stays 0 until v1 anchors are measured + pre-registered.
+pub const DEFAULT_ANCHOR_VERSION: u16 = 0;
 
 /// Per-metric normalization descriptor (research/12 §7 step 1).
 ///
@@ -185,6 +199,7 @@ impl AnchorSet {
     pub fn canonical_json(version: u16) -> Result<&'static str, AnchorError> {
         match version {
             0 => Ok(ANCHOR_SET_V0_JSON),
+            1 => Ok(ANCHOR_SET_V1_JSON),
             v => Err(AnchorError::UnknownVersion(v)),
         }
     }
@@ -284,6 +299,52 @@ mod tests {
             AnchorSet::prereg_hash_for(99),
             Err(AnchorError::UnknownVersion(99))
         ));
+    }
+
+    #[test]
+    fn v1_is_v0_plus_the_two_v21_keys() {
+        let v0 = AnchorSet::load(0).expect("v0 parses");
+        let v1 = AnchorSet::load(1).expect("v1 parses");
+        assert_eq!(v1.version, 1);
+        assert_eq!(v1.status, "placeholder");
+        assert_eq!(AnchorSet::latest().expect("latest").version, 1);
+        assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
+
+        // Identical group weights, gates, mirror, bootstrap.
+        for key in v0.groups.keys() {
+            let (a, b) = (&v0.groups[key], &v1.groups[key]);
+            assert!((a.weight - b.weight).abs() < 1e-12, "{key} weight moved");
+        }
+        assert_eq!(v0.gates, v1.gates);
+        assert_eq!(v0.mirror, v1.mirror);
+        assert_eq!(v0.bootstrap, v1.bootstrap);
+
+        // Exactly two additions, both placeholder-marked.
+        let keys = |s: &AnchorSet| -> Vec<String> {
+            s.groups
+                .values()
+                .flat_map(|g| g.metrics.keys().cloned())
+                .collect()
+        };
+        let (k0, k1) = (keys(&v0), keys(&v1));
+        assert_eq!(k1.len(), k0.len() + 2);
+        for added in ["org.g7.reasoning_throughput", "org.g8.mup_scaling_slope"] {
+            assert!(k1.iter().any(|k| k == added), "{added} missing from v1");
+            assert!(!k0.iter().any(|k| k == added), "{added} must not be in v0");
+        }
+        let slope = &v1.groups["g8"].metrics["org.g8.mup_scaling_slope"];
+        assert_eq!(slope.status.as_deref(), Some("placeholder"));
+        assert!(matches!(
+            slope.norm,
+            NormKind::EfficiencyLogRatio { reference, cap }
+                if reference > 0.0 && cap > reference
+        ));
+
+        // Distinct canonical bytes ⇒ distinct pre-registration hashes.
+        assert_ne!(
+            AnchorSet::prereg_hash_for(0).expect("v0 hash"),
+            AnchorSet::prereg_hash_for(1).expect("v1 hash")
+        );
     }
 
     #[test]

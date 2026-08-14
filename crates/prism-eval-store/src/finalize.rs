@@ -60,6 +60,40 @@ impl AnchorInput {
         }
     }
 
+    /// The embedded v1 placeholder set (Prism v2.1 battery additions:
+    /// `org.g7.reasoning_throughput` + `org.g8.mup_scaling_slope`; canonical
+    /// bytes shared with `prism-recipe/anchors/v1.json`).
+    #[must_use]
+    pub fn v1_placeholder() -> Self {
+        Self {
+            canonical_json: include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../prism-recipe/anchors/v1.json"
+            ))
+            .to_owned(),
+            status: "placeholder".into(),
+        }
+    }
+
+    /// Anchor set selected by `PRISM_ANCHOR_VERSION` (`0` default → v0,
+    /// bit-identical live behavior; `1` → the v2.1 set). Unknown values
+    /// fail safe to v0 with a warning — never a new scoring surface by
+    /// accident.
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("PRISM_ANCHOR_VERSION").ok().as_deref() {
+            Some("1") => Self::v1_placeholder(),
+            None | Some("0") => Self::v0_placeholder(),
+            Some(other) => {
+                tracing::warn!(
+                    value = other,
+                    "unknown PRISM_ANCHOR_VERSION; falling back to v0"
+                );
+                Self::v0_placeholder()
+            }
+        }
+    }
+
     /// Pre-registration hash: sha256 hex over the canonical bytes.
     #[must_use]
     pub fn prereg_hash(&self) -> String {
@@ -124,8 +158,10 @@ pub async fn finalize_composite(
 /// Orchestrator-facing wrapper (E7): `None` when no store is attached (the
 /// default — the v2 path stays bit-identical) or the blob is absent, and
 /// warn + `None` on store/finalize faults — shadow mode is unaffected and
-/// composite mode fails closed to 0 in `final_lattice` by design. Uses the
-/// embedded v0 placeholder anchor set until registry-driven anchors land.
+/// composite mode fails closed to 0 in `final_lattice` by design. The
+/// anchor set follows `PRISM_ANCHOR_VERSION` (default 0 = the embedded v0
+/// placeholder; `1` selects the v2.1 set) until registry-driven anchors
+/// land.
 pub async fn finalize_for_submission(
     store: Option<&Arc<dyn EvalStore>>,
     submission_id: &str,
@@ -134,7 +170,7 @@ pub async fn finalize_for_submission(
     let (Some(store), Some(blob)) = (store, metrics_v2) else {
         return None;
     };
-    match finalize_composite(store, submission_id, blob, &AnchorInput::v0_placeholder()).await {
+    match finalize_composite(store, submission_id, blob, &AnchorInput::from_env()).await {
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::warn!(submission_id, error = %e, "composite finalize failed (skipped)");

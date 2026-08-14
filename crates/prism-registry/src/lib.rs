@@ -26,7 +26,11 @@ mod hooks;
 mod publish;
 mod weights;
 
-pub use competition::{apply_wta, competition_scores, OWNER_ARCH_CREDIT_ENABLED};
+pub use competition::{
+    apply_emission, apply_owner_split, apply_top3_decay, apply_wta, competition_scores,
+    emission_leaves, owner_split_bps_from_env, EmissionMode, OWNER_ARCH_CREDIT_ENABLED,
+    TOP3_DECAY_BPS,
+};
 pub use hf::HfTopModelPublisher;
 pub use hooks::post_score_hooks;
 pub use publish::{

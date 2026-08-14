@@ -248,8 +248,15 @@ pub fn build_epoch_leaves(
     batch: &[EpochScoreRow],
     arch_owners: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<Hotkey, LeafV1>, EmitError> {
-    let by_miner =
-        prism_registry::apply_wta(prism_registry::competition_scores(batch, arch_owners));
+    // v2.1 knobs (both default to the historical bit-identical WTA path):
+    // `PRISM_EMISSION_MODE` (`wta` | `top3`) and
+    // `PRISM_OWNER_ARCH_CREDIT_BPS` (0..=5000, owner split of the winner).
+    let by_miner = prism_registry::emission_leaves(
+        batch,
+        arch_owners,
+        prism_registry::EmissionMode::from_env(),
+        prism_registry::owner_split_bps_from_env(),
+    );
     let mut scores: BTreeMap<Hotkey, ScoreOrAbsence> = BTreeMap::new();
     let mut expected_set: BTreeSet<Hotkey> = BTreeSet::new();
     for p in &expected.participants {

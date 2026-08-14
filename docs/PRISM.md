@@ -1,7 +1,7 @@
 # PRISM challenge (Base)
 
 **challenge_id:** `prism`  
-**scoring_version:** `4` live (equal-weight **G2 public-suite accuracies** → lattice; tokenizer length no longer farms the leaf). Legacy: `2` = pure bits/token bpb (`PRISM_SCORING_MODE=shadow`); `3` = full G1–G8 composite (`composite`, anchors required). Default mode is `benchmarks`. See **v4 G2 benchmark scoring** and **v3 composite scoring** below.  
+**scoring_version:** `4` live (equal-weight **G2 public-suite accuracies** → lattice; tokenizer length no longer farms the leaf). Legacy: `2` = pure bits/token bpb (`PRISM_SCORING_MODE=shadow`); `3` = full G1–G8 composite (`composite`, anchors required). Default mode is `benchmarks`. See **v4 G2 benchmark scoring** and **v3 composite scoring** below. **v2.1 additions (opt-in, default-off):** emission economics (`PRISM_EMISSION_MODE`, `PRISM_OWNER_ARCH_CREDIT_BPS`) + battery/anchor additions (`PRISM_ANCHOR_VERSION`, anchor sets v1/v2). See **v2.1 innovation-scoring additions** below.  
 **recipe_version:** `2.0.0` (pinned NeMo AutoModel base + miner unified diff; legacy **1.x** two-script / source-tree layouts rejected on live — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))  
 **port:** `8092`  
 **emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
@@ -193,7 +193,10 @@ absences do not carry. A manually retried + re-scored row re-enters the outbox
 no *new* outbox rows; the first epoch after recovery still includes active
 positive scores plus any backlog (seals always pin fresh epochs — stale
 bundles can never Match on-chain). Run **exactly one** prism-challenge emitter
-instance per netuid (single master topology).
+instance per netuid (single master topology). The WTA collapse is the
+default emission projection; `PRISM_EMISSION_MODE=top3` (v2.1, opt-in)
+swaps it for the top-3 decaying split — see **v2.1 innovation-scoring
+additions**.
 
 **Competition scoring (epoch-local, SCORE_MAX lattice preserved; prism
 `SCORING_VERSION` stays 2 — the competition reallocates credits inside the
@@ -204,10 +207,13 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
   rows in the epoch's competition set (fresh outbox + active carry). Credit
   attaches to `miner_hotkey` on the scored submission — the UID that **posted**
   the run — never to the architecture registry owner.
-- *architecture-owner credit*: **disabled for emission**
-  (`OWNER_ARCH_CREDIT_ENABLED = false` in `prism-registry`). Arch ownership
-  still exists for top-model / publish bookkeeping, but it must **not** divert
-  Prism weight. Do not re-enable without an explicit product change.
+- *architecture-owner credit*: the legacy pre-WTA path stays **disabled**
+  (`OWNER_ARCH_CREDIT_ENABLED = false` in `prism-registry`; do not flip).
+  Arch ownership still exists for top-model / publish bookkeeping. The
+  sanctioned owner-credit mechanism is the **v2.1 post-collapse split**
+  (`PRISM_OWNER_ARCH_CREDIT_BPS`, default 0 — see **v2.1
+  innovation-scoring additions**), which redistributes only the winner's
+  own leaf and cannot re-route emission to off-metagraph owners.
 - *per-hotkey credit*: **own score only** (best-BPB submitter). `Score(0)`
   rows (cheat/copy-gate) never win; hotkeys whose rows are all `NoScore` keep
   their absence.
@@ -463,6 +469,46 @@ explicit scoring-version / governance change — tracked as a follow-up
 leaf + public board primary sort together, or wait for `composite`).
 Public UI should prefer G2 benches / group scores as the hero display
 while shadow emissions remain bpb.
+
+## v2.1 innovation-scoring additions (versioned, opt-in, default-off)
+
+Motivation: v2 pure-bpb WTA is a robust anti-cheat tournament but a poor
+multi-axis innovation detector — it cannot reward scaling behavior, it
+structurally penalizes adaptive-compute (looped) architectures via raw
+G7, and it pays exploration nothing (WTA + 1-max). v2.1 closes those
+three gaps as independent, individually-gated additions. **Every knob
+defaults to the historical bit-identical behavior**; each flip is a
+governance action like the `composite` mode flip.
+
+| Knob | Values | Default | Effect |
+|------|--------|---------|--------|
+| `PRISM_EMISSION_MODE` | `wta` \| `top3` | `wta` | `top3`: the top three positive credits keep 100 % / 50 % / 25 % of their own lattice score (ranks by the WTA tie convention; a scaled positive never rounds below 1); everything else is zeroed. Funds exploration behind the champion. |
+| `PRISM_OWNER_ARCH_CREDIT_BPS` | `0..=5000` | `0` | Post-collapse split of the **winner's own leaf**: the registry owner of the winning architecture receives `score × bps/10000`, the winner keeps the rest. No-op when the winner is the owner, the winning row has no published `arch_id`, or the cut rounds to 0. An off-metagraph owner's leaf is dropped by the D24 expected-set filter (cut burns — the legacy lex-tie theft vector stays closed). This — not flipping `OWNER_ARCH_CREDIT_ENABLED` (which stays `false`/dead) — is the sanctioned owner-credit path. |
+| `PRISM_ANCHOR_VERSION` | `0` \| `1` | `0` | Selects the composite anchor set. v1 = v0 plus two battery keys (below); identical group weights, gates, mirrors, bootstrap. Unknown values fall back to v0 with a warning. |
+
+**Anchor set v1 battery keys** (emitted by the harness on every real run;
+inert under v0 since unknown `org.*` keys are ignored):
+
+- `org.g7.reasoning_throughput` — mean G4 accuracy × decode toks/s
+  (`efficiency_log_ratio`). Compute-normalized reasoning: a model that
+  "thinks" via loops/extra depth is credited for its reasoning gain in the
+  same key that charges its inference cost, instead of being structurally
+  penalized by raw G7. Absent when either side was not measured (never
+  fabricated).
+- `org.g8.mup_scaling_slope` — local scaling exponent
+  `(ln L_base − ln L_wide)/(ln N_wide − ln N_base)` probed on the existing
+  µP 1×/4× width sweep, clamped ≥ 0 (`efficiency_log_ratio`). Rewards
+  architectures whose quality improves fastest with scale — the Tier-1
+  "slope" signal at zero extra pod cost. Same fail-closed contract as
+  `org.g8.mup_lr_stability`: 0.0 after a failed real sweep, omitted on
+  tiny-caps skips.
+
+v1 anchors ship as placeholders (`prism-recipe/anchors/v1.json`,
+embedded + hash-committed like v0): measure on the E6 baselines and
+pre-register before selecting `PRISM_ANCHOR_VERSION=1` for scoring.
+Emission plumbing: `prism_registry::emission_leaves` (competition credits
+→ configured collapse → optional owner split) — with default knobs it is
+bit-identical to `apply_wta(competition_scores(..))`, enforced by test.
 
 ## Agentic anti-cheat + AST + metrics gate
 
