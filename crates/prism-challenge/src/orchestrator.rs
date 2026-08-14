@@ -362,7 +362,11 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    async fn fail_or_retry_measure(&self, row: &SubmissionState, err: String) -> Result<(), String> {
+    async fn fail_or_retry_measure(
+        &self,
+        row: &SubmissionState,
+        err: String,
+    ) -> Result<(), String> {
         let msg = format!("measure: {err}");
         // Harness EVAL_FAIL is miner/model code, not Lium infra — do not burn
         // auto-retries (BYOK seal is kept on Err; see finish_measure).
