@@ -413,7 +413,10 @@ async fn post_retry(
         return json_err(
             StatusCode::CONFLICT,
             "not_failed",
-            &format!("status={}", row.status.as_str()),
+            &format!(
+                "status={} — /retry only accepts failed rows; for miner infra retry send X-Lium-Api-Key (and the usual X-Miner-Hotkey / body hotkey). Admin Bearer is for operator retries of non-infra failures",
+                row.status.as_str()
+            ),
         );
     }
     let gate_key = prism_pipeline::gating_key(row.arch_id.as_deref());

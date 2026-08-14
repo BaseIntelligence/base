@@ -1,9 +1,11 @@
 //! Miner-funded Lium keys (BYOK): vault + live-client factory.
 //!
-//! Keys are held in process memory and optionally in a short-TTL
-//! encrypted seal directory (`PRISM_PAYER_VAULT_DIR` + key file). They are
-//! never written to the submission store and never logged. Master still SSHs
-//! with the operator keypair; the miner key pays for rent/terminate only.
+//! Keys are held in process memory and optionally in a TTL-bounded
+//! encrypted seal directory (`PRISM_PAYER_VAULT_DIR` + key file). Default TTL
+//! is ≥36h (train wall + eval + skew) and heartbeats re-seal so long GPU runs
+//! survive control-plane restarts. Keys are never written to the submission
+//! store and never logged. Master still SSHs with the operator keypair; the
+//! miner key pays for rent/terminate only.
 
 #![forbid(unsafe_code)]
 
@@ -15,7 +17,10 @@ use std::sync::{Arc, Mutex};
 
 use prism_lium::{EvalJobBackend, LiumClient, LiumError, LiumSshConfig, LIUM_API_BASE_URL};
 
-pub use sealed::{SealedVaultConfig, DEFAULT_TTL_SECS, DIR_ENV, KEY_ENV};
+pub use sealed::{
+    expiry_secs, recommended_ttl_secs, SealedVaultConfig, DEFAULT_TTL_SECS, DIR_ENV,
+    EVAL_BUDGET_SECS, KEY_ENV, SEAL_SKEW_SECS, TRAIN_WALL_SECS, TTL_ENV,
+};
 
 /// In-memory map `submission_id → Lium API key`, with optional sealed persist.
 pub struct PayerKeyVault {
@@ -103,6 +108,9 @@ impl PayerKeyVault {
     }
 
     /// Clone of the stored key, if any (memory, then sealed file).
+    ///
+    /// Measure / resume paths rely on this hydrate-from-seal fallback when the
+    /// in-memory map is empty after a restart (as long as the seal is unexpired).
     #[must_use]
     pub fn get(&self, submission_id: &str) -> Option<String> {
         if let Ok(g) = self.inner.lock() {
@@ -116,6 +124,26 @@ impl PayerKeyVault {
             g.insert(submission_id.to_owned(), key.clone());
         }
         Some(key)
+    }
+
+    /// Re-persist the seal with a fresh TTL window (memory and/or disk).
+    ///
+    /// Call before measure and on heartbeats so full-budget trains cannot
+    /// outlive the on-disk seal. Returns `false` when no key is available.
+    pub fn refresh(&self, submission_id: &str) -> bool {
+        let Some(key) = self.get(submission_id) else {
+            return false;
+        };
+        if let Some(cfg) = &self.sealed {
+            if let Err(e) = sealed::persist(cfg, submission_id, &key) {
+                tracing::warn!(error = %e, "payer seal refresh failed");
+                return false;
+            }
+        }
+        if let Ok(mut g) = self.inner.lock() {
+            g.insert(submission_id.to_owned(), key);
+        }
+        true
     }
 
     /// Drop the key after the eval finishes (memory + seal).
@@ -226,6 +254,7 @@ pub fn require_miner_lium(backend_mode: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn vault_roundtrip_and_redacted_debug() {
@@ -243,5 +272,58 @@ mod tests {
     fn require_miner_lium_policy() {
         assert!(!require_miner_lium("sim"));
         assert!(!require_miner_lium("sim/openrouter"));
+    }
+
+    #[test]
+    fn default_ttl_covers_train_wall() {
+        const {
+            assert!(DEFAULT_TTL_SECS >= TRAIN_WALL_SECS + EVAL_BUDGET_SECS + SEAL_SKEW_SECS);
+        }
+        assert!(recommended_ttl_secs() >= TRAIN_WALL_SECS);
+        assert!(recommended_ttl_secs() >= 36 * 3600);
+    }
+
+    #[test]
+    fn refresh_extends_seal_expiry() {
+        let dir = tempdir().unwrap();
+        let cfg = SealedVaultConfig {
+            dir: dir.path().to_path_buf(),
+            key: [3u8; 32],
+            ttl_secs: 120,
+        };
+        let v = PayerKeyVault::new().with_sealed(cfg.clone());
+        v.insert("job1", "sk_miner");
+        let first = sealed::expiry_secs(&cfg, "job1").expect("sealed");
+        // Advance perceived lifetime by re-sealing after a short sleep so the
+        // unix expiry second is guaranteed to move forward under CI load.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert!(v.refresh("job1"));
+        let second = sealed::expiry_secs(&cfg, "job1").expect("refreshed");
+        assert!(
+            second > first,
+            "refresh must extend expiry (first={first} second={second})"
+        );
+        assert_eq!(v.get("job1").as_deref(), Some("sk_miner"));
+    }
+
+    #[test]
+    fn measure_hydrates_from_seal_without_ram() {
+        let dir = tempdir().unwrap();
+        let cfg = SealedVaultConfig {
+            dir: dir.path().to_path_buf(),
+            key: [5u8; 32],
+            ttl_secs: 3600,
+        };
+        sealed::persist(&cfg, "onlyseal", "sk_from_disk").unwrap();
+        // Fresh vault: empty RAM, sealed backend only — same as post-restart
+        // before hydrate_all, or when get() mid-run must reload from disk.
+        let v = PayerKeyVault::new().with_sealed(cfg);
+        assert_eq!(v.get("onlyseal").as_deref(), Some("sk_from_disk"));
+        assert!(v.refresh("onlyseal"));
+        // Clear RAM and prove seal-only hydrate still works.
+        if let Ok(mut g) = v.inner.lock() {
+            g.clear();
+        }
+        assert_eq!(v.get("onlyseal").as_deref(), Some("sk_from_disk"));
     }
 }

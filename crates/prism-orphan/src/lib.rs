@@ -35,6 +35,7 @@ pub fn spawn_log_watch(
     store: std::sync::Arc<dyn prism_store::PrismStore>,
     backend: std::sync::Arc<dyn prism_lium::EvalJobBackend>,
     active: std::sync::Arc<ActiveJobs>,
+    payer_vault: Option<std::sync::Arc<prism_lium_payer::PayerKeyVault>>,
     submission_id: String,
     pod_id: String,
     poll_secs: u64,
@@ -46,6 +47,7 @@ pub fn spawn_log_watch(
             store,
             backend,
             active,
+            payer_vault,
             submission_id,
             pod_id,
             stop_rx,
@@ -62,17 +64,27 @@ pub async fn watch_pod_logs(
     store: std::sync::Arc<dyn prism_store::PrismStore>,
     backend: std::sync::Arc<dyn prism_lium::EvalJobBackend>,
     active: std::sync::Arc<ActiveJobs>,
+    payer_vault: Option<std::sync::Arc<prism_lium_payer::PayerKeyVault>>,
     submission_id: String,
     pod_id: String,
     mut cancel: tokio::sync::watch::Receiver<bool>,
     poll_secs: u64,
 ) {
     let period = std::time::Duration::from_secs(poll_secs.max(5));
+    // Re-seal every ~5 minutes so a 6h+ train cannot outlive the on-disk TTL.
+    let refresh_every = (300 / period.as_secs().max(1)).max(1);
+    let mut ticks: u64 = 0;
     loop {
         if *cancel.borrow() {
             break;
         }
         active.touch(&submission_id);
+        ticks = ticks.saturating_add(1);
+        if ticks == 1 || ticks.is_multiple_of(refresh_every) {
+            if let Some(vault) = &payer_vault {
+                let _ = vault.refresh(&submission_id);
+            }
+        }
         match backend.harvest_logs(&pod_id).await {
             Ok(text) if !text.trim().is_empty() => {
                 logs.replace_tail(&submission_id, &text);

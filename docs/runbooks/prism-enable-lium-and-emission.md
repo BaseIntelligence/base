@@ -10,9 +10,12 @@
    semaphore). Dial down only if the Lium lease pool cannot absorb the load.
 6. **Control-plane restart / redeploy (GPU-safe):** keep
    `PRISM_PAYER_VAULT_DIR` + `PRISM_PAYER_VAULT_KEY_FILE` on a durable volume.
-   Healthy mid-flight pods are resumed (not terminated). Do not manually kill
-   Lium pods after a routine `prism-challenge` bounce — only stop pods that
-   surface `control_plane_restart` / `harness_detached` (dead pod or expired
+   Seal TTL defaults to ≥**36h** (`PRISM_PAYER_VAULT_TTL_SECS`, floored by
+   train wall + eval + skew); measure + heartbeats re-seal so full-budget
+   runs survive a bounce. Healthy mid-flight pods are resumed (not
+   terminated). Do not manually kill Lium pods after a routine
+   `prism-challenge` bounce — only stop pods that surface
+   `control_plane_restart` / `harness_detached` (dead pod or unrecoverable
    seal). Prefer rolling the challenge image when no pods are in
    `provisioning`/`running`, or accept resume after boot.
 

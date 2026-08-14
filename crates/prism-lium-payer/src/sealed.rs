@@ -1,7 +1,11 @@
-//! Short-TTL encrypted-at-rest BYOK seals (not the submission DB).
+//! Encrypted-at-rest BYOK seals (not the submission DB).
 //!
 //! ChaCha20-Poly1305 with a process key file. Plaintext never lands in Postgres.
 //! Files are mode-0600 under `PRISM_PAYER_VAULT_DIR`.
+//!
+//! TTL must outlast a full train wall + eval + control-plane skew. Heartbeats
+//! re-seal so mid-flight restarts never hydrate an expired file after a long
+//! GPU run.
 
 use std::fs;
 use std::io::Write;
@@ -13,12 +17,41 @@ use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-/// Default TTL for sealed payer keys (covers max healthy train + margin).
-pub const DEFAULT_TTL_SECS: u64 = 12 * 3600;
+/// Recipe train wall (6h = 21600s). Overridden by `PRISM_TRAIN_HOURS_CAP` when set.
+pub const TRAIN_WALL_SECS: u64 = 6 * 3600;
+/// Post-train eval / harvest / terminate budget.
+pub const EVAL_BUDGET_SECS: u64 = 2 * 3600;
+/// Queue, pre-pod screens, restart skew, and clock margin.
+pub const SEAL_SKEW_SECS: u64 = 4 * 3600;
+/// Default TTL floor (≥36h): covers full-budget runs with substantial queue wait.
+pub const DEFAULT_TTL_SECS: u64 = 36 * 3600;
 /// Env: directory for `*.seal` files.
 pub const DIR_ENV: &str = "PRISM_PAYER_VAULT_DIR";
 /// Env: 32-byte key file (raw or 64-hex).
 pub const KEY_ENV: &str = "PRISM_PAYER_VAULT_KEY_FILE";
+/// Env: soft TTL seconds (floored by [`recommended_ttl_secs`] when unset).
+pub const TTL_ENV: &str = "PRISM_PAYER_VAULT_TTL_SECS";
+
+/// Soft TTL: `max(default_floor, train_wall + eval + skew)`.
+///
+/// `PRISM_TRAIN_HOURS_CAP` (hours, float) raises the train component when set.
+#[must_use]
+pub fn recommended_ttl_secs() -> u64 {
+    let train = std::env::var("PRISM_TRAIN_HOURS_CAP")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|h| h.is_finite() && *h > 0.0)
+        .map_or(TRAIN_WALL_SECS, |h| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                (h * 3600.0).ceil() as u64
+            }
+        });
+    let computed = train
+        .saturating_add(EVAL_BUDGET_SECS)
+        .saturating_add(SEAL_SKEW_SECS);
+    DEFAULT_TTL_SECS.max(computed)
+}
 
 /// On-disk sealed vault settings.
 #[derive(Debug, Clone)]
@@ -42,10 +75,11 @@ impl SealedVaultConfig {
             .ok()
             .filter(|s| !s.trim().is_empty())?;
         let key = load_key(Path::new(&key_path))?;
-        let ttl_secs = std::env::var("PRISM_PAYER_VAULT_TTL_SECS")
+        let floor = recommended_ttl_secs();
+        let ttl_secs = std::env::var(TTL_ENV)
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_TTL_SECS);
+            .map_or(floor, |configured: u64| configured.max(floor));
         let dir = PathBuf::from(dir);
         let _ = fs::create_dir_all(&dir);
         Some(Self { dir, key, ttl_secs })
@@ -119,6 +153,23 @@ pub fn persist(cfg: &SealedVaultConfig, submission_id: &str, api_key: &str) -> R
     Ok(())
 }
 
+/// Absolute unix expiry embedded in the seal, if present and decryptable.
+#[must_use]
+pub fn expiry_secs(cfg: &SealedVaultConfig, submission_id: &str) -> Option<u64> {
+    let path = seal_path(&cfg.dir, submission_id);
+    let bytes = fs::read(&path).ok()?;
+    if bytes.len() < 13 {
+        return None;
+    }
+    let (nonce_bytes, ct) = bytes.split_at(12);
+    let cipher = ChaCha20Poly1305::new_from_slice(&cfg.key).ok()?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let pt = cipher.decrypt(nonce, ct).ok()?;
+    let text = String::from_utf8(pt).ok()?;
+    let (exp_s, _) = text.split_once('\n')?;
+    exp_s.parse().ok()
+}
+
 /// Decrypt seal when present and unexpired.
 pub fn load(cfg: &SealedVaultConfig, submission_id: &str) -> Option<String> {
     let path = seal_path(&cfg.dir, submission_id);
@@ -176,6 +227,20 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn recommended_ttl_covers_train_wall() {
+        let ttl = recommended_ttl_secs();
+        assert!(
+            ttl >= TRAIN_WALL_SECS + EVAL_BUDGET_SECS + SEAL_SKEW_SECS,
+            "ttl {ttl} must cover train+eval+skew"
+        );
+        assert!(
+            ttl >= DEFAULT_TTL_SECS,
+            "ttl {ttl} must be at least the 36h floor"
+        );
+        assert!(ttl >= 36 * 3600);
+    }
+
+    #[test]
     fn seal_roundtrip_and_ttl_expiry() {
         let dir = tempdir().unwrap();
         let cfg = SealedVaultConfig {
@@ -185,9 +250,32 @@ mod tests {
         };
         persist(&cfg, "abc123", "sk_test_secret").unwrap();
         assert_eq!(load(&cfg, "abc123").as_deref(), Some("sk_test_secret"));
+        let exp = expiry_secs(&cfg, "abc123").unwrap();
+        assert!(exp > now_secs());
         let all = hydrate_all(&cfg);
         assert_eq!(all.len(), 1);
         remove(&cfg, "abc123");
         assert!(load(&cfg, "abc123").is_none());
+    }
+
+    #[test]
+    fn refresh_extends_expiry() {
+        let dir = tempdir().unwrap();
+        let mut cfg = SealedVaultConfig {
+            dir: dir.path().to_path_buf(),
+            key: [9u8; 32],
+            ttl_secs: 60,
+        };
+        persist(&cfg, "sub1", "sk_live").unwrap();
+        let first = expiry_secs(&cfg, "sub1").unwrap();
+        // Simulate a later refresh with a longer TTL window.
+        cfg.ttl_secs = 3600;
+        persist(&cfg, "sub1", "sk_live").unwrap();
+        let second = expiry_secs(&cfg, "sub1").unwrap();
+        assert!(
+            second >= first + 3000,
+            "refresh must push expiry forward (first={first} second={second})"
+        );
+        assert_eq!(load(&cfg, "sub1").as_deref(), Some("sk_live"));
     }
 }
