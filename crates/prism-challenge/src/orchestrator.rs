@@ -669,6 +669,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         row: &SubmissionState,
     ) -> Result<(prism_lium::RemoteExecResult, prism_lium::EvalReceipt), String> {
         self.to_stage(id, Stage::Provisioning).await?;
+        // Extend BYOK seal before any Lium call so a long train cannot race TTL.
+        if let Some(p) = &self.payer {
+            let _ = p.vault.refresh(id);
+        }
         let backend = self.backend_for(id)?;
         let resume = mid_pod_resume(row);
         let (pod_id, provider) = if let Some(pid) = row.pod_id.clone() {
@@ -708,11 +712,13 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 None,
             )
             .await;
+        let payer_vault = self.payer.as_ref().map(|p| Arc::clone(&p.vault));
         let stop_tx = spawn_log_watch(
             Arc::clone(&self.logs),
             Arc::clone(&self.store),
             Arc::clone(&backend),
             Arc::clone(&self.active),
+            payer_vault,
             id.to_owned(),
             pod_id.clone(),
             DEFAULT_LOG_POLL_SECS,

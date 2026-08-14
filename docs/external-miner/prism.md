@@ -66,19 +66,21 @@ X-Lium-Api-Key: <your Lium API key>
 ```
 
 The key is held in master memory for that submission and may also land in a
-**short-TTL encrypted seal file** on the master host (never in Postgres, never
-logged) so a control-plane restart can **resume** your pod (or stop it if
-reattach is impossible). Missing key on live → `400 missing_lium_api_key`.
-Cost guardrails (`max_price_per_hour`, lifetime) still apply so a bad key
-cannot rent unbounded SKUs through the orchestrator.
+**TTL-bounded encrypted seal file** on the master host (default ≥36h; never in
+Postgres, never logged). Master **re-seals** on measure start and heartbeats
+so a full 6h train wall cannot outlive the seal across a control-plane
+restart. Missing key on live → `400 missing_lium_api_key`. Cost guardrails
+(`max_price_per_hour`, lifetime) still apply so a bad key cannot rent
+unbounded SKUs through the orchestrator.
 
 If the challenge process restarts mid-run while your Lium pod is still
 training/evaling, master **reattaches** quietly (same submission id; pod is
 not killed). You only see `control_plane_restart` / `harness_detached` when
-the pod is already dead or the sealed key expired and master cannot talk to
-Lium — then stop the pod yourself and resubmit with `X-Lium-Api-Key`. Poll
-`GET /v1/submissions/{id}/events` and `GET /v1/submissions/{id}/logs?since=`
-for live stage heartbeats and harness tails while the run is healthy.
+the pod is already dead or the sealed key cannot be restored and master
+cannot talk to Lium — then stop the pod yourself and resubmit with
+`X-Lium-Api-Key`. Poll `GET /v1/submissions/{id}/events` and
+`GET /v1/submissions/{id}/logs?since=` for live stage heartbeats and harness
+tails while the run is healthy.
 
 ## Submit
 

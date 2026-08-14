@@ -72,8 +72,8 @@ chmod 0400 deploy/secrets/huggingface/token
   `POST|GET /v1/admin/artifacts/...`. Read via `PRISM_ADMIN_TOKENS_FILE`
   (`/run/base/prism/admin_tokens`). Empty/missing → those routes answer
   **503 `auth_unconfigured`** (fail-closed). Mode **0400**, uid **65532**.
-- `prism/payer_vault_key` — 32-byte (or 64-hex) key for short-TTL encrypted
-  miner BYOK seals (`PRISM_PAYER_VAULT_KEY_FILE`). Host dir
+- `prism/payer_vault_key` — 32-byte (or 64-hex) key for TTL-bounded encrypted
+  miner BYOK seals (`PRISM_PAYER_VAULT_KEY_FILE`; default TTL ≥36h). Host dir
   `/var/lib/prism/payer-vault` is mounted RW for `*.seal` files. **Never
   commit the key.** Generate once:
 

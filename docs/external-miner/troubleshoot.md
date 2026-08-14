@@ -12,7 +12,7 @@
 | `409 schedule` "daily manual run quota exceeded" | Manual anti-spam cap (10/day) — round-loop auto-enqueue does **not** spend it | `GET /v1/quota/{hotkey}` → `manual.remaining`; wait until next UTC day |
 | Active harness but no runs this round | Rare race / restart before auto-enqueue; or eliminated cooldown | Wait for the round tick / ask ops `admin/rounds/current/requeue`; check `eliminated_until_round` |
 | `auto_retry` events, class `install` | Dep won't install (bad name/version, heavy source build) | Design: `GET /v1/runs/{id}/logs`; Prism: `GET /v1/submissions/{id}/logs?since=` |
-| `control_plane_restart` / `harness_detached` | Restart could not reattach (dead pod or expired BYOK seal) | Stop the Lium pod if still billing; resubmit with `X-Lium-Api-Key`. Healthy pods are resumed automatically — do not kill them on a routine master redeploy. |
+| `control_plane_restart` / `harness_detached` | Restart could not reattach (dead pod or unrecoverable BYOK seal) | Stop the Lium pod if still billing; resubmit with `X-Lium-Api-Key`. Healthy pods are resumed automatically — do not kill them on a routine master redeploy. |
 | Run `failed` / Score 0 | Missing pages, timeout, crash | `GET /v1/runs/{id}/events`; ensure three required HTML pages |
 | External call refused (`403`) | Target is internal-blocklisted (metadata IP, loopback, RFC1918/VPC, control plane) | Call public endpoints only; egress is otherwise open |
 | Pages look empty in viewer | Sanitize stripped content | Scripts/`on*` handlers are removed; use static HTML/CSS |
