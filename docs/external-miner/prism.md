@@ -134,10 +134,24 @@ versioned descriptor). Trust `/v1/recipe`, not marketing chart labels.
 - If your hotkey **leaves the metagraph**, the watcher reopens your slot(s)
   automatically — resubmit under your new uid.
 - Infra failures (Lium pod, review/similarity/LLM infra) **auto-retry up to 3
-  times**; cheat / rejected verdicts are terminal. After an infra failure
-  (`ChallengeInternal`), you may **resubmit within 30 minutes** (new POST or
-  `POST /v1/submissions/{id}/retry`). After 30 minutes the slot stays blocked
-  until your hotkey leaves the metagraph.
+  times**; harness `EVAL_FAIL` (miner/model code) is terminal for that attempt
+  and is **not** auto-retried. Cheat / rejected verdicts are terminal. After an
+  infra failure (`ChallengeInternal`), you may **recover within 30 minutes**
+  via `POST /v1/submissions/{id}/retry` with **`X-Lium-Api-Key`** (required on
+  live when another GPU rent is needed). After 30 minutes the slot stays
+  blocked until your hotkey leaves the metagraph.
+
+### Retry vs re-POST
+
+| Action | When | Headers |
+|--------|------|---------|
+| Re-POST the **same** ZIP | Always safe | Same as submit | Returns `200 already-queued` — **no new GPU run**; does not recover a failed row |
+| `POST /v1/submissions/{id}/retry` | Row status is **`failed`** only | **`X-Lium-Api-Key`** on live (infra recovery); admin Bearer for operator non-infra retries | Requeues measure; wrong/missing Lium key → `400 missing_lium_api_key` |
+| `/retry` on non-failed | — | — | `409 not_failed` — hotkey or Bearer alone does not change that |
+
+Do **not** expect `X-Miner-Hotkey` or admin Bearer alone to fund a new Lium
+pod. Seal TTL is ≥36h and master re-seals on measure + heartbeats; the key is
+kept across measure Err so auto-/miner-retry can re-rent without a new submit.
 
 ## Anti-copy rule (patch / delta)
 

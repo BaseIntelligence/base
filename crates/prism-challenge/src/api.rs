@@ -410,13 +410,19 @@ async fn post_retry(
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
     if row.status != Stage::Failed {
+        let has_lium = headers
+            .get(prism_lium_payer::LIUM_API_KEY_HEADER)
+            .or_else(|| headers.get("X-Lium-Api-Key"))
+            .is_some();
+        let hint = if has_lium {
+            "status is not failed — /retry only recovers failed rows. Re-POSTing the same ZIP is an idempotent already-queued no-op; wait for the run or use events/logs. Infra recovery after failure needs X-Lium-Api-Key on /retry (hotkey/Bearer alone is not enough)."
+        } else {
+            "status is not failed — /retry only accepts failed rows. Identical ZIP re-POST returns already-queued (no new GPU). After a failed infra run, POST /retry with X-Lium-Api-Key (not only X-Miner-Hotkey / Bearer)."
+        };
         return json_err(
             StatusCode::CONFLICT,
             "not_failed",
-            &format!(
-                "status={} — /retry only accepts failed rows; for miner infra retry send X-Lium-Api-Key (and the usual X-Miner-Hotkey / body hotkey). Admin Bearer is for operator retries of non-infra failures",
-                row.status.as_str()
-            ),
+            &format!("status={} — {hint}", row.status.as_str()),
         );
     }
     let gate_key = prism_pipeline::gating_key(row.arch_id.as_deref());

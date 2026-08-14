@@ -409,6 +409,17 @@ impl LiumClient {
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
         let gpu_type = self.gpu_smoke(&target, &key).await?;
+        if !GpuPreference::default_prism().matches_pin(&gpu_type) {
+            warn!(
+                instance_id,
+                gpu = %gpu_type,
+                "nvidia-smi reported non-pin GPU — terminate for requeue"
+            );
+            let _ = self.terminate(instance_id).await;
+            return Err(LiumError::Exec(format!(
+                "non-pin GPU ({gpu_type}); Prism requires 1× RTX 5090 — resubmit/retry"
+            )));
+        }
         self.ensure_python_deps(&target, &key).await?;
 
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
@@ -443,6 +454,7 @@ impl LiumClient {
             &key,
             assets.as_deref(),
             train_cap_secs.saturating_add(3900),
+            Some(gpu_type.as_str()),
         )
         .await
     }
@@ -452,6 +464,18 @@ impl LiumClient {
         let _running = self.wait_until_running(instance_id).await?;
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
+        let gpu_type = self.gpu_smoke(&target, &key).await?;
+        if !GpuPreference::default_prism().matches_pin(&gpu_type) {
+            warn!(
+                instance_id,
+                gpu = %gpu_type,
+                "resume saw non-pin GPU — terminate for requeue"
+            );
+            let _ = self.terminate(instance_id).await;
+            return Err(LiumError::Exec(format!(
+                "non-pin GPU ({gpu_type}); Prism requires 1× RTX 5090 — resubmit/retry"
+            )));
+        }
         let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
         let probe_out =
             ssh_exec_allow_fail(&target, &key, HARNESS_PROBE_CMD, att.max(1), rty, 60).await?;
@@ -469,6 +493,7 @@ impl LiumClient {
             &key,
             assets.as_deref(),
             train_cap_secs.saturating_add(3900),
+            Some(gpu_type.as_str()),
         )
         .await
     }
@@ -481,6 +506,7 @@ impl LiumClient {
         key: &Path,
         assets: Option<&Path>,
         timeout_secs: u64,
+        fill_gpu: Option<&str>,
     ) -> Result<RemoteExecResult, LiumError> {
         let start = Instant::now();
         let period = Duration::from_secs(20);
@@ -524,7 +550,17 @@ impl LiumClient {
                             res.eval_tier
                         )));
                     }
-                    return Ok(*res);
+                    let mut res = *res;
+                    if res
+                        .gpu_type
+                        .as_deref()
+                        .is_none_or(|g| g.is_empty() || g.eq_ignore_ascii_case("null"))
+                    {
+                        if let Some(g) = fill_gpu {
+                            res.gpu_type = Some(g.to_owned());
+                        }
+                    }
+                    return Ok(res);
                 }
                 HarnessProgress::NeedsAssets | HarnessProgress::Running
                     if assets.is_some()
@@ -796,6 +832,9 @@ impl EvalJobBackend for LiumClient {
         // fallback to `selected.gpu_count` could silently rent 8×5090.
         offers.retain(|o| o.matches_gpu_count(spec.gpu_count));
         let pref = GpuPreference::default_prism();
+        // Fail-closed SKU pin: never fall through to 4090/A100/H100 when 5090
+        // rent fails — that is ranking unfair under a wall-clock train cap.
+        offers.retain(|o| pref.matches_pin(&o.gpu_type));
         offers.sort_by(|a, b| {
             pref.rank(&a.gpu_type)
                 .cmp(&pref.rank(&b.gpu_type))
@@ -883,7 +922,20 @@ impl EvalJobBackend for LiumClient {
                         continue;
                     };
                     match self.wait_until_running(&id).await {
-                        Ok(inst) => return Ok(inst),
+                        Ok(inst) => {
+                            let labeled = inst.gpu_type.as_deref().unwrap_or("");
+                            if !labeled.is_empty() && !pref.matches_pin(labeled) {
+                                warn!(
+                                    pod_id = %id,
+                                    gpu = %labeled,
+                                    "lium rented non-pin GPU — terminate and try next 5090 offer"
+                                );
+                                let _ = self.terminate(&id).await;
+                                last_err = format!("non-pin GPU after rent: {labeled}");
+                                continue;
+                            }
+                            return Ok(inst);
+                        }
                         Err(e) => {
                             last_err = format!("offer {} wait_running: {e}", selected.id);
                             self.cleanup_after_rent(&id).await;
@@ -1206,23 +1258,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_falls_back_in_declared_order_when_no_5090() {
+    async fn provision_fail_closed_when_no_5090() {
         let server = MockServer::start().await;
         mount_common(
             &server,
             serde_json::json!([
                 {"id": "cheap-a100", "gpu_type": "NVIDIA A100-SXM4-80GB", "gpu_count": 1, "price_per_hour": 0.5},
                 {"id": "mid-h100", "gpu_type": "NVIDIA H100", "gpu_count": 1, "price_per_hour": 1.5},
-                {"id": "weak-l4", "gpu_type": "NVIDIA L4", "gpu_count": 1, "price_per_hour": 0.2}
+                {"id": "weak-4090", "gpu_type": "NVIDIA GeForce RTX 4090", "gpu_count": 1, "price_per_hour": 0.27}
             ]),
         )
         .await;
         mount_rent_path(&server, "cheap-a100", "pod-a100").await;
         mount_rent_path(&server, "mid-h100", "pod-h100").await;
-        mount_rent_path(&server, "weak-l4", "pod-l4").await;
+        mount_rent_path(&server, "weak-4090", "pod-4090").await;
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
-        let inst = c.provision(&provision_spec()).await.unwrap();
-        assert_eq!(inst.id, "pod-h100");
+        let err = c.provision(&provision_spec()).await.unwrap_err();
+        assert!(
+            matches!(err, LiumError::Cost(CostGuardrailError::NoCapacity))
+                || err.to_string().contains("NoCapacity")
+                || err.to_string().to_ascii_lowercase().contains("capacity"),
+            "got {err}"
+        );
     }
 
     #[tokio::test]
