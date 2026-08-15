@@ -9,6 +9,14 @@ fresh 1× and 4×-width builds of the miner's architecture (via the
 handful of steps at 3 LRs each on the harness micro stream; the metric
 is |log2(best_lr_wide / best_lr_base)| — 0 means perfect LR transfer.
 
+**Probe base (not full submission size).** The sweep does **not** start from
+production `build_ctx` width/depth. Near the 350M cap, 4× width is
+unbuildable on the eval GPU (~multi-billion params / ~100GB AdamW). Instead
+the harness overlays a fixed small width/depth probe (`_MUP_PROBE_ARCH`) so
+1× and 4× stay on-device for any submission size. Miners must honor
+top-level / `arch` width-depth overrides **and** `prism_width_multiplier`
+(reference baselines do).
+
 Semantics for `org.g8.mup_lr_stability` (via rollup):
 - sweep succeeds → `1/(1+|log2 ratio|)` in [0, 1]
 - sweep **ran** but diverged / build failed / width unsupported / budget →
@@ -23,6 +31,39 @@ import math
 from . import common
 
 _SPIKE_MAD_K = 6.0
+
+# Fixed µP probe geometry — independent of the scored submission's size.
+# 4× width (~2× linear dims on d_model/mlp) must remain buildable on the
+# eval GPU for every submission under the 350M cap. Keep vocab/tokenizer/
+# device/seed from production build_ctx; only width/depth are replaced.
+_MUP_PROBE_ARCH = {
+    "d_model": 128,
+    "n_layer": 4,
+    "n_head": 4,
+    "mlp_hidden": 320,  # 2.5 × 128 (Transformer++ SwiGLU ratio)
+    # Hybrid delta-net extras (ignored by pure Transformer builds).
+    "attn_heads": 4,
+    "delta_key_dim": 64,
+    "delta_value_dim": 128,
+}
+
+
+def mup_probe_base_ctx(build_ctx):
+    """Overlay fixed small width/depth on production build_ctx for the µP sweep.
+
+    Preserves vocab_size / tokenizer / device / seed and any non-geometry keys.
+    Writes both top-level keys and an `arch` dict so baselines and miners that
+    read either path see the probe geometry.
+    """
+    base = dict(build_ctx or {})
+    arch = dict(base.get("arch") or {}) if isinstance(base.get("arch"), dict) else {}
+    arch.update(_MUP_PROBE_ARCH)
+    base["arch"] = arch
+    for key, value in _MUP_PROBE_ARCH.items():
+        base[key] = value
+    # Never inherit a stale multiplier from a prior probe attempt.
+    base.pop("prism_width_multiplier", None)
+    return base
 
 
 def _median(xs):
@@ -86,7 +127,8 @@ def _mup_sweep(ctx, budget):
     if build is None or stream is None or not callable(build):
         return None, "no_build_model"
     device = ctx["device"]
-    base_ctx = dict(ctx.get("build_ctx") or {})
+    # Reduced fixed probe base — not full production build_ctx geometry.
+    base_ctx = mup_probe_base_ctx(ctx.get("build_ctx"))
     lrs = [3e-4, 1e-3, 3e-3]
     steps = 4 if common.tiny_caps() else 10
     best_by_width = {}

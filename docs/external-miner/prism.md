@@ -269,17 +269,29 @@ terminal-loss band) and the cross-miner cohort, and land a stored verdict
 (`ok` / `flagged` / `quarantined`) — verdicts are evidence, never an
 auto-zero. Malformed or over-cap envelopes reject `422` and store nothing.
 
-While `PRISM_SCORING_MODE=shadow` (default) the leaf score stays pure bpb,
-bit-identical to v2. After the reference baselines (**Transformer++** and
+While `PRISM_SCORING_MODE=shadow` (default) the leaf score stays pure bpb
+(**bits/token** = CE / ln 2 — tokenizer-dependent; byte-level vocabs can look
+artificially strong). Tokenizer-neutral `bits_per_byte` is recorded on every
+run and already feeds G1; a shadow-leaf switch to bits/byte is deferred until
+an explicit scoring-version / governance change (see [`PRISM.md`](../PRISM.md)
+§ shadow leaf unit). After the reference baselines (**Transformer++** and
 **hybrid delta** — published in-repo under `crates/prism-recipe/baselines/`)
 are measured and the anchor set is pre-registered, governance may flip to
-`composite`: group scores are anchor-normalized, gate-filtered
+`composite`: group scores are anchor-normalized (**arithmetic** mean within
+each group; a single zero sub-metric does not zero the group), gate-filtered
 (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget + CI gates), combined as a weighted
-geometric mean, and ranked by the bootstrap lower-confidence bound
+**geometric** mean across groups (`C = ∏ g_k^{w_k}` — a full group score of 0
+collapses C), and ranked by the bootstrap lower-confidence bound
 (`lattice = round(SCORE_MAX × max(0, C − 1.645·SE))`). Inspect the anchor
 registry and pre-registration commits at `GET /v1/anchors` and
 `GET /v1/preregistration`; per-run Zone A / Zone B rows at
 `GET /v1/submissions/{id}/metrics?zone=a|b`.
+
+**G8 µP probe.** The stability sweep builds 1× and 4× width from a **fixed
+small** width/depth base (not your full ≤350M scored model), then scales with
+`ctx["prism_width_multiplier"]`. Honor top-level / `arch` geometry overrides
+and that multiplier in `build_model` (reference baselines do) or the sweep
+fail-closes `org.g8.mup_lr_stability = 0.0`.
 
 ## Useful routes
 

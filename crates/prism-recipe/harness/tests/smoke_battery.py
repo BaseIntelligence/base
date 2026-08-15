@@ -627,6 +627,14 @@ def check_v3_flow(arch_src=STUB_ARCH, tokenizer_source="default", vocab_size=Non
         )
 
 
+def check_g8_mup_contracts():
+    """µP rollup fail-closed + reduced probe-base geometry (no full GPU sweep)."""
+    for script in ("test_g8_mup_rollup.py", "test_g8_mup_probe_base.py"):
+        path = Path(__file__).resolve().parent / script
+        r = subprocess.run([sys.executable, str(path)], cwd=str(HARNESS_ROOT))
+        assert r.returncode == 0, f"{script} failed with {r.returncode}"
+
+
 def main():
     check_py_compile()
     check_generator_determinism()
@@ -638,6 +646,8 @@ def main():
     except ImportError as exc:
         print(f"BATTERY SMOKE SKIP (torch parts): {exc}")
         return 2
+    # Probe-base test builds Transformer++ at tiny width (needs torch).
+    check_g8_mup_contracts()
     check_full_battery()
     check_v3_flow()
     # Same flow on a submission that ships its own tokenizer via the
