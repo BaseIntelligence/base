@@ -265,9 +265,21 @@ fn readme_block(req: &TopModelRequest, weight_note: &str) -> String {
     )
 }
 
+/// Serialize unit tests that mutate `PRISM_TOPMODEL_REQUIRE_WEIGHTS`.
+#[cfg(test)]
+pub(crate) static TOPMODEL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn topmodel_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::PoisonError;
+    TOPMODEL_ENV_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::await_holding_lock)]
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -291,6 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishes_all_files_and_returns_commit_sha() {
+        let _lock = topmodel_env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         for f in [
@@ -325,6 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_error_is_typed() {
+        let _lock = topmodel_env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         Mock::given(method("GET"))

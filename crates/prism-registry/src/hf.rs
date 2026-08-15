@@ -897,15 +897,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::await_holding_lock)]
     use super::*;
     use crate::publish::require_topmodel_weights;
-    use std::sync::{Mutex, PoisonError};
+    use crate::publish::topmodel_env_lock;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-    }
 
     fn req() -> TopModelRequest {
         TopModelRequest {
@@ -947,7 +941,7 @@ mod tests {
 
     #[tokio::test]
     async fn commits_custom_arch_pack() {
-        let _lock = env_lock();
+        let _lock = topmodel_env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -984,7 +978,7 @@ mod tests {
     #[test]
     fn require_weights_defaults_closed() {
         // Serialize env mutation across this crate's HF tests.
-        let _lock = env_lock();
+        let _lock = topmodel_env_lock();
         let prev = std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS").ok();
         std::env::remove_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS");
         assert!(require_topmodel_weights());
@@ -1000,7 +994,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_without_checkpoint_when_weights_required() {
-        let _lock = env_lock();
+        let _lock = topmodel_env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "1");
         let server = MockServer::start().await;
         let p = HfTopModelPublisher::with_config(
