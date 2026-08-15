@@ -515,11 +515,7 @@ async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, 
             Some((id, PrismDetailFanout { detail, zone_a }))
         }
     });
-    join_all(futs)
-        .await
-        .into_iter()
-        .flatten()
-        .collect()
+    join_all(futs).await.into_iter().flatten().collect()
 }
 
 /// When detail metrics omit public G2 benches, pull Zone-A rows from the eval store.
