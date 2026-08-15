@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use submission_gating::{infra_resubmit_allowed, GatingState, GatingStore, MetagraphCache};
+use submission_gating::{resubmit_allowed, GatingState, GatingStore, MetagraphCache};
 
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
@@ -158,7 +158,7 @@ async fn gate_one_max(
     if let Some(g) = &st.gating {
         match g.get(challenge, hotkey).await {
             Ok(Some(row))
-                if row.state != GatingState::Open && !infra_resubmit_allowed(&row, now_ms()) =>
+                if row.state != GatingState::Open && !resubmit_allowed(&row, now_ms()) =>
             {
                 return Err(json_err(
                     StatusCode::CONFLICT,
@@ -434,7 +434,7 @@ async fn post_retry(
                 .await
                 .ok()
                 .flatten()
-                .is_some_and(|gr| infra_resubmit_allowed(&gr, now_ms()));
+                .is_some_and(|gr| resubmit_allowed(&gr, now_ms()));
         }
     }
     if !infra {

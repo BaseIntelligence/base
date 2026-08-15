@@ -39,8 +39,8 @@ pub use intake::{
     expand_tree_blob_for_pod, extract_automodel_zip, fixture_automodel_zip, intake_automodel_zip,
     materialize, pack_tree_blob, pin_checkout_dir, resolve_pin, submission_id_for_patch,
     zip_is_automodel_layout, AutomodelMembers, ExpandedAutomodel, IntakeError,
-    MaterializedAutomodel, ALLOW_LEGACY_ENV, MEMBER_BASE, MEMBER_PATCH, MEMBER_TOML, META_BASE,
-    META_DIFFSTAT, META_PATCH,
+    MaterializedAutomodel, ALLOW_LEGACY_ENV, MEMBER_BASE, MEMBER_PATCH, MEMBER_PYPROJECT,
+    MEMBER_REQUIREMENTS, MEMBER_TOML, META_BASE, META_DIFFSTAT, META_PATCH,
 };
 pub use pin::{
     fixture_happy_patch_path, fixture_pin_dir, tree_content_sha256, verify_pin_tree, AutomodelPin,

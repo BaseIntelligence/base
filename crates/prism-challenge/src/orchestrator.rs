@@ -23,7 +23,7 @@ use prism_pipeline::{
 };
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
-use submission_gating::GatingStore;
+use submission_gating::{classify_eval_fail, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -365,16 +365,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     ) -> Result<(), String> {
         let msg = format!("measure: {err}");
         // Harness EVAL_FAIL is miner/model code, not Lium infra — do not burn
-        // auto-retries (BYOK seal is kept on Err; see finish_measure).
+        // auto-retries (BYOK seal is kept on Err; see finish_measure). The
+        // miner-fixable phases (`install_deps` custom-deps install,
+        // `train_script` training crash) additionally fail terminal under
+        // their own class, which grants unbounded resubmit. Every other
+        // EVAL_FAIL phase (eval / battery / score) stays the historical
+        // windowed `install` class. Non-EVAL_FAIL failures are Lium infra and
+        // keep `install` + operator-paid auto-retry.
         if msg.contains("EVAL_FAIL") {
-            fail_terminal(
-                self.store.as_ref(),
-                self.gating.as_ref(),
-                row,
-                "install",
-                &msg,
-            )
-            .await;
+            let class = classify_eval_fail(&msg);
+            fail_terminal(self.store.as_ref(), self.gating.as_ref(), row, class, &msg).await;
             return Ok(());
         }
         if self.maybe_auto_retry(row, "install", &msg).await {

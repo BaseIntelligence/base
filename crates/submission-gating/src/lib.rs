@@ -13,9 +13,13 @@
 //! ```
 //!
 //! Non-`open` rows make intake fail with an explicit 409, except infra
-//! `blocked` within [`INFRA_RESUBMIT_WINDOW_MS`] (install / AST / LLM).
-//! Cheat `rejected` never soft-reopens; the watcher (or an operator)
-//! returns other rows to `open`.
+//! `blocked` within [`INFRA_RESUBMIT_WINDOW_MS`] (install / AST / LLM) and
+//! **miner-fixable** `blocked` ([`is_miner_fixable_class`]:
+//! `install_deps` / `train_script`), which the miner may resubmit **without
+//! a time bound** — a failed custom `requirements.txt`/`pyproject.toml`
+//! install or a training-script crash is the miner's to fix and re-run at
+//! will, so it must never burn eligibility. Cheat `rejected` never
+//! soft-reopens; the watcher (or an operator) returns other rows to `open`.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -68,10 +72,31 @@ impl GatingState {
 /// Miner may POST a new submission after infra `blocked` for this long.
 pub const INFRA_RESUBMIT_WINDOW_MS: u64 = 30 * 60 * 1000;
 
-/// Infra auto-retry / `ChallengeInternal` classes (not cheat).
+/// Operator-side infra auto-retry / `ChallengeInternal` classes (not cheat).
+///
+/// These are faults of the control plane / pod marketplace (Lium rent,
+/// similarity/agentic backends): auto-retried ≤ `auto_retry_max`, then
+/// resubmittable within [`INFRA_RESUBMIT_WINDOW_MS`].
 #[must_use]
 pub fn is_infra_error_class(class: Option<&str>) -> bool {
     matches!(class, Some("install" | "ast_infra" | "llm_infra"))
+}
+
+/// **Miner-fixable** failure classes — the miner's own code is at fault and
+/// only the miner can fix it, so a `blocked` row of this class is
+/// resubmittable **without a time bound** (never burns the 1-max slot):
+///
+/// - `install_deps`: the miner's custom `requirements.txt` / `pyproject.toml`
+///   install command failed on the pod (bad pin, missing wheel, build
+///   error). Fix the dep file and resubmit at will.
+/// - `train_script`: the miner's `training.py` crashed at build/train time
+///   (e.g. within the train wall). Fix the script and re-run.
+///
+/// These never auto-retry on the operator's dime (no pod re-rent on the
+/// operator's budget for a miner bug); the miner drives the re-run.
+#[must_use]
+pub fn is_miner_fixable_class(class: Option<&str>) -> bool {
+    matches!(class, Some("install_deps" | "train_script"))
 }
 
 /// `blocked` + infra class + still inside the post-install resubmit window.
@@ -81,6 +106,47 @@ pub fn infra_resubmit_allowed(row: &GatingRow, now_ms: u64) -> bool {
         && is_infra_error_class(row.last_error_class.as_deref())
         && row.updated_at_ms > 0
         && now_ms.saturating_sub(row.updated_at_ms) <= INFRA_RESUBMIT_WINDOW_MS
+}
+
+/// Whether a fresh POST is allowed despite a non-`open` gating row: either an
+/// infra `blocked` inside the resubmit window, or a miner-fixable `blocked`
+/// (unbounded — install/script failures are the miner's to re-run at will).
+#[must_use]
+pub fn resubmit_allowed(row: &GatingRow, now_ms: u64) -> bool {
+    infra_resubmit_allowed(row, now_ms)
+        || (row.state == GatingState::Blocked
+            && is_miner_fixable_class(row.last_error_class.as_deref()))
+}
+
+/// Classify a harness `EVAL_FAIL` message into a gating error class.
+///
+/// The harness emits `EVAL_FAIL` + `{"stage": "...", "error": "..."}`.
+/// Phases the miner alone can fix map to the unbounded-resubmit classes
+/// ([`is_miner_fixable_class`]):
+///
+/// - `install_deps` — the pod's network-on install phase for the miner's
+///   `requirements.txt` / `pyproject.toml` failed (also flagged by the
+///   harness `DEPS_INSTALL_FAIL` marker).
+/// - `train_script` — `training.py` failed at build/train time (crash
+///   within the wall). The miner fixes the code and re-runs.
+///
+/// Any other phase (eval / battery / score / unknown) stays `install`
+/// (windowed resubmit) — unchanged from prior behavior.
+#[must_use]
+pub fn classify_eval_fail(msg: &str) -> &'static str {
+    let stage = msg
+        .split_once("\"stage\"")
+        .and_then(|(_, r)| r.split_once(':'))
+        .map(|(_, v)| v.trim_start().trim_start_matches('"'))
+        .and_then(|v| v.split(['"', ',', '}']).next())
+        .map_or("", str::trim);
+    if msg.contains("DEPS_INSTALL_FAIL") || matches!(stage, "install_deps" | "install") {
+        "install_deps"
+    } else if matches!(stage, "train" | "build") {
+        "train_script"
+    } else {
+        "install"
+    }
 }
 
 /// One `submission_gating` row.
@@ -96,7 +162,8 @@ pub struct GatingRow {
     pub state: GatingState,
     /// Auto-retry attempts consumed (infra classes).
     pub attempt_count: u32,
-    /// Last classified error (`install` / `ast_infra` / `llm_infra` / `miner`).
+    /// Last classified error (`install` / `ast_infra` / `llm_infra` /
+    /// `install_deps` / `train_script` / `miner`).
     pub last_error_class: Option<String>,
     /// Created unix ms (0 when unknown).
     pub created_at_ms: u64,
@@ -709,6 +776,72 @@ mod tests {
         assert!(!infra_resubmit_allowed(&row, now));
         assert!(is_infra_error_class(Some("ast_infra")));
         assert!(!is_infra_error_class(Some("cheat")));
+    }
+
+    #[test]
+    fn eval_fail_classes_map_to_gating_classes() {
+        // Miner dependency-install failure → unbounded resubmit class.
+        let deps = "measure: exec: harness failed (code 3): EVAL_FAIL\n\
+             DEPS_INSTALL_FAIL\n{\"stage\": \"install_deps\", \"error\": \"no wheel\"}";
+        assert_eq!(classify_eval_fail(deps), "install_deps");
+        // Training-script crash within the wall (the RUN1 dtype crash shape).
+        let train = "measure: exec: EVAL_FAIL\n{\"stage\": \"train\", \"error\": \
+             \"index_add_(): self (BFloat16) and source (Float) ...\"}";
+        assert_eq!(classify_eval_fail(train), "train_script");
+        // build-phase crash is also miner-fixable script.
+        assert_eq!(
+            classify_eval_fail("EVAL_FAIL\n{\"stage\": \"build\", \"error\": \"OOM\"}"),
+            "train_script"
+        );
+        // Later phases stay the windowed `install` class (unchanged).
+        assert_eq!(
+            classify_eval_fail("EVAL_FAIL\n{\"stage\": \"eval\", \"error\": \"battery\"}"),
+            "install"
+        );
+        // Unknown / missing stage → conservative `install`.
+        assert_eq!(classify_eval_fail("EVAL_FAIL (no json)"), "install");
+        // Marker alone (no stage json) still routes deps failures.
+        assert_eq!(
+            classify_eval_fail("boom DEPS_INSTALL_FAIL boom"),
+            "install_deps"
+        );
+    }
+
+    #[test]
+    fn miner_fixable_resubmit_is_unbounded() {
+        let now = 10_000_000u64;
+        let mut row = GatingRow {
+            challenge: "prism".into(),
+            hotkey: hk(1),
+            uid: Some(0),
+            state: GatingState::Blocked,
+            attempt_count: 0,
+            last_error_class: Some("install_deps".into()),
+            // Way past the infra window — miner-fixable ignores the clock.
+            created_at_ms: now,
+            updated_at_ms: now.saturating_sub(INFRA_RESUBMIT_WINDOW_MS * 100),
+        };
+        assert!(is_miner_fixable_class(Some("install_deps")));
+        assert!(is_miner_fixable_class(Some("train_script")));
+        assert!(!is_miner_fixable_class(Some("install")));
+        assert!(!is_infra_error_class(Some("install_deps")));
+        // Unbounded resubmit for a failed custom-deps install…
+        assert!(resubmit_allowed(&row, now));
+        assert!(
+            !infra_resubmit_allowed(&row, now),
+            "not the infra window path"
+        );
+        // …and for a training-script crash.
+        row.last_error_class = Some("train_script".into());
+        assert!(resubmit_allowed(&row, now));
+        // Cheat rejects never reopen, regardless of class.
+        row.state = GatingState::Rejected;
+        assert!(!resubmit_allowed(&row, now));
+        // Infra class still honored via the windowed path.
+        row.state = GatingState::Blocked;
+        row.last_error_class = Some("install".into());
+        row.updated_at_ms = now - 60_000;
+        assert!(resubmit_allowed(&row, now));
     }
 
     #[tokio::test]

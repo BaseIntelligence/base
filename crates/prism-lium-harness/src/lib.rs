@@ -18,6 +18,45 @@ pub use detached::{
 /// Pod-side staging directory for eval assets.
 pub const EVAL_ASSETS_POD_DIR: &str = "/tmp/prism_eval/eval-assets";
 
+// Pod image for the harness. Default is the cu13.0.2 DinD base (sshd from
+// image init, empty startup — other marketplace images lack a stable sshd
+// under Lium's metachar-free startup rules).
+//
+// recipe-v10 target: the "complete" base built from deploy/prism-pod
+// (ghcr.io/baseintelligence/prism-pod:v10-cuda13-te) ships Transformer
+// Engine + build toolchain so miners can NVFP4-train and `pip install`
+// extras from their own manifest (see prism-recipe/harness/prismlib/deps.py
+// and prism_recipe::POD_IMAGE_REF). Opt-in via env until built+pushed and
+// validated on a GPU node — live keeps the daturaai default.
+const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
+const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda13.0.2-devel-ubuntu24.04-dind";
+/// Default Lium template name (daturaai cu13 base).
+pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9";
+/// Template name used automatically when the image is env-overridden
+/// (template identity is name-based / reuse-if-exists on Lium: a new image
+/// must ship under a new name or pods would keep the old template).
+pub const RECIPES_TEMPLATE_NAME_V10: &str = "prism-recipe-v10";
+/// Startup commands (empty: sshd comes from image init).
+pub const RECIPES_TEMPLATE_STARTUP: &str = "";
+
+/// Resolved pod `(image, tag, default_template_name)`. `PRISM_POD_IMAGE` /
+/// `PRISM_POD_IMAGE_TAG` let ops stage the recipe-v10 TE image without a
+/// code bump; unset falls back to the daturaai cu13 default (whose pinned
+/// tag applies only to that image). An overridden image automatically flips
+/// the template name to [`RECIPES_TEMPLATE_NAME_V10`].
+#[must_use]
+pub fn resolved_pod_image() -> (String, Option<String>, &'static str) {
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+    match env("PRISM_POD_IMAGE") {
+        Some(image) => (image, env("PRISM_POD_IMAGE_TAG"), RECIPES_TEMPLATE_NAME_V10),
+        None => (
+            RECIPES_TEMPLATE_IMAGE.to_owned(),
+            Some(RECIPES_TEMPLATE_TAG.to_owned()),
+            RECIPES_TEMPLATE_NAME,
+        ),
+    }
+}
+
 /// Pod bootstrap prepended to the run command. Payloads are staged separately.
 pub const HARNESS_BOOTSTRAP: &str = "set -e\ncommand -v pip >/dev/null 2>&1 || apt-get update -q; command -v pip >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip; python3 -c 'import torch' 2>/dev/null || echo 'torch stopping'; python3 -c 'import transformers' 2>/dev/null || pip install --break-system-packages --root-user-action=ignore 'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'; mkdir -p /tmp/prism_eval\n";
 

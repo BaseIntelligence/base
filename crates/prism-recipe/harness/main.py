@@ -70,6 +70,7 @@ from prismlib import RECIPE_SEED, RECIPE_VERSION
 from prismlib import TRAIN_ROWS as _RECIPE_TRAIN_ROWS
 from prismlib import VAL_ROWS as _RECIPE_VAL_ROWS
 from prismlib import dataset
+from prismlib import deps as deps_mod
 from prismlib import manifest as manifest_mod
 from prismlib import tokenizer as tok_contract
 from prismlib.envutil import fail, float_env, int_env, log
@@ -562,6 +563,20 @@ def main():
         eval_battery=_eval_battery_status(),
         started_ts=t_start,
     )
+
+    # Miner dependency install phase (recipe-v10): install a shipped
+    # requirements.txt / pyproject.toml while the parent still has network,
+    # BEFORE the netns-isolated children. A failure is miner-fixable
+    # (`install_deps` class) — resubmit at will, no eligibility burned.
+    try:
+        installed = deps_mod.install_miner_deps(
+            WORKDIR, int_env("PRISM_INSTALL_TIMEOUT_SECS", deps_mod.DEFAULT_INSTALL_TIMEOUT_S), log
+        )
+        if installed:
+            log(f"miner deps installed ({installed}); continuing to train/eval")
+    except Exception as exc:  # noqa: BLE001 — miner-attributable, routed to install_deps
+        print("DEPS_INSTALL_FAIL")
+        fail("install_deps", exc)
 
     _cheatguard_call("pre_train", ctx)
 

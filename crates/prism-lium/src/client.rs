@@ -16,21 +16,14 @@ use crate::ssh::{
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 use prism_lium_harness::{
     classify_log, detach_launch_cmd, eval_assets_dir, harness_env_pairs, harness_upload_tar,
-    parse_harness_probe, parse_metrics_output, random_seed_hex, HarnessProgress,
-    EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
-    HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, TRAIN_DONE_MARKER,
+    parse_harness_probe, parse_metrics_output, random_seed_hex, resolved_pod_image,
+    HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
+    HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, RECIPES_TEMPLATE_STARTUP, TRAIN_DONE_MARKER,
 };
 use prism_lium_types::{CostGuardrailError, LiumError};
 use prism_lium_types::{
     GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
 };
-
-// cu13.0.2-dinD: sshd from image init (empty startup). Other marketplace
-// images lack a stable sshd under Lium's metachar-free startup rules.
-const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
-const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda13.0.2-devel-ubuntu24.04-dind";
-const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9";
-const RECIPES_TEMPLATE_STARTUP: &str = "";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
 const TERMINAL_FAIL_STATUSES: &[&str] = &[
@@ -302,18 +295,14 @@ impl LiumClient {
                 return Ok(id.clone());
             }
         }
+        let (image, tag, default_name) = resolved_pod_image();
         let name = spec
             .template_name
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or(RECIPES_TEMPLATE_NAME);
-        self.ensure_template(
-            name,
-            RECIPES_TEMPLATE_IMAGE,
-            Some(RECIPES_TEMPLATE_TAG),
-            Some(RECIPES_TEMPLATE_STARTUP),
-        )
-        .await
+            .unwrap_or(default_name);
+        self.ensure_template(name, &image, tag.as_deref(), Some(RECIPES_TEMPLATE_STARTUP))
+            .await
     }
 
     /// Account balance (USD) when available.
@@ -1010,6 +999,7 @@ mod tests {
 
     use super::*;
     use crate::ASSETS_ENV_LOCK;
+    use prism_lium_harness::RECIPES_TEMPLATE_NAME;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

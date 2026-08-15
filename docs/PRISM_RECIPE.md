@@ -39,7 +39,10 @@ miner unified diff ───────┘         │
 1. **Operator pin** — recipe freezes AutoModel at a tagged git commit plus a
    content-addressed archive hash (tarball staged like today’s FineWeb pin).
 2. **Miner submit** — ZIP (or JSON equivalent) with `automodel.base` +
-   `automodel.patch` (+ optional `prism.toml`).
+   `automodel.patch` (+ optional `prism.toml`). Recipe-v10: the patch may
+   **add `requirements.txt` or `pyproject.toml` at the repo root** for
+   custom deps (`requirements.txt` wins if both). See **Modular pod image +
+   miner dependencies** below.
 3. **Apply fail-closed** — master applies the patch onto a clean pin checkout;
    reject on conflict / path escape / binary blobs / oversized diff.
 4. **Visibility** — persist full unified diff, `diffstat`, and file
@@ -53,6 +56,38 @@ miner unified diff ───────┘         │
 7. **Harness wrap** — pod still owns dataset pin, `prism_telemetry`,
    wall-clock/step caps, eval battery. Miner code must call into AutoModel’s
    train entry under those constraints (thin operator adapter — not miner-owned).
+
+### Modular pod image + miner dependencies (recipe-v10)
+
+The pod image (`/v1/recipe` `pod_image_ref` =
+`ghcr.io/baseintelligence/prism-pod:v10-cuda13-te`, built from
+[`../deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) is a
+complete CUDA 13 base: PyTorch, `nvcc`/`ninja`/`build-essential`,
+Transformer Engine (NVFP4 training), and common accelerators. A submission
+may ship `requirements.txt` (`pip install -r`) or `pyproject.toml`
+(`pip install .`) — patch-added at the AutoModel repo root (slim delivery
+always keeps both names; the harness searches the workdir root and
+`submission/`). The harness installs it in a **network-on install phase in
+the parent, before** the `unshare --net` train/eval children
+([`prismlib/deps.py`](../crates/prism-recipe/harness/prismlib/deps.py)). So
+dependency installs (FlashAttention, `mamba-ssm`, custom kernels) have
+network; model code that later sees private eval assets does not.
+
+Descriptor keys: `pod_image_ref`, `miner_install_supported` (bool),
+`miner_deps_members` (`["requirements.txt","pyproject.toml"]`),
+`install_timeout_secs` (1800). Image is env-overridable for staged rollout:
+`PRISM_POD_IMAGE` + `PRISM_POD_IMAGE_TAG` (the Lium template name flips to
+`prism-recipe-v10` automatically — template identity is name-based, so a new
+image must ship under a new name). Ops: build + push the image and validate
+`transformer_engine` import on a GPU node **before** repinning live.
+
+**Miner-fixable retry classes.** A failed custom-deps install (`install_deps`)
+or a `training.py` build/train crash (`train_script`) fails **without
+burning the 1-max slot** and is resubmittable at will (unbounded — no time
+window), distinct from operator infra classes
+(`install`/`ast_infra`/`llm_infra`, windowed 30 min). Classification:
+harness `EVAL_FAIL` + `{"stage": …}` → `orchestrator::classify_eval_fail` →
+`submission_gating::{is_miner_fixable_class, resubmit_allowed}`.
 
 ### AutoModel pin metadata (apply-lib fields)
 

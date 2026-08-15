@@ -510,6 +510,57 @@ Emission plumbing: `prism_registry::emission_leaves` (competition credits
 → configured collapse → optional owner split) — with default knobs it is
 bit-identical to `apply_wta(competition_scores(..))`, enforced by test.
 
+## Modular pod image + miner-installable dependencies (recipe-v10)
+
+Miners are no longer limited to the harness's preinstalled stack. recipe-v10
+ships a **complete CUDA 13 base image** (`prism_recipe::POD_IMAGE_REF` =
+`ghcr.io/baseintelligence/prism-pod:v10-cuda13-te`, built from
+[`deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) with
+PyTorch, a full build toolchain (`nvcc`, `ninja`, `build-essential`),
+**Transformer Engine** (NVFP4 training), and common accelerators — plus a
+**network-on install phase** so a submission can bring its own deps.
+
+**What a miner may ship** (a file in the submitted tree — for the AutoModel
+path, **add it at the repo root via `automodel.patch`**; slim delivery
+always keeps `requirements.txt` / `pyproject.toml`, and the harness searches
+the workdir root and `submission/`):
+
+- `requirements.txt` — `pip install -r requirements.txt`
+- `pyproject.toml` — `pip install .` (PEP 621)
+
+They install FlashAttention, `mamba-ssm`, custom Triton/CUDA kernels, etc.,
+into the image before training. `/v1/recipe` advertises the capability:
+`pod_image_ref`, `miner_install_supported`, `miner_deps_members`,
+`install_timeout_secs` (1800s).
+
+**Isolation is unchanged.** The install runs in the **parent harness, which
+still has network**, strictly *before* the train/eval children are spawned
+under `unshare --net`
+([`prismlib/deps.py`](../crates/prism-recipe/harness/prismlib/deps.py),
+called from `main.py` after the dataset/tokenizer warm and before
+`pre_train`). Miner *model* code — the only code that later sees the private
+eval assets — never has network. `requirements.txt` wins over
+`pyproject.toml` when both are shipped.
+
+**Forgiving retry (miner-fixable classes).** A miner-caused failure never
+burns the 1-max slot and is resubmittable **at will** (no time window),
+unlike operator infra classes (windowed):
+
+| Class | Trigger | Resubmit |
+|-------|---------|----------|
+| `install_deps` | the miner's `requirements.txt`/`pyproject.toml` install command failed (bad pin, missing wheel, build error) | unbounded — fix the manifest, resubmit |
+| `train_script` | `training.py` crashed at build/train time (e.g. within the wall) | unbounded — fix the code, re-run |
+
+Wiring: the harness emits `EVAL_FAIL` + `{"stage": "install_deps"|"train"|"build", …}`;
+`orchestrator::classify_eval_fail` maps those to the classes above, and
+`submission_gating::{is_miner_fixable_class, resubmit_allowed}` grants the
+unbounded resubmit. Later phases (eval/battery/score) keep the windowed
+`install` class. The pod image is env-overridable for staged rollout
+(`PRISM_POD_IMAGE` / `PRISM_POD_IMAGE_TAG`; the Lium template name flips to
+`prism-recipe-v10` automatically with the override); until the v10 image is
+built+pushed and validated on a GPU node, live keeps the daturaai cu13
+default.
+
 ## Agentic anti-cheat + AST + metrics gate
 
 Before any pod rent, **pre-pod screens** (no GPU, no private eval assets) run

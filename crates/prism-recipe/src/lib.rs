@@ -502,6 +502,17 @@ pub struct RecipeDescriptor {
     pub automodel_git_commit: &'static str,
     /// Content SHA-256 of the staged pin archive (empty until operator freeze).
     pub automodel_content_sha256: &'static str,
+    /// Pod container image the harness executes in (CUDA/torch base). Miners
+    /// build against this to know which wheels/toolchain are preinstalled.
+    pub pod_image_ref: &'static str,
+    /// Whether the pod runs a **network-on install phase** for miner
+    /// dependency manifests before the netns-isolated train/eval.
+    pub miner_install_supported: bool,
+    /// ZIP/JSON members a miner may ship to install custom deps
+    /// (`requirements.txt`, `pyproject.toml`).
+    pub miner_deps_members: [&'static str; 2],
+    /// Wall-clock cap (seconds) for the miner dependency-install phase.
+    pub install_timeout_secs: u64,
 }
 
 /// Build the public descriptor (deterministic).
@@ -528,8 +539,28 @@ pub fn descriptor() -> RecipeDescriptor {
         automodel_git_ref: pin.git_tag,
         automodel_git_commit: pin.git_commit,
         automodel_content_sha256: pin.content_sha256,
+        pod_image_ref: POD_IMAGE_REF,
+        miner_install_supported: MINER_INSTALL_SUPPORTED,
+        miner_deps_members: [
+            prism_automodel::MEMBER_REQUIREMENTS,
+            prism_automodel::MEMBER_PYPROJECT,
+        ],
+        install_timeout_secs: INSTALL_TIMEOUT_SECS,
     }
 }
+
+/// Pod container image the harness runs in (advertised via `/v1/recipe`).
+/// The recipe-v10 image ships CUDA 13, `PyTorch`, a full build toolchain,
+/// and Transformer Engine so miners can NVFP4-train and `pip install`
+/// extras (`FlashAttention`, `mamba-ssm`, …) from their own manifests.
+pub const POD_IMAGE_REF: &str = "ghcr.io/baseintelligence/prism-pod:v10-cuda13-te";
+
+/// The pod runs a network-on install phase for miner dependency manifests
+/// before the netns-isolated train/eval (recipe-v10).
+pub const MINER_INSTALL_SUPPORTED: bool = true;
+
+/// Wall-clock cap (seconds) for the miner dependency-install phase.
+pub const INSTALL_TIMEOUT_SECS: u64 = 1_800;
 
 /// Validate the pinned dataset locally (download+hash) — no network in prod
 /// callers; only run from tests or the operator CLI.

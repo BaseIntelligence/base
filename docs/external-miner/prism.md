@@ -34,9 +34,32 @@ prism.toml              # optional — entry / model-config knobs
 5. Write `automodel.base` as a single line equal to `automodel_pin_id`, pack
    the ZIP, and `POST /v1/submissions` with your hotkey + **`X-Lium-Api-Key`**.
 
-Models must stay **≤ 350M parameters**. The pod has **no network**
-(`unshare --net`) beyond the operator-owned dataset pull — do not call Hub
-downloads from miner code.
+Models must stay **≤ 350M parameters**. Miner **model code** (build/train/
+eval) runs with **no network** (`unshare --net`) beyond the operator-owned
+dataset pull — do not call Hub downloads from `build_model` / `train`.
+
+**Bring your own dependencies (recipe-v10).** The pod image is a complete
+CUDA 13 base with PyTorch, a build toolchain (`nvcc`, `ninja`), Transformer
+Engine (NVFP4 training), and common accelerators. You may additionally ship
+**one** of:
+
+- `requirements.txt` — installed with `pip install -r requirements.txt`
+- `pyproject.toml` — installed with `pip install .`
+
+by **adding the file at the repo root in your `automodel.patch`** (or at
+the ZIP root on the legacy two-script path). It is installed in a
+**network-on install phase before** your model code is sandboxed — so
+`flash-attn`, `mamba-ssm`, custom Triton/CUDA kernels, etc. compile and
+install, then train/eval run offline. `requirements.txt` wins if you ship
+both. Check `GET /v1/recipe` for `pod_image_ref`, `miner_install_supported`,
+`miner_deps_members`, and `install_timeout_secs`.
+
+**Resubmit at will on your own failures.** If your dependency install fails
+(`install_deps`) or your `training.py` crashes at build/train time
+(`train_script`), the run fails **without burning your one-submission
+slot** — fix the manifest or the script and resubmit immediately, no time
+window. (Operator-side infra hiccups keep the existing 30-minute resubmit
+window.)
 
 **Legacy recipe 1.x rejected on live.** Two-script ZIPs
 (`architecture.py` + `training.py`), 1.3 source-tree ZIPs, and training-only
