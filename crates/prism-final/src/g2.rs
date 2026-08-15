@@ -92,15 +92,22 @@ pub fn score_from_g2_benchmarks(metrics: &Value) -> u64 {
     if accs.is_empty() {
         return 0;
     }
-    let mean = accs.iter().map(|(_, a)| *a).sum::<f64>() / accs.len() as f64;
-    if !mean.is_finite() || mean <= 0.0 {
-        return 0;
-    }
-    let v = (mean * (SCORE_MAX as f64)).round();
-    if v >= SCORE_MAX as f64 {
-        SCORE_MAX
-    } else {
-        v as u64
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    {
+        let mean = accs.iter().map(|(_, a)| *a).sum::<f64>() / accs.len() as f64;
+        if !mean.is_finite() || mean <= 0.0 {
+            return 0;
+        }
+        let v = (mean * (SCORE_MAX as f64)).round();
+        if v >= SCORE_MAX as f64 {
+            SCORE_MAX
+        } else {
+            v as u64
+        }
     }
 }
 
