@@ -477,7 +477,7 @@ async fn prism_leaderboard_json(
         "total": page_out.total,
         "pageCount": page_out.page_count,
         "epoch": epoch,
-        "metric": "bpb",
+        "metric": "score",
         "updatedAt": now_iso(),
     })
 }
@@ -1260,7 +1260,7 @@ mod tests {
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
         assert_eq!(s, StatusCode::OK, "{v}");
-        assert_eq!(v["metric"], "bpb");
+        assert_eq!(v["metric"], "score");
         assert_eq!(v["items"][0]["elo"], 1.25);
         assert_eq!(v["items"][0]["bpb"], 1.25);
         assert_eq!(v["items"][0]["paramsM"], 12.0);

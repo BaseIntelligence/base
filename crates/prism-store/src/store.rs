@@ -118,16 +118,24 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// Journal one top-model publication.
     async fn record_publication(&self, p: &TopModelPublication) -> Result<(), StoreError>;
 
-    /// bpb of the most recent publication (idempotency guard; `None` = never
-    /// published).
+    /// bpb of the most recent publication (audit; prefer [`Self::last_publication_score`]).
     async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError>;
+
+    /// Lattice score of the submission behind the most recent publication
+    /// (idempotency guard for G2 / score ranking; `None` = never published or
+    /// the published row has no positive score).
+    async fn last_publication_score(&self) -> Result<Option<u64>, StoreError>;
 
     /// Most recent top-model publication row (`None` = never published).
     async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError>;
 
-    /// Best (lowest) bpb across all scored submissions ever (global top-model
-    /// trigger baseline).
+    /// Best (lowest) bpb across weight-eligible scored submissions (audit /
+    /// legacy). Top-model publish uses [`Self::best_scored_score`].
     async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError>;
+
+    /// Best (highest) lattice score across weight-eligible scored submissions
+    /// (global top-model / HF champion trigger — matches live board ranking).
+    async fn best_scored_score(&self) -> Result<Option<u64>, StoreError>;
 
     /// Non-terminal rows beyond grace — for the stuck sweep.
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError>;
@@ -596,6 +604,24 @@ impl PrismStore for MemoryPrismStore {
             .map(|p| p.bpb))
     }
 
+    async fn last_publication_score(&self) -> Result<Option<u64>, StoreError> {
+        let last = self.last_publication().await?;
+        let Some(p) = last else {
+            return Ok(None);
+        };
+        let rows = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        Ok(rows
+            .iter()
+            .find(|r| r.id == p.submission_id)
+            .and_then(|r| match r.final_score {
+                Some(FinalScore::Score(v)) if v > 0 => Some(v),
+                _ => None,
+            }))
+    }
+
     async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError> {
         Ok(self
             .publications
@@ -615,6 +641,20 @@ impl PrismStore for MemoryPrismStore {
             .filter(|r| matches!(r.final_score, Some(FinalScore::Score(v)) if v > 0))
             .filter_map(|r| r.bpb)
             .min_by(f64::total_cmp))
+    }
+
+    async fn best_scored_score(&self) -> Result<Option<u64>, StoreError> {
+        Ok(self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .iter()
+            .filter(|r| r.weight_eligible())
+            .filter_map(|r| match r.final_score {
+                Some(FinalScore::Score(v)) if v > 0 => Some(v),
+                _ => None,
+            })
+            .max())
     }
 
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError> {

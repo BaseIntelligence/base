@@ -644,16 +644,18 @@ pub fn is_prism_champion_submission(row: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Prism BPB leaderboard from **champion** terminal submissions (Score>0).
+/// Prism champion leaderboard from terminal submissions (`Score>0`).
 ///
-/// Non-top submissions are hidden from the public board. `elo` carries the BPB
-/// value so the existing leaderboard row contract can surface rankings without
-/// inventing Elo/duels; `bpb` / `paramsM` mirror the measured values explicitly
-/// for telemetry-aware clients. `submissionId` is the best-BPB champion row so
-/// clients can open the detail modal; era / benches are filled by detail fan-out.
+/// Ranks by **lattice score** descending (G2 equal-weight mean under
+/// `scoring_version` 4) — never min-bpb alone. Per hotkey, the highest-scoring
+/// champion row wins. `elo` carries the lattice score so the existing row
+/// contract can surface rankings; `bpb` / `paramsM` remain measured secondary
+/// fields. `submissionId` opens the detail modal; era / benches fill via
+/// detail fan-out.
 #[must_use]
 pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> {
-    let mut best: HashMap<String, (f64, Option<u64>, String)> = HashMap::new();
+    // (score, bpb, n_params, submission_id) — higher score wins per hotkey.
+    let mut best: HashMap<String, (u64, Option<f64>, Option<u64>, String)> = HashMap::new();
     let mut counts: HashMap<String, u32> = HashMap::new();
     for row in subs {
         if row.get("status").and_then(Value::as_str) != Some("terminated") {
@@ -662,9 +664,17 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
         if !is_prism_champion_submission(row) {
             continue;
         }
-        let Some(bpb) = row.get("bpb").and_then(Value::as_f64) else {
+        let Some(score) = row
+            .get("score")
+            .and_then(|s| s.get("value"))
+            .and_then(Value::as_u64)
+        else {
             continue;
         };
+        if score == 0 {
+            continue;
+        }
+        let bpb = row.get("bpb").and_then(Value::as_f64);
         let n_params = row.get("n_params").and_then(Value::as_u64);
         let id = row
             .get("id")
@@ -678,36 +688,38 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
             .to_owned();
         *counts.entry(hk.clone()).or_insert(0) += 1;
         best.entry(hk)
-            .and_modify(|(b, p, sid)| {
-                if bpb < *b {
+            .and_modify(|(s, b, p, sid)| {
+                if score > *s {
+                    *s = score;
                     *b = bpb;
                     *p = n_params;
                     sid.clone_from(&id);
                 }
             })
-            .or_insert((bpb, n_params, id));
+            .or_insert((score, bpb, n_params, id));
     }
-    let mut rows: Vec<(f64, String, u32, Option<u64>, String)> = best
+    let mut rows: Vec<_> = best
         .into_iter()
-        .map(|(hk, (bpb, n_params, sid))| {
+        .map(|(hk, (score, bpb, n_params, sid))| {
             let n = counts.get(&hk).copied().unwrap_or(1);
-            (bpb, hk, n, n_params, sid)
+            (score, bpb, hk, n, n_params, sid)
         })
         .collect();
-    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Higher lattice score first; ties break by lexicographically smaller id.
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.5.cmp(&b.5)));
     rows.into_iter()
         .enumerate()
         .map(
-            |(i, (bpb, hk, submissions, n_params, sid))| LeaderboardRow {
+            |(i, (score, bpb, hk, submissions, n_params, sid))| LeaderboardRow {
                 rank: u32::try_from(i + 1).unwrap_or(u32::MAX),
                 agent: agent_from_hotkey(&hk, epoch),
-                elo: bpb,
+                elo: score as f64,
                 wins: 0,
                 losses: 0,
                 win_rate: 0.0,
                 submissions,
                 delta7d: 0.0,
-                bpb: Some(bpb),
+                bpb,
                 params_m: n_params.map(|p| p as f64 / 1e6),
                 weight: None,
                 tao_per_day: None,
@@ -1460,8 +1472,10 @@ mod tests {
         ];
         let rows = prism_bpb_leaderboard(&subs, 3);
         assert_eq!(rows.len(), 2);
-        assert!((rows[0].bpb.unwrap() - 1.0).abs() < f64::EPSILON);
+        // Higher lattice score first (bb=200), not lower bpb.
         assert_eq!(rows[0].submission_id.as_deref(), Some("b"));
+        assert!((rows[0].elo - 200.0).abs() < f64::EPSILON);
+        assert!((rows[0].bpb.unwrap() - 1.0).abs() < f64::EPSILON);
         assert!(rows[0].params_m.is_none());
         assert!((rows[1].params_m.unwrap() - 12.0).abs() < f64::EPSILON);
         assert_eq!(rows[1].submission_id.as_deref(), Some("a"));
@@ -1563,19 +1577,22 @@ mod tests {
     }
 
     #[test]
-    fn prism_bpb_leaderboard_ranks_lower_first() {
+    fn prism_score_leaderboard_ranks_higher_first() {
         let subs = vec![
             json!({"id":"a","status":"terminated","bpb":2.0,"miner_hotkey":"aa","score":{"kind":"score","value":10}}),
             json!({"id":"b","status":"terminated","bpb":1.0,"miner_hotkey":"bb","score":{"kind":"score","value":20}}),
             json!({"id":"c","status":"queued","bpb":0.1,"miner_hotkey":"cc","score":{"kind":"score","value":30}}),
+            // Same hotkey as aa — higher score should win the slot.
             json!({"id":"d","status":"terminated","bpb":0.5,"miner_hotkey":"aa","score":{"kind":"score","value":40}}),
         ];
         let rows = prism_bpb_leaderboard(&subs, 3);
         assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].submission_id.as_deref(), Some("d"));
+        assert!((rows[0].elo - 40.0).abs() < f64::EPSILON);
+        assert_eq!(rows[1].submission_id.as_deref(), Some("b"));
+        assert!((rows[1].elo - 20.0).abs() < f64::EPSILON);
         assert_eq!(rows[0].rank, 1);
-        assert!((rows[0].elo - 0.5).abs() < f64::EPSILON);
         assert_eq!(rows[0].submissions, 2);
-        assert!((rows[1].elo - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
