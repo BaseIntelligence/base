@@ -8,6 +8,7 @@
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::must_use_candidate)]
 
 pub mod composite;
 pub mod config;
