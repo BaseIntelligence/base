@@ -48,7 +48,8 @@ impl ScoringMode {
         match raw.map(str::trim) {
             Some("shadow") => Self::Shadow,
             Some("composite") => Self::Composite,
-            Some("benchmarks") | None | Some(_) => Self::Benchmarks,
+            // Default + unknown strings → benchmarks (v4 live leaf).
+            _ => Self::Benchmarks,
         }
     }
 
