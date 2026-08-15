@@ -1,7 +1,7 @@
-//! Top-model GitHub publisher: each new global-best bpb model is published
-//! to the public `BaseIntelligence/prism` repo under `top-model/`
-//! (architecture.py + training.py + METRICS.json + README.md block) via the
-//! GitHub contents API.
+//! Top-model GitHub publisher: each new global-best **lattice score** model
+//! (G2 benchmark board ranking) is published to the public
+//! `BaseIntelligence/prism` repo under `top-model/` (architecture.py +
+//! training.py + METRICS.json + README.md block) via the GitHub contents API.
 //!
 //! Token discipline: the GitHub token is read from a deploy secret **file**
 //! (`PRISM_TOPMODEL_GITHUB_TOKEN_FILE`, e.g. `deploy/secrets/github/token`),
@@ -51,7 +51,7 @@ pub struct TopModelRequest {
     pub arch_id: Option<String>,
     /// Miner hotkey that set the best.
     pub owner_hotkey: String,
-    /// Global-best bpb.
+    /// Measured bpb (audit / README; champion selection uses lattice score).
     pub bpb: f64,
     /// architecture.py (registry source for training-only entries).
     pub architecture_py: String,
@@ -240,8 +240,9 @@ fn readme_block(req: &TopModelRequest, weight_note: &str) -> String {
     };
     format!(
         "# PRISM top model\n\n\
-         Published by the Base master on every new global-best bpb. This\n\
-         directory always mirrors the current champion; history lives in git.\n\n\
+         Published by the Base master on every new global-best G2 lattice\n\
+         score (live board ranking). This directory always mirrors the\n\
+         current champion; history lives in git.\n\n\
          | field | value |\n|---|---|\n\
          | arch_id | `{}` |\n\
          | owner_hotkey | `{}…` |\n\

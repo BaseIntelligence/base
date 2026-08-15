@@ -131,6 +131,13 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         limit: u32,
     },
+    /// Force-publish one submission to GitHub/HF top-model (operator republish).
+    /// Requires DB + `PRISM_TOPMODEL_*` token files + parked checkpoint when
+    /// weights are required.
+    RepublishTopmodel {
+        /// Submission id (64 hex).
+        id: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -162,6 +169,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 .build()
                 .map_err(|e| e.to_string())?;
             return rt.block_on(cmd_rescore_g2(*dry_run, id.clone(), *limit));
+        }
+        Some(Cmd::RepublishTopmodel { id }) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            return rt.block_on(cmd_republish_topmodel(id.clone()));
         }
         _ => {}
     }
@@ -262,6 +276,44 @@ async fn cmd_rescore_g2(dry_run: bool, id: Option<String>, limit: u32) -> Result
         updated += 1;
     }
     println!("rescore-g2 done updated={updated} skipped={skipped} dry_run={dry_run}");
+    Ok(())
+}
+
+async fn cmd_republish_topmodel(id: String) -> Result<(), String> {
+    let url = std::env::var("BASE_DATABASE_URL")
+        .map_err(|_| "BASE_DATABASE_URL required for republish-topmodel".to_string())?;
+    let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
+    let store: Arc<dyn PrismStore> = Arc::new(DbPrismStore::new(pool));
+    let row = store
+        .get(&id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown submission {id}"))?;
+    let lattice_score = match &row.final_score {
+        Some(FinalScore::Score(v)) if *v > 0 => *v,
+        _ => return Err(format!("submission {id} has no positive lattice score")),
+    };
+    if !row.weight_eligible() {
+        return Err(format!(
+            "submission {id} is not weight-eligible (AutoModel 2.0)"
+        ));
+    }
+    let gh = build_topmodel();
+    println!(
+        "republish-topmodel id={id} score={lattice_score} bpb={:?} arch={:?} github={}",
+        row.bpb,
+        row.arch_id,
+        gh.is_some()
+    );
+    prism_registry::post_score_hooks(&store, gh.as_deref(), &row, true).await;
+    if let Ok(Some(pub_row)) = store.last_publication().await {
+        println!(
+            "publication submission_id={} repo={} commit={:?}",
+            pub_row.submission_id, pub_row.repo_path, pub_row.commit_sha
+        );
+    } else {
+        println!("publication: no journal row (publish may have failed; check logs)");
+    }
     Ok(())
 }
 

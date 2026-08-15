@@ -426,12 +426,20 @@ impl PrismStore for DbPrismStore {
         arch::last_publication_bpb(&self.pool).await
     }
 
+    async fn last_publication_score(&self) -> Result<Option<u64>, StoreError> {
+        arch::last_publication_score(&self.pool).await
+    }
+
     async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError> {
         arch::last_publication(&self.pool).await
     }
 
     async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError> {
         arch::best_scored_bpb(&self.pool).await
+    }
+
+    async fn best_scored_score(&self) -> Result<Option<u64>, StoreError> {
+        arch::best_scored_score(&self.pool).await
     }
 
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError> {

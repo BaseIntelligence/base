@@ -1,7 +1,8 @@
 //! HuggingFace Hub top-model publisher.
 //!
-//! When a submission becomes the new global-best bpb, the master publishes a
-//! **reloadable** Hub model card to `PRISM_TOPMODEL_HF_REPO` (default
+//! When a submission becomes the new global-best **lattice score** (G2 board
+//! ranking — never min-bpb alone), the master publishes a **reloadable** Hub
+//! model card to `PRISM_TOPMODEL_HF_REPO` (default
 //! `BaseIntelligence/top-prism-architecture`):
 //!
 //! - custom architecture / AutoModel novelty sources (`architecture.py`,

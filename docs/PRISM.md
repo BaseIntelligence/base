@@ -222,8 +222,9 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
   the epoch projects all-zero (burn / hold) — never emit Prism share to 1.x.
 
 **Top-model publish + secure receive.** The master tracks the global best
-bpb across **weight-eligible** (recipe 2.0 / AutoModel) scored submissions.
-After a successful Lium eval it
+**lattice score** (G2 equal-weight accuracies under `scoring_version` 4 —
+never min-bpb alone) across **weight-eligible** (recipe 2.0 / AutoModel)
+scored submissions. After a successful Lium eval it
 **pulls** `checkpoint.pt` from the pod over SSH (master-initiated; the pod
 never pushes) and stages it through the secure receive hook into
 `$PRISM_ARTIFACT_DIR/<submission_id>/` **before** terminate. Staging
@@ -251,7 +252,8 @@ check is tighter when measured params are known. Oversized payloads are
 refused **before** writing.
 
 Top-model publish calls `verify_parked` and refuses weights without a
-valid receipt. On a new global best (≤ best ever and < last published), it
+valid receipt. On a new global-best lattice score (≥ best ever and >
+last published score), it
 publishes `architecture.py` + `training.py` + `METRICS.json` +
 `ARTIFACT.json` + a `README.md` block to the public
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) repo

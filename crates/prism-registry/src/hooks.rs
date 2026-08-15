@@ -8,10 +8,12 @@
 //!    their arch. Idempotent on digest (simultaneous duplicates share the
 //!    first registration).
 //! 2. **Arch best bpb** — lower-wins update feeding owner credit + the
-//!    public leaderboard (any trainer's result counts).
-//! 3. **Top-model publish** — when the row's bpb is a new global best
-//!    (≤ best scored bpb ever AND < last published bpb), publish to GitHub
-//!    and journal the publication. No-op without a configured publisher.
+//!    public leaderboard (any trainer's result counts; audit / secondary).
+//! 3. **Top-model publish** — when the row's **lattice score** is a new
+//!    global best (≥ best scored score ever AND > last published score),
+//!    publish to GitHub/HF and journal. Matches live board ranking
+//!    (G2 benchmark lattice under `scoring_version` 4). Never min-bpb alone.
+//!    No-op without a configured publisher.
 
 use std::sync::Arc;
 
@@ -24,16 +26,20 @@ use tracing::{info, warn};
 use crate::publish::{TopModelPublisher, TopModelRequest, TOPMODEL_REPO_PATH};
 
 /// Run registry + top-model bookkeeping for one finalized row.
+///
+/// When `force` is true (operator republish CLI), skip the global-best /
+/// beats-published guards and publish anyway.
 #[allow(clippy::too_many_lines)]
 pub async fn post_score_hooks(
     store: &Arc<dyn PrismStore>,
     publisher: Option<&TopModelPublisher>,
     row: &SubmissionState,
+    force: bool,
 ) {
-    let (Some(bpb), Some(FinalScore::Score(v))) = (row.bpb, &row.final_score) else {
+    let (Some(bpb), Some(FinalScore::Score(lattice))) = (row.bpb, &row.final_score) else {
         return;
     };
-    if *v == 0 {
+    if *lattice == 0 {
         return; // cheat / copy-gate zero never publishes nor sets arch best
     }
 
@@ -83,9 +89,9 @@ pub async fn post_score_hooks(
         }
     }
 
-    // (3) Top-model publish on a new global best — GitHub (optional) + HF
-    // (optional). Both require a verified secure-receive receipt when
-    // `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1` (default); source-only is opt-in.
+    // (3) Top-model publish on a new global-best **lattice score** — GitHub
+    // (optional) + HF (optional). Both require a verified secure-receive
+    // receipt when `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1` (default).
     // Recipe 2.0 / AutoModel only — legacy 1.x never becomes the published
     // top-model champion (historical FE rows stay in Postgres).
     if !row.weight_eligible() {
@@ -95,12 +101,14 @@ pub async fn post_score_hooks(
         );
         return;
     }
-    let last = store.last_publication_bpb().await.unwrap_or(None);
-    let global = store.best_scored_bpb().await.unwrap_or(None);
-    let is_global_best = global.is_some_and(|g| bpb <= g);
-    let beats_published = last.is_none_or(|l| bpb < l);
-    if !(is_global_best && beats_published) {
-        return;
+    if force {
+        info!(submission_id = %row.id, score = lattice, "top-model: force republish");
+    } else {
+        let last = store.last_publication_score().await.unwrap_or(None);
+        let global = store.best_scored_score().await.unwrap_or(None);
+        if !(global.is_some_and(|g| *lattice >= g) && last.is_none_or(|l| *lattice > l)) {
+            return;
+        }
     }
     let ckpt = match prism_artifacts::verify_parked(&row.id) {
         Ok(receipt) => {
@@ -139,7 +147,7 @@ pub async fn post_score_hooks(
     if let Some(publisher) = publisher {
         match publisher.publish(&req).await {
             Ok(sha) => {
-                info!(submission_id = %row.id, bpb, commit = %sha, "top model published to GitHub");
+                info!(submission_id = %row.id, score = lattice, bpb, commit = %sha, "top model published");
                 let rec = TopModelPublication {
                     submission_id: row.id.clone(),
                     arch_id: arch_id.clone(),

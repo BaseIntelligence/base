@@ -5,8 +5,9 @@
 //! - [`competition_scores`] — per-epoch emission math for the architecture
 //!   competition (SCORE_MAX lattice preserved; exact rule documented in
 //!   `docs/PRISM.md` § Architecture competition).
-//! - [`TopModelPublisher`] — publishes each new global-best bpb model to the
-//!   public `BaseIntelligence/prism` GitHub repo under `top-model/`, via a
+//! - [`TopModelPublisher`] — publishes each new global-best **lattice score**
+//!   model (G2 benches under `scoring_version` 4 — never min-bpb alone) to
+//!   the public `BaseIntelligence/prism` GitHub repo under `top-model/`, via a
 //!   token read from a deploy secret file (`PRISM_TOPMODEL_GITHUB_TOKEN_FILE`;
 //!   graceful no-op when absent).
 //! - [`HfTopModelPublisher`] — same trigger, commits a reloadable custom-arch

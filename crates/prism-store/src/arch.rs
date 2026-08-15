@@ -197,6 +197,19 @@ pub(crate) async fn last_publication_bpb(pool: &PgPool) -> Result<Option<f64>, S
     Ok(last_publication(pool).await?.map(|p| p.bpb))
 }
 
+pub(crate) async fn last_publication_score(pool: &PgPool) -> Result<Option<u64>, StoreError> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT s.score FROM prism_topmodel_publication p \
+         JOIN prism_submission s ON s.id = p.submission_id \
+         WHERE s.kind = 'score' AND s.score > 0 \
+         ORDER BY p.published_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?;
+    Ok(row.and_then(|(s,)| s.map(i64::cast_unsigned)))
+}
+
 pub(crate) async fn last_publication(
     pool: &PgPool,
 ) -> Result<Option<TopModelPublication>, StoreError> {
@@ -231,4 +244,17 @@ pub(crate) async fn best_scored_bpb(pool: &PgPool) -> Result<Option<f64>, StoreE
     .await
     .map_err(backend)?;
     Ok(row.0)
+}
+
+pub(crate) async fn best_scored_score(pool: &PgPool) -> Result<Option<u64>, StoreError> {
+    let row: (Option<i64>,) = sqlx::query_as(&format!(
+        "SELECT MAX(score) FROM prism_submission \
+         WHERE kind = 'score' AND score > 0 \
+           AND {}",
+        crate::emit::WEIGHT_ELIGIBLE_SQL
+    ))
+    .fetch_one(pool)
+    .await
+    .map_err(backend)?;
+    Ok(row.0.map(i64::cast_unsigned))
 }

@@ -118,16 +118,24 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// Journal one top-model publication.
     async fn record_publication(&self, p: &TopModelPublication) -> Result<(), StoreError>;
 
-    /// bpb of the most recent publication (idempotency guard; `None` = never
-    /// published).
+    /// bpb of the most recent publication (audit; prefer [`Self::last_publication_score`]).
     async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError>;
+
+    /// Lattice score of the submission behind the most recent publication
+    /// (idempotency guard for G2 / score ranking; `None` = never published or
+    /// the published row has no positive score).
+    async fn last_publication_score(&self) -> Result<Option<u64>, StoreError>;
 
     /// Most recent top-model publication row (`None` = never published).
     async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError>;
 
-    /// Best (lowest) bpb across all scored submissions ever (global top-model
-    /// trigger baseline).
+    /// Best (lowest) bpb across weight-eligible scored submissions (audit /
+    /// legacy). Top-model publish uses [`Self::best_scored_score`].
     async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError>;
+
+    /// Best (highest) lattice score across weight-eligible scored submissions
+    /// (global top-model / HF champion trigger — matches live board ranking).
+    async fn best_scored_score(&self) -> Result<Option<u64>, StoreError>;
 
     /// Non-terminal rows beyond grace — for the stuck sweep.
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError>;
@@ -174,6 +182,10 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+fn lock<T>(m: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, StoreError> {
+    m.lock().map_err(|_| StoreError::Backend("poison".into()))
+}
+
 /// Extract the miner-reported loss series from a `RemoteExecResult` JSON blob
 /// (`telemetry.loss_series`). Empty when absent or malformed — the harness
 /// controls the shape, so a parse miss means a pre-telemetry recipe.
@@ -188,10 +200,7 @@ pub(crate) fn telemetry_from_metrics(metrics_json: &serde_json::Value) -> Vec<Te
 #[async_trait]
 impl PrismStore for MemoryPrismStore {
     async fn insert_queued(&self, row: &SubmissionState) -> Result<(), StoreError> {
-        let mut rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut rows = lock(&self.rows)?;
         // Match Postgres unique(id): reject duplicates so a second POST cannot
         // enqueue another billable Lium claim for the same submission_id.
         if rows.iter().any(|r| r.id == row.id) {
@@ -202,20 +211,11 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn get(&self, id: &str) -> Result<Option<SubmissionState>, StoreError> {
-        Ok(self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .iter()
-            .find(|r| r.id == id)
-            .cloned())
+        Ok(lock(&self.rows)?.iter().find(|r| r.id == id).cloned())
     }
 
     async fn claim_next(&self) -> Result<Option<SubmissionState>, StoreError> {
-        let mut rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut rows = lock(&self.rows)?;
         let pos = rows.iter().position(|r| r.status == Stage::Queued);
         let Some(i) = pos else { return Ok(None) };
         let mut row = rows.remove(i).ok_or(StoreError::Backend("pop".into()))?;
@@ -230,10 +230,7 @@ impl PrismStore for MemoryPrismStore {
         update: &StatePatch,
         event: Option<&StageEvent>,
     ) -> Result<SubmissionState, StoreError> {
-        let mut rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut rows = lock(&self.rows)?;
         let row = rows
             .iter_mut()
             .find(|r| r.id == id)
@@ -278,17 +275,11 @@ impl PrismStore for MemoryPrismStore {
         if let Some(m) = &update.metrics_json {
             let series = telemetry_from_metrics(m);
             if !series.is_empty() {
-                self.telemetry
-                    .lock()
-                    .map_err(|_| StoreError::Backend("poison".into()))?
-                    .insert(id.to_owned(), series);
+                lock(&self.telemetry)?.insert(id.to_owned(), series);
             }
         }
         if let Some(e) = event {
-            self.events
-                .lock()
-                .map_err(|_| StoreError::Backend("poison".into()))?
-                .push((id.to_owned(), e.clone()));
+            lock(&self.events)?.push((id.to_owned(), e.clone()));
         }
         Ok(out)
     }
@@ -298,10 +289,7 @@ impl PrismStore for MemoryPrismStore {
         id: &str,
         bump_retry: bool,
     ) -> Result<SubmissionState, StoreError> {
-        let mut rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut rows = lock(&self.rows)?;
         let row = rows
             .iter_mut()
             .find(|r| r.id == id)
@@ -329,15 +317,9 @@ impl PrismStore for MemoryPrismStore {
         let out = row.clone();
         drop(rows);
         // A re-scored row must re-enter the emission outbox.
-        self.emitted
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .remove(id);
+        lock(&self.emitted)?.remove(id);
         if !retained_measurement {
-            self.telemetry
-                .lock()
-                .map_err(|_| StoreError::Backend("poison".into()))?
-                .remove(id);
+            lock(&self.telemetry)?.remove(id);
         }
         Ok(out)
     }
@@ -350,10 +332,7 @@ impl PrismStore for MemoryPrismStore {
     ) -> Result<Vec<SubmissionState>, StoreError> {
         let st = status.and_then(Stage::parse);
         let miner_norm = miner.map(|m| m.trim().to_ascii_lowercase());
-        let mut v: Vec<_> = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
+        let mut v: Vec<_> = lock(&self.rows)?
             .iter()
             .filter(|r| st.is_none() || Some(r.status) == st)
             .filter(|r| {
@@ -369,10 +348,7 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn list_champions(&self, limit: u32) -> Result<Vec<SubmissionState>, StoreError> {
-        let mut v: Vec<_> = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
+        let mut v: Vec<_> = lock(&self.rows)?
             .iter()
             .filter(|r| matches!(r.final_score, Some(FinalScore::Score(s)) if s > 0))
             .cloned()
@@ -383,10 +359,7 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError> {
-        Ok(self
-            .events
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
+        Ok(lock(&self.events)?
             .iter()
             .filter(|(k, _)| k == id)
             .map(|(_, e)| e.clone())
@@ -394,13 +367,7 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn telemetry(&self, id: &str) -> Result<Vec<TelemetryPoint>, StoreError> {
-        Ok(self
-            .telemetry
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .get(id)
-            .cloned()
-            .unwrap_or_default())
+        Ok(lock(&self.telemetry)?.get(id).cloned().unwrap_or_default())
     }
 
     async fn assign_emit_batch(
@@ -408,14 +375,8 @@ impl PrismStore for MemoryPrismStore {
         netuid: u16,
         epoch: u64,
     ) -> Result<Vec<EpochScoreRow>, StoreError> {
-        let rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
-        let mut emitted = self
-            .emitted
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let rows = lock(&self.rows)?;
+        let mut emitted = lock(&self.emitted)?;
         let mut out = Vec::new();
         for r in rows.iter() {
             if r.netuid == netuid && r.final_score.is_some() && !emitted.contains_key(&r.id) {
@@ -432,14 +393,8 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn emit_batch(&self, netuid: u16, epoch: u64) -> Result<Vec<EpochScoreRow>, StoreError> {
-        let rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
-        let emitted = self
-            .emitted
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let rows = lock(&self.rows)?;
+        let emitted = lock(&self.emitted)?;
         Ok(rows
             .iter()
             .filter(|r| {
@@ -455,10 +410,7 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn active_score_rows(&self, netuid: u16) -> Result<Vec<EpochScoreRow>, StoreError> {
-        let rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let rows = lock(&self.rows)?;
         Ok(rows
             .iter()
             .filter(|r| r.netuid == netuid && r.weight_eligible())
@@ -475,19 +427,11 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError> {
-        Ok(self
-            .cursors
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .get(&netuid)
-            .copied())
+        Ok(lock(&self.cursors)?.get(&netuid).copied())
     }
 
     async fn set_emit_cursor(&self, netuid: u16, epoch: u64) -> Result<(), StoreError> {
-        let mut cursors = self
-            .cursors
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut cursors = lock(&self.cursors)?;
         let e = cursors.entry(netuid).or_insert(0);
         *e = (*e).max(epoch);
         Ok(())
@@ -499,14 +443,8 @@ impl PrismStore for MemoryPrismStore {
             Some(c) => c.saturating_add(1),
             None => 0,
         };
-        let rows = self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
-        let emitted = self
-            .emitted
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let rows = lock(&self.rows)?;
+        let emitted = lock(&self.emitted)?;
         Ok(rows
             .iter()
             .filter(|r| r.netuid == netuid)
@@ -521,10 +459,7 @@ impl PrismStore for MemoryPrismStore {
         &self,
         rec: &ArchitectureRecord,
     ) -> Result<PublishArchOutcome, StoreError> {
-        let mut archs = self
-            .archs
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut archs = lock(&self.archs)?;
         if let Some(existing) = archs.values().find(|a| a.arch_digest == rec.arch_digest) {
             return Ok(PublishArchOutcome::Duplicate(existing.arch_id.clone()));
         }
@@ -533,32 +468,18 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn get_arch(&self, arch_id: &str) -> Result<Option<ArchitectureRecord>, StoreError> {
-        Ok(self
-            .archs
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .get(arch_id)
-            .cloned())
+        Ok(lock(&self.archs)?.get(arch_id).cloned())
     }
 
     async fn list_archs(&self, limit: u32) -> Result<Vec<ArchitectureRecord>, StoreError> {
-        let mut v: Vec<_> = self
-            .archs
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .values()
-            .cloned()
-            .collect();
+        let mut v: Vec<_> = lock(&self.archs)?.values().cloned().collect();
         v.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
         v.truncate(limit as usize);
         Ok(v)
     }
 
     async fn note_arch_best_bpb(&self, arch_id: &str, bpb: f64) -> Result<bool, StoreError> {
-        let mut archs = self
-            .archs
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut archs = lock(&self.archs)?;
         let Some(rec) = archs.get_mut(arch_id) else {
             return Ok(false);
         };
@@ -570,46 +491,42 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn arch_owners(&self) -> Result<Vec<(String, String)>, StoreError> {
-        Ok(self
-            .archs
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
+        Ok(lock(&self.archs)?
             .values()
             .map(|a| (a.arch_id.clone(), a.owner_hotkey.clone()))
             .collect())
     }
 
     async fn record_publication(&self, p: &TopModelPublication) -> Result<(), StoreError> {
-        self.publications
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .push(p.clone());
+        lock(&self.publications)?.push(p.clone());
         Ok(())
     }
 
     async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError> {
-        Ok(self
-            .publications
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .last()
-            .map(|p| p.bpb))
+        Ok(lock(&self.publications)?.last().map(|p| p.bpb))
+    }
+
+    async fn last_publication_score(&self) -> Result<Option<u64>, StoreError> {
+        let last = self.last_publication().await?;
+        let Some(p) = last else {
+            return Ok(None);
+        };
+        let rows = lock(&self.rows)?;
+        Ok(rows
+            .iter()
+            .find(|r| r.id == p.submission_id)
+            .and_then(|r| match r.final_score {
+                Some(FinalScore::Score(v)) if v > 0 => Some(v),
+                _ => None,
+            }))
     }
 
     async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError> {
-        Ok(self
-            .publications
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .last()
-            .cloned())
+        Ok(lock(&self.publications)?.last().cloned())
     }
 
     async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError> {
-        Ok(self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
+        Ok(lock(&self.rows)?
             .iter()
             .filter(|r| r.weight_eligible())
             .filter(|r| matches!(r.final_score, Some(FinalScore::Score(v)) if v > 0))
@@ -617,12 +534,20 @@ impl PrismStore for MemoryPrismStore {
             .min_by(f64::total_cmp))
     }
 
+    async fn best_scored_score(&self) -> Result<Option<u64>, StoreError> {
+        Ok(lock(&self.rows)?
+            .iter()
+            .filter(|r| r.weight_eligible())
+            .filter_map(|r| match r.final_score {
+                Some(FinalScore::Score(v)) if v > 0 => Some(v),
+                _ => None,
+            })
+            .max())
+    }
+
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError> {
         let cutoff = now_ms().saturating_sub(grace_secs.saturating_mul(1000));
-        Ok(self
-            .rows
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
+        Ok(lock(&self.rows)?
             .iter()
             .filter(|r| !r.status.is_terminal() && r.updated_at_ms < cutoff)
             .cloned()
@@ -630,10 +555,7 @@ impl PrismStore for MemoryPrismStore {
     }
 
     async fn precheck_quota_get(&self, identity: &str, day: &str) -> Result<u32, StoreError> {
-        let map = self
-            .precheck_quota
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let map = lock(&self.precheck_quota)?;
         Ok(map
             .get(&(identity.to_owned(), day.to_owned()))
             .copied()
@@ -646,10 +568,7 @@ impl PrismStore for MemoryPrismStore {
         day: &str,
         limit: u32,
     ) -> Result<Option<u32>, StoreError> {
-        let mut map = self
-            .precheck_quota
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut map = lock(&self.precheck_quota)?;
         let key = (identity.to_owned(), day.to_owned());
         let used = map.get(&key).copied().unwrap_or(0);
         if used >= limit {
