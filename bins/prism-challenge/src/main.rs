@@ -289,7 +289,7 @@ async fn cmd_republish_topmodel(id: String) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown submission {id}"))?;
-    let score = match &row.final_score {
+    let lattice_score = match &row.final_score {
         Some(FinalScore::Score(v)) if *v > 0 => *v,
         _ => return Err(format!("submission {id} has no positive lattice score")),
     };
@@ -300,7 +300,7 @@ async fn cmd_republish_topmodel(id: String) -> Result<(), String> {
     }
     let gh = build_topmodel();
     println!(
-        "republish-topmodel id={id} score={score} bpb={:?} arch={:?} github={}",
+        "republish-topmodel id={id} score={lattice_score} bpb={:?} arch={:?} github={}",
         row.bpb,
         row.arch_id,
         gh.is_some()
