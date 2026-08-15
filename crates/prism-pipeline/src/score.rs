@@ -4,9 +4,7 @@ use std::sync::OnceLock;
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use prism_challenge_task::{SCORE_MAX, SCORING_VERSION, SCORING_VERSION_V3, SCORING_VERSION_V4};
-
 use crate::composite::CompositeOutcome;
-
 /// Terminal measured outcome after master eval.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineOutcome {
@@ -16,9 +14,6 @@ pub enum PipelineOutcome {
     NoScore { reason: NoScoreReasonCode },
     Resolved(ScoreOrAbsence),
 }
-
-/// Soft map: `SCORE_MAX * (1 / (1 + bpb))` clamped.
-#[must_use]
 pub fn score_from_bpb(bpb: f64) -> u64 {
     if !bpb.is_finite() || bpb < 0.0 {
         return 0;
@@ -33,7 +28,6 @@ pub fn score_from_bpb(bpb: f64) -> u64 {
         v as u64
     }
 }
-
 /// `PRISM_SCORING_MODE`: default `benchmarks` (v4); `shadow`=v2 bpb; `composite`=v3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoringMode {
@@ -41,35 +35,26 @@ pub enum ScoringMode {
     Composite,
     Benchmarks,
 }
-
 impl ScoringMode {
-    #[must_use]
-    pub fn parse(raw: Option<&str>) -> Self {
+        pub fn parse(raw: Option<&str>) -> Self {
         match raw.map(str::trim) {
             Some("shadow") => Self::Shadow,
             Some("composite") => Self::Composite,
-            // Default + unknown strings → benchmarks (v4 live leaf).
             _ => Self::Benchmarks,
         }
     }
-
-    #[must_use]
-    pub fn from_env() -> Self {
+        pub fn from_env() -> Self {
         static MODE: OnceLock<ScoringMode> = OnceLock::new();
         *MODE.get_or_init(|| Self::parse(std::env::var("PRISM_SCORING_MODE").ok().as_deref()))
     }
-
-    #[must_use]
-    pub const fn scoring_version(self) -> u16 {
+        pub const fn scoring_version(self) -> u16 {
         match self {
             Self::Shadow => SCORING_VERSION,
             Self::Composite => SCORING_VERSION_V3,
             Self::Benchmarks => SCORING_VERSION_V4,
         }
     }
-
-    #[must_use]
-    pub const fn name(self) -> &'static str {
+        pub const fn name(self) -> &'static str {
         match self {
             Self::Shadow => "shadow",
             Self::Composite => "composite",
@@ -77,9 +62,6 @@ impl ScoringMode {
         }
     }
 }
-
-/// Lattice for `mode`. Benchmarks uses `g2_lattice` only (never bpb).
-#[must_use]
 pub fn final_lattice(
     bpb: f64,
     composite: Option<&CompositeOutcome>,
@@ -90,18 +72,11 @@ pub fn final_lattice(
         ScoringMode::Shadow => score_from_bpb(bpb),
         ScoringMode::Composite => match composite {
             Some(CompositeOutcome::Scored(s)) => s.lattice,
-            Some(CompositeOutcome::Ineligible(_)) => 0,
-            None => {
-                tracing::warn!("composite mode without CompositeOutcome; scoring 0");
-                0
-            }
+            _ => 0,
         },
         ScoringMode::Benchmarks => g2_lattice.unwrap_or(0),
     }
 }
-
-/// Map pipeline outcome to leaf payload (legacy bpb path).
-#[must_use]
 pub fn score_from_pipeline(outcome: &PipelineOutcome) -> ScoreOrAbsence {
     match outcome {
         PipelineOutcome::Resolved(s) => s.clone(),
@@ -115,7 +90,6 @@ pub fn score_from_pipeline(outcome: &PipelineOutcome) -> ScoreOrAbsence {
         },
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,4 @@
-//! PRISM challenge orchestrator on Base (Lium GPU eval; D24 leaves; no Phala).
-
+//! PRISM challenge orchestrator (Lium GPU eval; D24 leaves).
 #![forbid(unsafe_code)]
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_possible_truncation)]
@@ -19,10 +18,7 @@ pub use challenge_common::{
 };
 pub use leaf_emit::emit_signed_leaf_set;
 pub use orchestrator::{Orchestrator, OrchestratorConfig};
-pub use prism_challenge_task::{
-    CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, SCORING_VERSION_V3,
-    SCORING_VERSION_V4, TASK_ID_DOMAIN,
-};
+pub use prism_challenge_task::{CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, TASK_ID_DOMAIN};
 pub use prism_emit::{EmitError, EmitSummary, EpochEmitter};
 pub use prism_eval_store::{DbEvalStore, MemoryEvalStore};
 pub use prism_final::{combine_final, score_from_g2_benchmarks, FinalOutcome};
