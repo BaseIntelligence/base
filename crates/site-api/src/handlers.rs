@@ -1261,7 +1261,8 @@ mod tests {
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["metric"], "score");
-        assert_eq!(v["items"][0]["elo"], 1.25);
+        // Lattice score in `elo`; measured bpb stays secondary.
+        assert_eq!(v["items"][0]["elo"], 900.0);
         assert_eq!(v["items"][0]["bpb"], 1.25);
         assert_eq!(v["items"][0]["paramsM"], 12.0);
 
