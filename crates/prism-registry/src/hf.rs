@@ -33,19 +33,32 @@ const REGULAR_FILE_MAX: usize = 5 * 1024 * 1024;
 const BANNER_URL: &str = "https://github.com/BaseIntelligence/base/raw/main/assets/banner.jpg";
 
 /// GPT-2 Large (774M) Prism-protocol public-pack reference (eval-only).
-const GPT2_LABEL: &str = "GPT-2 Large (774M)";
-const GPT2_PARAMS_M: f64 = 774.0;
-const GPT2_BPB: f64 = 4.163_851_322_121_356_4;
-const GPT2_HELLASWAG: f64 = 0.395;
-const GPT2_ARC_EASY: f64 = 0.28;
-const GPT2_ARC_CHALLENGE: f64 = 0.28;
-const GPT2_PIQA: f64 = 0.69;
-const GPT2_WINOGRANDE: f64 = 0.545;
-const GPT2_BOOLQ: f64 = 0.64;
-/// Prism-protocol Lium 1×5090 public pack (not OpenAI paper LAMBADA 60.12%).
-const GPT2_LAMBADA: f64 = 0.985;
-const GPT2_OPENBOOKQA: f64 = 0.335;
-const GPT2_SOURCE: &str = "https://huggingface.co/gpt2-large";
+const GPT2_LARGE_LABEL: &str = "GPT-2 Large (774M)";
+const GPT2_LARGE_PARAMS_M: f64 = 774.0;
+const GPT2_LARGE_BPB: f64 = 4.163_851_322_121_356_4;
+const GPT2_LARGE_HELLASWAG: f64 = 0.395;
+const GPT2_LARGE_ARC_EASY: f64 = 0.28;
+const GPT2_LARGE_ARC_CHALLENGE: f64 = 0.28;
+const GPT2_LARGE_PIQA: f64 = 0.69;
+const GPT2_LARGE_WINOGRANDE: f64 = 0.545;
+const GPT2_LARGE_BOOLQ: f64 = 0.64;
+const GPT2_LARGE_LAMBADA: f64 = 0.985;
+const GPT2_LARGE_OPENBOOKQA: f64 = 0.335;
+const GPT2_LARGE_SOURCE: &str = "https://huggingface.co/gpt2-large";
+
+/// GPT-2 Small (124M) Prism-protocol public-pack reference (eval-only).
+const GPT2_SMALL_LABEL: &str = "GPT-2 (124M)";
+const GPT2_SMALL_PARAMS_M: f64 = 124.4;
+const GPT2_SMALL_BPB: f64 = 4.759_478_148_923_918;
+const GPT2_SMALL_HELLASWAG: f64 = 0.355;
+const GPT2_SMALL_ARC_EASY: f64 = 0.245;
+const GPT2_SMALL_ARC_CHALLENGE: f64 = 0.24;
+const GPT2_SMALL_PIQA: f64 = 0.585;
+const GPT2_SMALL_WINOGRANDE: f64 = 0.515;
+const GPT2_SMALL_BOOLQ: f64 = 0.575;
+const GPT2_SMALL_LAMBADA: f64 = 0.97;
+const GPT2_SMALL_OPENBOOKQA: f64 = 0.32;
+const GPT2_SMALL_SOURCE: &str = "https://huggingface.co/openai-community/gpt2";
 
 /// HuggingFace Hub publisher (token never `Debug`/`Display`'d).
 pub struct HfTopModelPublisher {
@@ -502,9 +515,10 @@ fn hub_readme(req: &TopModelRequest, arch: &str, has_ckpt: bool) -> String {
         "Weights were not parked on the master for this champion — sources/config only."
     };
     let params_cell = params_m.map_or_else(|| "—".into(), |p| format!("{p:.1}M"));
-    let gpt2_params = format!("{GPT2_PARAMS_M:.0}M");
-    let params_vs = match params_m {
-        Some(p) if p > 0.0 => format!("{:.2}× vs {GPT2_LABEL}", GPT2_PARAMS_M / p),
+    let gpt2_large_params = format!("{GPT2_LARGE_PARAMS_M:.0}M");
+    let gpt2_small_params = format!("{GPT2_SMALL_PARAMS_M:.0}M");
+    let params_vs_large = match params_m {
+        Some(p) if p > 0.0 => format!("{:.2}× vs {GPT2_LARGE_LABEL}", GPT2_LARGE_PARAMS_M / p),
         _ => "—".into(),
     };
     let tflops_cell = tflops.map_or_else(|| "—".into(), |t| format!("{t:.1} TFLOPS (est.)"));
@@ -523,47 +537,93 @@ fn hub_readme(req: &TopModelRequest, arch: &str, has_ckpt: bool) -> String {
     let _ = writeln!(out, "![BASE Banner]({BANNER_URL})");
     out.push('\n');
     out.push_str("<h1 align=\"center\">PRISM top architecture</h1>\n\n");
-    out.push_str("<p align=\"center\"><b>Global-best miner architecture on Base PRISM — benchmarks vs GPT-2 Large</b></p>\n\n");
+    out.push_str("<p align=\"center\"><b>Global-best miner architecture on Base PRISM — benchmarks vs GPT-2 / GPT-2 Large</b></p>\n\n");
     out.push_str("</div>\n\n---\n\n");
-    out.push_str("## Benchmarks vs GPT-2 Large\n\n");
-    out.push_str("Prism-protocol **public** eval pack. Accuracy: **↑ higher better**. BPB: **↓ lower better**. ");
+    out.push_str("## Benchmarks vs GPT-2 (Prism-protocol)\n\n");
+    out.push_str("Prism-protocol **public** eval pack (1×RTX 5090). Accuracy: **↑ higher better**. BPB: **↓ lower better**. ");
     let _ = writeln!(
         out,
-        "Reference: [{GPT2_LABEL}]({GPT2_SOURCE}) (eval-only; not a miner train)."
+        "References: [{GPT2_SMALL_LABEL}]({GPT2_SMALL_SOURCE}) · [{GPT2_LARGE_LABEL}]({GPT2_LARGE_SOURCE}) (eval-only; not miner trains)."
     );
     out.push('\n');
-    out.push_str("| Metric | This model | GPT-2 Large | Δ | vs GPT-2 Large |\n");
-    out.push_str("|---|---:|---:|---:|:---|\n");
-    out.push_str(&bench_row_lower("Val BPB (G1)", Some(req.bpb), GPT2_BPB, 4));
-    for (name, ours, theirs) in [
-        ("HellaSwag", benches.hellaswag, GPT2_HELLASWAG),
-        ("ARC-Easy", benches.arc_easy, GPT2_ARC_EASY),
-        ("ARC-Challenge", benches.arc_challenge, GPT2_ARC_CHALLENGE),
-        ("PIQA", benches.piqa, GPT2_PIQA),
-        ("WinoGrande", benches.winogrande, GPT2_WINOGRANDE),
-        ("BoolQ", benches.boolq, GPT2_BOOLQ),
-        ("LAMBADA", benches.lambada, GPT2_LAMBADA),
-        ("OpenBookQA", benches.openbookqa, GPT2_OPENBOOKQA),
+    out.push_str("| Metric | This model | GPT-2 | GPT-2 Large | vs GPT-2 | vs GPT-2 Large |\n");
+    out.push_str("|---|---:|---:|---:|:---|:---|\n");
+    out.push_str(&bench_row_lower_dual(
+        "Val BPB (G1)",
+        Some(req.bpb),
+        GPT2_SMALL_BPB,
+        GPT2_LARGE_BPB,
+        4,
+    ));
+    for (name, ours, small, large) in [
+        (
+            "HellaSwag",
+            benches.hellaswag,
+            GPT2_SMALL_HELLASWAG,
+            GPT2_LARGE_HELLASWAG,
+        ),
+        (
+            "ARC-Easy",
+            benches.arc_easy,
+            GPT2_SMALL_ARC_EASY,
+            GPT2_LARGE_ARC_EASY,
+        ),
+        (
+            "ARC-Challenge",
+            benches.arc_challenge,
+            GPT2_SMALL_ARC_CHALLENGE,
+            GPT2_LARGE_ARC_CHALLENGE,
+        ),
+        ("PIQA", benches.piqa, GPT2_SMALL_PIQA, GPT2_LARGE_PIQA),
+        (
+            "WinoGrande",
+            benches.winogrande,
+            GPT2_SMALL_WINOGRANDE,
+            GPT2_LARGE_WINOGRANDE,
+        ),
+        ("BoolQ", benches.boolq, GPT2_SMALL_BOOLQ, GPT2_LARGE_BOOLQ),
+        (
+            "LAMBADA",
+            benches.lambada,
+            GPT2_SMALL_LAMBADA,
+            GPT2_LARGE_LAMBADA,
+        ),
+        (
+            "OpenBookQA",
+            benches.openbookqa,
+            GPT2_SMALL_OPENBOOKQA,
+            GPT2_LARGE_OPENBOOKQA,
+        ),
     ] {
-        out.push_str(&bench_row_higher(name, ours, theirs, 3));
+        out.push_str(&bench_row_higher_dual(name, ours, small, large, 3));
     }
     out.push_str("\n### Compute notes\n\n");
-    out.push_str("| | This model | GPT-2 Large |\n|---|---|---|\n");
-    let _ = writeln!(out, "| Parameters | {params_cell} | {gpt2_params} |");
-    let _ = writeln!(out, "| Size vs reference | {params_vs} | 1× |");
+    out.push_str("| | This model | GPT-2 | GPT-2 Large |\n|---|---|---|---|\n");
     let _ = writeln!(
         out,
-        "| Train tokens | {tokens_cell} | _(eval-only reference)_ |"
+        "| Parameters | {params_cell} | {gpt2_small_params} | {gpt2_large_params} |"
     );
     let _ = writeln!(
         out,
-        "| Wall clock | {wall_cell} | _(eval-only reference)_ |"
+        "| Size vs Large | {params_vs_large} | {:.2}× | 1× |",
+        GPT2_LARGE_PARAMS_M / GPT2_SMALL_PARAMS_M
     );
     let _ = writeln!(
         out,
-        "| Sustained train throughput | {tflops_cell} | n/a (no Prism train) |"
+        "| Train tokens | {tokens_cell} | _(eval-only)_ | _(eval-only)_ |"
     );
-    let _ = writeln!(out, "| GPU (harness) | `{gpu}` | 1×RTX 5090 (eval) |");
+    let _ = writeln!(
+        out,
+        "| Wall clock | {wall_cell} | _(eval-only)_ | _(eval-only)_ |"
+    );
+    let _ = writeln!(
+        out,
+        "| Sustained train throughput | {tflops_cell} | n/a | n/a |"
+    );
+    let _ = writeln!(
+        out,
+        "| GPU (harness) | `{gpu}` | 1×RTX 5090 (eval) | 1×RTX 5090 (eval) |"
+    );
     out.push_str(
         "\nThroughput ≈ `6 × N × D / wall` TFLOPS (dense transformer train FLOPs rule of thumb).\n\n",
     );
@@ -711,153 +771,75 @@ fn train_tokens(metrics: Option<&serde_json::Value>) -> Option<u64> {
         .or_else(|| metric_u64(metrics, &["tokens_seen"]).filter(|&t| t > 10_000))
 }
 
-fn bench_row_higher(name: &str, ours: Option<f64>, base: f64, digits: usize) -> String {
-    match ours {
-        Some(v) => {
-            let delta = v - base;
-            let (arrow, verdict) = if (delta).abs() < 1e-9 {
-                ("=", "tie")
-            } else if delta > 0.0 {
-                ("↑", "✓ better")
-            } else {
-                ("↓", "worse")
-            };
-            format!(
-                "| {name} | {v:.digits$} | {base:.digits$} | {arrow} {delta:+.digits$} | {verdict} |\n"
-            )
-        }
-        None => format!("| {name} | — | {base:.digits$} | — | _(missing)_ |\n"),
+fn verdict_higher(delta: f64) -> (&'static str, &'static str) {
+    if delta.abs() < 1e-9 {
+        ("=", "tie")
+    } else if delta > 0.0 {
+        ("↑", "✓ better")
+    } else {
+        ("↓", "worse")
     }
 }
 
-fn bench_row_lower(name: &str, ours: Option<f64>, base: f64, digits: usize) -> String {
-    match ours {
-        Some(v) => {
-            let delta = v - base;
-            let (arrow, verdict) = if (delta).abs() < 1e-9 {
-                ("=", "tie")
-            } else if delta < 0.0 {
-                ("↓", "✓ better")
-            } else {
-                ("↑", "worse")
-            };
-            format!(
-                "| {name} | {v:.digits$} | {base:.digits$} | {arrow} {delta:+.digits$} | {verdict} |\n"
-            )
-        }
-        None => format!("| {name} | — | {base:.digits$} | — | _(missing)_ |\n"),
+fn verdict_lower(delta: f64) -> (&'static str, &'static str) {
+    if delta.abs() < 1e-9 {
+        ("=", "tie")
+    } else if delta < 0.0 {
+        ("↓", "✓ better")
+    } else {
+        ("↑", "worse")
     }
 }
 
-const CONFIGURATION_PRISM_PY: &str = r#"
-"""Prism custom-arch Hub config (trust_remote_code)."""
-
-from transformers import PretrainedConfig
-
-
-class PrismConfig(PretrainedConfig):
-    model_type = "prism_custom"
-
-    def __init__(self, prism_arch_id=None, checkpoint_file="checkpoint.pt", **kwargs):
-        super().__init__(**kwargs)
-        self.prism_arch_id = prism_arch_id
-        self.checkpoint_file = checkpoint_file
-"#;
-
-const MODELING_PRISM_PY: &str = r#"
-"""Prism custom-arch loader (trust_remote_code).
-
-Supports:
-  1. Legacy seam: ``architecture.build_model(ctx)`` + ``checkpoint.pt``
-  2. AutoModel novelty: sources under ``sources/`` (apply patch offline)
-
-This is intentionally permissive — novel arches are not limited to stock
-GPT-2 ``transformers`` configs.
-"""
-
-from __future__ import annotations
-
-import importlib.util
-from pathlib import Path
-from typing import Any, Optional
-
-import torch
-from torch import nn
-from transformers import PreTrainedModel
-
-try:
-    from configuration_prism import PrismConfig
-except ImportError:  # package-style local import
-    from .configuration_prism import PrismConfig
-
-
-def _load_architecture_module(root: Path):
-    path = root / "architecture.py"
-    if not path.is_file():
-        raise FileNotFoundError(f"architecture.py missing under {root}")
-    spec = importlib.util.spec_from_file_location("prism_architecture", path)
-    if spec is None or spec.loader is None:
-        raise ImportError("cannot load architecture.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-class PrismCustomModel(PreTrainedModel):
-    config_class = PrismConfig
-    _no_split_modules = []
-
-    def __init__(self, config: PrismConfig, inner: Optional[nn.Module] = None):
-        super().__init__(config)
-        self.inner = inner if inner is not None else nn.Identity()
-        self.post_init()
-
-    def forward(self, *args: Any, **kwargs: Any):
-        return self.inner(*args, **kwargs)
-
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        trust = kwargs.pop("trust_remote_code", True)
-        config = kwargs.pop("config", None)
-        if config is None:
-            config = PrismConfig.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust, **kwargs
+fn bench_row_higher_dual(
+    name: &str,
+    ours: Option<f64>,
+    small: f64,
+    large: f64,
+    digits: usize,
+) -> String {
+    match ours {
+        Some(v) => {
+            let ds = v - small;
+            let dl = v - large;
+            let (as_, vs) = verdict_higher(ds);
+            let (al, vl) = verdict_higher(dl);
+            format!(
+                "| {name} | {v:.digits$} | {small:.digits$} | {large:.digits$} | {as_} {ds:+.digits$} {vs} | {al} {dl:+.digits$} {vl} |\n"
             )
-        root = Path(pretrained_model_name_or_path)
-        # Hub download may leave us with a cache dir; prefer local folder layout.
-        if not (root / "architecture.py").is_file():
-            # Fall back to empty shell when only config is present.
-            return cls(config)
-
-        mod = _load_architecture_module(root)
-        ctx = {
-            "device": "cpu",
-            "dtype": torch.float32,
-            "seed": 0,
-            "vocab_size": getattr(config, "vocab_size", 50257),
         }
-        if hasattr(mod, "build_model"):
-            inner = mod.build_model(ctx)
-        elif hasattr(mod, "Model"):
-            inner = mod.Model(**{k: v for k, v in ctx.items() if k in ("vocab_size",)})
-        else:
-            raise AttributeError(
-                "architecture.py must define build_model(ctx) or Model for Hub reload"
+        None => format!(
+            "| {name} | — | {small:.digits$} | {large:.digits$} | _(missing)_ | _(missing)_ |\n"
+        ),
+    }
+}
+
+fn bench_row_lower_dual(
+    name: &str,
+    ours: Option<f64>,
+    small: f64,
+    large: f64,
+    digits: usize,
+) -> String {
+    match ours {
+        Some(v) => {
+            let ds = v - small;
+            let dl = v - large;
+            let (as_, vs) = verdict_lower(ds);
+            let (al, vl) = verdict_lower(dl);
+            format!(
+                "| {name} | {v:.digits$} | {small:.digits$} | {large:.digits$} | {as_} {ds:+.digits$} {vs} | {al} {dl:+.digits$} {vl} |\n"
             )
-        model = cls(config, inner=inner)
-        ckpt_name = getattr(config, "checkpoint_file", "checkpoint.pt") or "checkpoint.pt"
-        ckpt = root / ckpt_name
-        if ckpt.is_file():
-            blob = torch.load(ckpt, map_location="cpu", weights_only=False)
-            state = blob.get("state_dict", blob) if isinstance(blob, dict) else blob
-            if isinstance(state, dict):
-                try:
-                    model.inner.load_state_dict(state, strict=False)
-                except Exception:
-                    # Novel arches / tied keys — best-effort; sources remain authoritative.
-                    pass
-        return model
-"#;
+        }
+        None => format!(
+            "| {name} | — | {small:.digits$} | {large:.digits$} | _(missing)_ | _(missing)_ |\n"
+        ),
+    }
+}
+
+const CONFIGURATION_PRISM_PY: &str = include_str!("configuration_prism.py");
+
+const MODELING_PRISM_PY: &str = include_str!("modeling_prism.py");
 
 /// Collect novel source files from a packed `tree_blob` for Hub `sources/`.
 #[must_use]
@@ -1014,7 +996,9 @@ mod tests {
     #[test]
     fn readme_benchmarks_first_vs_gpt2_large() {
         let md = hub_readme(&req(), "arch_hf", true);
-        assert!(md.contains("Benchmarks vs GPT-2 Large"), "{md}");
+        assert!(md.contains("Benchmarks vs GPT-2 (Prism-protocol)"), "{md}");
+        assert!(md.contains("GPT-2 Large"), "{md}");
+        assert!(md.contains("| GPT-2 |"), "{md}");
         assert!(md.contains(BANNER_URL), "{md}");
         assert!(md.contains("HellaSwag"), "{md}");
         assert!(md.contains("✓ better") || md.contains("worse"), "{md}");

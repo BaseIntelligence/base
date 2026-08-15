@@ -11,56 +11,88 @@ use site_types::{
 use site_data::map::{prism_submission, prism_telemetry};
 use site_types::LeaderboardRow;
 
-/// HuggingFace model card for the GPT-2 Large reference weights.
-pub const GPT2_SOURCE_URL: &str = "https://huggingface.co/gpt2-large";
+/// HuggingFace model card for GPT-2 Large reference weights.
+pub const GPT2_LARGE_SOURCE_URL: &str = "https://huggingface.co/gpt2-large";
+/// HuggingFace model card for GPT-2 Small (`openai-community/gpt2`).
+pub const GPT2_SMALL_SOURCE_URL: &str = "https://huggingface.co/openai-community/gpt2";
 
 /// Public disclaimer for the GPT-2 Large Prism-protocol reference row.
-pub const GPT2_DISCLAIMER: &str = "Public GPT-2 Large (774M) — Prism-protocol eval-only on 1×RTX 5090 (HF `gpt2-large` weights, public eval pack, `PRISM_TEST_EVAL_CAPS=0`). Not a miner train; G6 has no train probe curve; G8 µP width knob unsupported (floor 0).";
+pub const GPT2_LARGE_DISCLAIMER: &str = "Public GPT-2 Large (774M) — Prism-protocol eval-only on 1×RTX 5090 (HF `gpt2-large` weights, public eval pack, `PRISM_TEST_EVAL_CAPS=0`). Not a miner train; G6 has no train probe curve; G8 µP width knob unsupported (floor 0).";
+
+/// Public disclaimer for the GPT-2 Small Prism-protocol reference row.
+pub const GPT2_SMALL_DISCLAIMER: &str = "Public GPT-2 Small (124M) — Prism-protocol eval-only on 1×RTX 5090 (HF `openai-community/gpt2` / `gpt2` weights, public eval pack, `PRISM_TEST_EVAL_CAPS=0`). Not a miner train; G6 has no train probe curve; G8 µP width knob unsupported (floor 0).";
 
 /// GPT-2 Large parameter count (millions) — measured `n_params` / 1e6.
 pub const GPT2_LARGE_PARAMS_M: f64 = 774.0;
+/// GPT-2 Small parameter count (millions) — measured `n_params` / 1e6.
+pub const GPT2_SMALL_PARAMS_M: f64 = 124.4;
 
-/// Measured Prism validation BPB (frozen FineWeb-edu val cut, gpt2 tokenizer).
-pub const GPT2_BPB: f64 = 4.163_851_322_121_356_4;
+/// Measured Prism validation BPB — GPT-2 Large.
+pub const GPT2_LARGE_BPB: f64 = 4.163_851_322_121_356_4;
+/// Measured Prism validation BPB — GPT-2 Small.
+pub const GPT2_SMALL_BPB: f64 = 4.759_478_148_923_918;
 
-/// HellaSwag `org.g2.hellaswag_acc` (Prism public pack).
-pub const GPT2_HELLASWAG: f64 = 0.395;
-/// ARC-Easy `org.g2.arc_easy_acc`.
-pub const GPT2_ARC_EASY: f64 = 0.28;
-/// ARC-Challenge `org.g2.arc_challenge_acc`.
-pub const GPT2_ARC_CHALLENGE: f64 = 0.28;
-/// PIQA `org.g2.piqa_acc`.
-pub const GPT2_PIQA: f64 = 0.69;
-/// WinoGrande `org.g2.winogrande_acc`.
-pub const GPT2_WINOGRANDE: f64 = 0.545;
-/// BoolQ `org.g2.boolq_acc`.
-pub const GPT2_BOOLQ: f64 = 0.64;
-/// LAMBADA `org.g2.lambada_acc` (Prism public pack on 1×RTX 5090).
-pub const GPT2_LAMBADA: f64 = 0.985;
-/// OpenBookQA `org.g2.obqa_acc` (Prism public pack on 1×RTX 5090).
-pub const GPT2_OPENBOOKQA: f64 = 0.335;
+/// GPT-2 Large G2 benches (Prism public pack, 1×RTX 5090).
+pub const GPT2_LARGE_HELLASWAG: f64 = 0.395;
+pub const GPT2_LARGE_ARC_EASY: f64 = 0.28;
+pub const GPT2_LARGE_ARC_CHALLENGE: f64 = 0.28;
+pub const GPT2_LARGE_PIQA: f64 = 0.69;
+pub const GPT2_LARGE_WINOGRANDE: f64 = 0.545;
+pub const GPT2_LARGE_BOOLQ: f64 = 0.64;
+pub const GPT2_LARGE_LAMBADA: f64 = 0.985;
+pub const GPT2_LARGE_OPENBOOKQA: f64 = 0.335;
 
-/// Frozen public GPT-2 baseline(s) for `GET …/references`.
+/// GPT-2 Small G2 benches (Prism public pack, 1×RTX 5090).
+pub const GPT2_SMALL_HELLASWAG: f64 = 0.355;
+pub const GPT2_SMALL_ARC_EASY: f64 = 0.245;
+pub const GPT2_SMALL_ARC_CHALLENGE: f64 = 0.24;
+pub const GPT2_SMALL_PIQA: f64 = 0.585;
+pub const GPT2_SMALL_WINOGRANDE: f64 = 0.515;
+pub const GPT2_SMALL_BOOLQ: f64 = 0.575;
+pub const GPT2_SMALL_LAMBADA: f64 = 0.97;
+pub const GPT2_SMALL_OPENBOOKQA: f64 = 0.32;
+
+/// Frozen public GPT-2 baselines for `GET …/references` (Large then Small).
 #[must_use]
 pub fn prism_reference_baselines() -> Vec<PrismReferenceBaseline> {
-    vec![PrismReferenceBaseline {
-        id: "gpt2-large-774m".into(),
-        label: "Public GPT-2 Large (774M)".into(),
-        params_m: GPT2_LARGE_PARAMS_M,
-        bpb: Some(GPT2_BPB),
-        benchmarks: PrismBenchmarks {
-            hellaswag: Some(GPT2_HELLASWAG),
-            arc_easy: Some(GPT2_ARC_EASY),
-            arc_challenge: Some(GPT2_ARC_CHALLENGE),
-            piqa: Some(GPT2_PIQA),
-            winogrande: Some(GPT2_WINOGRANDE),
-            boolq: Some(GPT2_BOOLQ),
-            lambada: Some(GPT2_LAMBADA),
-            openbookqa: Some(GPT2_OPENBOOKQA),
+    vec![
+        PrismReferenceBaseline {
+            id: "gpt2-large-774m".into(),
+            label: "Public GPT-2 Large (774M)".into(),
+            params_m: GPT2_LARGE_PARAMS_M,
+            bpb: Some(GPT2_LARGE_BPB),
+            benchmarks: PrismBenchmarks {
+                hellaswag: Some(GPT2_LARGE_HELLASWAG),
+                arc_easy: Some(GPT2_LARGE_ARC_EASY),
+                arc_challenge: Some(GPT2_LARGE_ARC_CHALLENGE),
+                piqa: Some(GPT2_LARGE_PIQA),
+                winogrande: Some(GPT2_LARGE_WINOGRANDE),
+                boolq: Some(GPT2_LARGE_BOOLQ),
+                lambada: Some(GPT2_LARGE_LAMBADA),
+                openbookqa: Some(GPT2_LARGE_OPENBOOKQA),
+            },
+            source_url: GPT2_LARGE_SOURCE_URL.into(),
+            disclaimer: GPT2_LARGE_DISCLAIMER.into(),
         },
-        source_url: GPT2_SOURCE_URL.into(),
-        disclaimer: GPT2_DISCLAIMER.into(),
-    }]
+        PrismReferenceBaseline {
+            id: "gpt2-small-124m".into(),
+            label: "Public GPT-2 Small (124M)".into(),
+            params_m: GPT2_SMALL_PARAMS_M,
+            bpb: Some(GPT2_SMALL_BPB),
+            benchmarks: PrismBenchmarks {
+                hellaswag: Some(GPT2_SMALL_HELLASWAG),
+                arc_easy: Some(GPT2_SMALL_ARC_EASY),
+                arc_challenge: Some(GPT2_SMALL_ARC_CHALLENGE),
+                piqa: Some(GPT2_SMALL_PIQA),
+                winogrande: Some(GPT2_SMALL_WINOGRANDE),
+                boolq: Some(GPT2_SMALL_BOOLQ),
+                lambada: Some(GPT2_SMALL_LAMBADA),
+                openbookqa: Some(GPT2_SMALL_OPENBOOKQA),
+            },
+            source_url: GPT2_SMALL_SOURCE_URL.into(),
+            disclaimer: GPT2_SMALL_DISCLAIMER.into(),
+        },
+    ]
 }
 
 /// Infer AutoModel vs legacy from a detail or list-shaped payload.
@@ -516,18 +548,31 @@ mod tests {
     }
 
     #[test]
-    fn gpt2_baseline_is_prism_protocol_large() {
+    fn gpt2_baselines_are_prism_protocol_large_and_small() {
         let refs = prism_reference_baselines();
-        assert_eq!(refs.len(), 1);
+        assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].id, "gpt2-large-774m");
+        assert_eq!(refs[1].id, "gpt2-small-124m");
         assert!(refs[0].bpb.is_some());
-        assert!((refs[0].bpb.unwrap() - GPT2_BPB).abs() < 1e-9);
+        assert!(refs[1].bpb.is_some());
+        assert!((refs[0].bpb.unwrap() - GPT2_LARGE_BPB).abs() < 1e-9);
+        assert!((refs[1].bpb.unwrap() - GPT2_SMALL_BPB).abs() < 1e-9);
         assert!((refs[0].params_m - 774.0).abs() < f64::EPSILON);
-        assert!((refs[0].benchmarks.hellaswag.unwrap() - GPT2_HELLASWAG).abs() < f64::EPSILON);
-        assert!((refs[0].benchmarks.lambada.unwrap() - GPT2_LAMBADA).abs() < f64::EPSILON);
-        assert!((refs[0].benchmarks.openbookqa.unwrap() - GPT2_OPENBOOKQA).abs() < f64::EPSILON);
+        assert!((refs[1].params_m - 124.4).abs() < 1e-9);
+        assert!(
+            (refs[0].benchmarks.hellaswag.unwrap() - GPT2_LARGE_HELLASWAG).abs() < f64::EPSILON
+        );
+        assert!(
+            (refs[1].benchmarks.hellaswag.unwrap() - GPT2_SMALL_HELLASWAG).abs() < f64::EPSILON
+        );
+        assert!((refs[0].benchmarks.lambada.unwrap() - GPT2_LARGE_LAMBADA).abs() < f64::EPSILON);
+        assert!(
+            (refs[1].benchmarks.openbookqa.unwrap() - GPT2_SMALL_OPENBOOKQA).abs() < f64::EPSILON
+        );
         assert!(refs[0].disclaimer.contains("Prism-protocol"));
+        assert!(refs[1].disclaimer.contains("Prism-protocol"));
         assert!(refs[0].source_url.contains("gpt2-large"));
+        assert!(refs[1].source_url.contains("openai-community/gpt2"));
     }
 
     #[test]
