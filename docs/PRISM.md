@@ -260,7 +260,12 @@ a mutable Release tag `prism-top-model`. The same trigger also commits a
 (`PRISM_TOPMODEL_HF_TOKEN_FILE`, default repo
 `BaseIntelligence/top-prism-architecture`): seam sources, AutoModel novelty
 under `sources/`, `config.json` + `trust_remote_code` wrappers, and
-`checkpoint.pt` (LFS when large). The publication is journaled
+`checkpoint.pt` (LFS when large; Hub LFS PUT uses a bare HTTP client so
+pre-signed storage auth is not dual-Authorization). HF publish is
+**fail-closed** on missing receipt when `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1`
+(same as GitHub). The Hub README leads with public G2 benches vs
+**GPT-2 Large** (↑/↓ / ✓ better|worse) plus compute/TFLOPS notes and the
+Base banner. The publication is journaled
 (`prism_topmodel_publication`). GitHub token:
 `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`deploy/secrets/github/token`);
 absent/empty → publish no-op. With `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1`

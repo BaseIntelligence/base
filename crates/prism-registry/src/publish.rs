@@ -9,6 +9,20 @@
 //! publisher is `None` and the orchestrator skips publishing entirely
 //! (graceful no-op).
 
+/// Whether top-model publish must include a parked checkpoint.
+///
+/// Default **true** (`PRISM_TOPMODEL_REQUIRE_WEIGHTS` unset/`1`). Set to
+/// `0`/`false`/`no` for source-only publish (legacy / tests).
+#[must_use]
+pub fn require_topmodel_weights() -> bool {
+    !matches!(
+        std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS")
+            .unwrap_or_else(|_| "1".into())
+            .trim(),
+        "0" | "false" | "FALSE" | "no" | "NO"
+    )
+}
+
 /// Repo directory that always mirrors the current global top model.
 pub const TOPMODEL_REPO_PATH: &str = "top-model";
 
@@ -136,12 +150,7 @@ impl TopModelPublisher {
     /// `0`/`false` to allow source-only publish (legacy / tests).
     pub async fn publish(&self, req: &TopModelRequest) -> Result<String, PublishError> {
         let arch = req.arch_id.as_deref().unwrap_or("arch-unregistered");
-        let require_weights = !matches!(
-            std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS")
-                .unwrap_or_else(|_| "1".into())
-                .trim(),
-            "0" | "false" | "FALSE" | "no" | "NO"
-        );
+        let require_weights = require_topmodel_weights();
         let mut weight_note = String::new();
         if let Some(path) = &req.checkpoint_path {
             let meta = self.publish_checkpoint(path, arch, req.bpb).await?;
@@ -256,9 +265,21 @@ fn readme_block(req: &TopModelRequest, weight_note: &str) -> String {
     )
 }
 
+/// Serialize unit tests that mutate `PRISM_TOPMODEL_REQUIRE_WEIGHTS`.
+#[cfg(test)]
+pub(crate) static TOPMODEL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn topmodel_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::PoisonError;
+    TOPMODEL_ENV_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::await_holding_lock)]
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -282,6 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishes_all_files_and_returns_commit_sha() {
+        let _lock = topmodel_env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         for f in [
@@ -316,6 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_error_is_typed() {
+        let _lock = topmodel_env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         Mock::given(method("GET"))

@@ -494,11 +494,8 @@ async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, 
         let st = st.clone();
         let id = id.clone();
         async move {
-            let Some(mut detail) =
-                upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await
-            else {
-                return None;
-            };
+            let mut detail =
+                upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await?;
             // Optional /diff for pin_id when detail alone lacks era signals.
             if pin_id_from_payload(&detail).is_none() {
                 if let Some(diff) =
@@ -515,11 +512,7 @@ async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, 
             Some((id, PrismDetailFanout { detail, zone_a }))
         }
     });
-    join_all(futs)
-        .await
-        .into_iter()
-        .flatten()
-        .collect()
+    join_all(futs).await.into_iter().flatten().collect()
 }
 
 /// When detail metrics omit public G2 benches, pull Zone-A rows from the eval store.

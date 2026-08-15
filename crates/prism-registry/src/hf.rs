@@ -8,25 +8,44 @@
 //!   `training.py`, plus touched `.py` / patch files from `tree_blob`)
 //! - `config.json` + thin `configuration_prism.py` / `modeling_prism.py`
 //!   wrappers so `trust_remote_code=True` consumers can locate the code
-//! - trained `checkpoint.pt` (LFS when large) when secure-receive parked it
+//! - trained `checkpoint.pt` (LFS when large) — required when
+//!   `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1` (default)
 //!
 //! Token discipline: read from `PRISM_TOPMODEL_HF_TOKEN_FILE` only (never env
 //! text). Absent/empty → graceful no-op.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use crate::publish::{PublishError, TopModelRequest};
+use crate::publish::{require_topmodel_weights, PublishError, TopModelRequest};
 
 const DEFAULT_API_BASE: &str = "https://huggingface.co";
 const DEFAULT_REPO: &str = "BaseIntelligence/top-prism-architecture";
 const DEFAULT_REVISION: &str = "main";
 /// Hub regular (non-LFS) file ceiling used by the ndjson commit API.
 const REGULAR_FILE_MAX: usize = 5 * 1024 * 1024;
+/// Org banner mirrored from the Base monorepo (model card + org profile).
+const BANNER_URL: &str = "https://github.com/BaseIntelligence/base/raw/main/assets/banner.jpg";
+
+/// GPT-2 Large (774M) Prism-protocol public-pack reference (eval-only).
+const GPT2_LABEL: &str = "GPT-2 Large (774M)";
+const GPT2_PARAMS_M: f64 = 774.0;
+const GPT2_BPB: f64 = 4.163_851_322_121_356_4;
+const GPT2_HELLASWAG: f64 = 0.395;
+const GPT2_ARC_EASY: f64 = 0.28;
+const GPT2_ARC_CHALLENGE: f64 = 0.28;
+const GPT2_PIQA: f64 = 0.69;
+const GPT2_WINOGRANDE: f64 = 0.545;
+const GPT2_BOOLQ: f64 = 0.64;
+/// Prism-protocol Lium 1×5090 public pack (not OpenAI paper LAMBADA 60.12%).
+const GPT2_LAMBADA: f64 = 0.985;
+const GPT2_OPENBOOKQA: f64 = 0.335;
+const GPT2_SOURCE: &str = "https://huggingface.co/gpt2-large";
 
 /// HuggingFace Hub publisher (token never `Debug`/`Display`'d).
 pub struct HfTopModelPublisher {
@@ -103,9 +122,18 @@ impl HfTopModelPublisher {
 
     /// Ensure the model repo exists, then commit a reloadable custom-arch pack.
     ///
+    /// With `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1` (default), refuses to publish
+    /// without a master-parked checkpoint (same fail-closed policy as GitHub).
+    ///
     /// # Errors
-    /// Transport / Hub API failures.
+    /// Transport / Hub API failures, or missing required weights.
     pub async fn publish(&self, req: &TopModelRequest) -> Result<String, PublishError> {
+        if require_topmodel_weights() && req.checkpoint_path.is_none() {
+            return Err(PublishError::Transport(
+                "checkpoint missing: secure receive (SSH harvest or admin /v1/admin/artifacts/.../receive) required, or set PRISM_TOPMODEL_REQUIRE_WEIGHTS=0"
+                    .into(),
+            ));
+        }
         self.ensure_repo().await?;
         let files = build_hub_files(req)?;
         let oid = self
@@ -283,9 +311,18 @@ impl HfTopModelPublisher {
             .get("href")
             .and_then(|h| h.as_str())
             .ok_or_else(|| PublishError::Api("hf lfs upload href missing".into()))?;
-        let mut req = self.http.put(href).body(bytes.to_vec());
+        // Pre-signed S3 URLs reject a second Authorization header. Use a bare
+        // client (no default Bearer) and only the LFS action headers.
+        let bare = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_mins(30))
+            .build()
+            .map_err(|e| PublishError::Transport(e.to_string()))?;
+        let mut req = bare.put(href).body(bytes.to_vec());
         if let Some(headers) = upload.get("header").and_then(|h| h.as_object()) {
             for (k, val) in headers {
+                if k.eq_ignore_ascii_case("authorization") {
+                    continue;
+                }
                 if let Some(s) = val.as_str() {
                     req = req.header(k.as_str(), s);
                 }
@@ -300,7 +337,7 @@ impl HfTopModelPublisher {
             let t = put.text().await.unwrap_or_default();
             return Err(PublishError::Api(format!("hf lfs put {st} ({path}): {t}")));
         }
-        // Optional verify action.
+        // Optional verify action (Hub endpoint — keep authenticated client).
         if let Some(verify) = actions.get("verify") {
             if let Some(vhref) = verify.get("href").and_then(|h| h.as_str()) {
                 let mut vreq = self.http.post(vhref).json(&serde_json::json!({
@@ -446,44 +483,270 @@ fn sanitize_hub_path(rel: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Hub markdown card template
 fn hub_readme(req: &TopModelRequest, arch: &str, has_ckpt: bool) -> String {
+    let benches = extract_g2(req.metrics_json.as_ref());
+    let n_params = metric_u64(req.metrics_json.as_ref(), &["n_params"]);
+    let params_m = n_params.map(|n| n as f64 / 1e6);
+    let tokens = train_tokens(req.metrics_json.as_ref());
+    let wall = metric_f64(req.metrics_json.as_ref(), &["wall_clock_seconds"])
+        .or_else(|| metric_f64(req.metrics_json.as_ref(), &["train_metrics.wall_seconds"]));
+    let gpu = metric_str(req.metrics_json.as_ref(), &["gpu_type"]).unwrap_or_else(|| "n/a".into());
+    let tflops = match (n_params, tokens, wall) {
+        (Some(n), Some(t), Some(w)) if w > 0.0 => Some((6.0 * n as f64 * t as f64) / w / 1e12),
+        _ => None,
+    };
     let ckpt_note = if has_ckpt {
-        "Weights: `checkpoint.pt` (LFS when large). Load via `PrismCustomModel.from_pretrained` with `trust_remote_code=True`, or apply `sources/.prism/automodel.patch` onto the live AutoModel pin and `torch.load` the checkpoint."
+        "Weights: `checkpoint.pt` (Hub LFS when large). Load via `PrismCustomModel.from_pretrained` with `trust_remote_code=True`."
     } else {
         "Weights were not parked on the master for this champion — sources/config only."
     };
-    format!(
-        "---\n\
-         library_name: transformers\n\
-         tags:\n\
-         - prism\n\
-         - custom-architecture\n\
-         - trust-remote-code\n\
-         ---\n\n\
-         # PRISM top model — custom architecture\n\n\
-         Global-best champion published by the Base master. Novel Prism / AutoModel\n\
-         modules are included under `sources/` (and seam files at repo root) so the\n\
-         Hub card is reloadable even when the arch is **not** a stock transformers\n\
-         GPT-2-like config.\n\n\
-         | field | value |\n|---|---|\n\
-         | arch_id | `{arch}` |\n\
-         | bpb | `{:.6}` |\n\
-         | submission | `{}` |\n\
-         | owner_hotkey | `{}…` |\n\
-         | hub repo | `{DEFAULT_REPO}` (override via `PRISM_TOPMODEL_HF_REPO`) |\n\n\
-         ## Load (trust_remote_code)\n\n\
-         ```python\n\
-         from transformers import AutoModel, AutoConfig\n\
-         cfg = AutoConfig.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)\n\
-         model = AutoModel.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)\n\
-         ```\n\n\
-         {ckpt_note}\n\n\
-         Companion GitHub publish (when configured) lives under\n\
-         `BaseIntelligence/prism` `top-model/`.\n",
-        req.bpb,
-        req.submission_id,
-        req.owner_hotkey.chars().take(12).collect::<String>(),
-    )
+    let params_cell = params_m.map_or_else(|| "—".into(), |p| format!("{p:.1}M"));
+    let gpt2_params = format!("{GPT2_PARAMS_M:.0}M");
+    let params_vs = match params_m {
+        Some(p) if p > 0.0 => format!("{:.2}× vs {GPT2_LABEL}", GPT2_PARAMS_M / p),
+        _ => "—".into(),
+    };
+    let tflops_cell = tflops.map_or_else(|| "—".into(), |t| format!("{t:.1} TFLOPS (est.)"));
+    let tokens_cell = tokens.map_or_else(|| "—".into(), |t| format!("{t}"));
+    let wall_cell = wall.map_or_else(|| "—".into(), |w| format!("{w:.0}s"));
+    let hotkey: String = req.owner_hotkey.chars().take(12).collect();
+
+    let mut out = String::new();
+    out.push_str("---\n");
+    out.push_str("library_name: transformers\n");
+    out.push_str("pipeline_tag: text-generation\n");
+    out.push_str("tags:\n- prism\n- custom-architecture\n- trust-remote-code\n- neural-architecture-search\n");
+    out.push_str("license: apache-2.0\n");
+    out.push_str("---\n\n");
+    out.push_str("<div align=\"center\">\n\n");
+    let _ = writeln!(out, "![BASE Banner]({BANNER_URL})");
+    out.push('\n');
+    out.push_str("<h1 align=\"center\">PRISM top architecture</h1>\n\n");
+    out.push_str("<p align=\"center\"><b>Global-best miner architecture on Base PRISM — benchmarks vs GPT-2 Large</b></p>\n\n");
+    out.push_str("</div>\n\n---\n\n");
+    out.push_str("## Benchmarks vs GPT-2 Large\n\n");
+    out.push_str("Prism-protocol **public** eval pack. Accuracy: **↑ higher better**. BPB: **↓ lower better**. ");
+    let _ = writeln!(
+        out,
+        "Reference: [{GPT2_LABEL}]({GPT2_SOURCE}) (eval-only; not a miner train)."
+    );
+    out.push('\n');
+    out.push_str("| Metric | This model | GPT-2 Large | Δ | vs GPT-2 Large |\n");
+    out.push_str("|---|---:|---:|---:|:---|\n");
+    out.push_str(&bench_row_lower("Val BPB (G1)", Some(req.bpb), GPT2_BPB, 4));
+    for (name, ours, theirs) in [
+        ("HellaSwag", benches.hellaswag, GPT2_HELLASWAG),
+        ("ARC-Easy", benches.arc_easy, GPT2_ARC_EASY),
+        ("ARC-Challenge", benches.arc_challenge, GPT2_ARC_CHALLENGE),
+        ("PIQA", benches.piqa, GPT2_PIQA),
+        ("WinoGrande", benches.winogrande, GPT2_WINOGRANDE),
+        ("BoolQ", benches.boolq, GPT2_BOOLQ),
+        ("LAMBADA", benches.lambada, GPT2_LAMBADA),
+        ("OpenBookQA", benches.openbookqa, GPT2_OPENBOOKQA),
+    ] {
+        out.push_str(&bench_row_higher(name, ours, theirs, 3));
+    }
+    out.push_str("\n### Compute notes\n\n");
+    out.push_str("| | This model | GPT-2 Large |\n|---|---|---|\n");
+    let _ = writeln!(out, "| Parameters | {params_cell} | {gpt2_params} |");
+    let _ = writeln!(out, "| Size vs reference | {params_vs} | 1× |");
+    let _ = writeln!(
+        out,
+        "| Train tokens | {tokens_cell} | _(eval-only reference)_ |"
+    );
+    let _ = writeln!(
+        out,
+        "| Wall clock | {wall_cell} | _(eval-only reference)_ |"
+    );
+    let _ = writeln!(
+        out,
+        "| Sustained train throughput | {tflops_cell} | n/a (no Prism train) |"
+    );
+    let _ = writeln!(out, "| GPU (harness) | `{gpu}` | 1×RTX 5090 (eval) |");
+    out.push_str(
+        "\nThroughput ≈ `6 × N × D / wall` TFLOPS (dense transformer train FLOPs rule of thumb).\n\n",
+    );
+    out.push_str("## Model card\n\n");
+    out.push_str("| field | value |\n|---|---|\n");
+    let _ = writeln!(out, "| arch_id | `{arch}` |");
+    let _ = writeln!(out, "| bpb | `{:.6}` |", req.bpb);
+    let _ = writeln!(out, "| submission | `{}` |", req.submission_id);
+    let _ = writeln!(out, "| owner_hotkey | `{hotkey}…` |");
+    let _ = writeln!(out, "| hub repo | `{DEFAULT_REPO}` |");
+    out.push('\n');
+    out.push_str("## Load (trust_remote_code)\n\n");
+    out.push_str("```python\n");
+    out.push_str("from transformers import AutoModel, AutoConfig\n");
+    let _ = writeln!(
+        out,
+        "cfg = AutoConfig.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)"
+    );
+    let _ = writeln!(
+        out,
+        "model = AutoModel.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)"
+    );
+    out.push_str("```\n\n");
+    out.push_str(ckpt_note);
+    out.push_str("\n\nCompanion GitHub publish (when configured) lives under `BaseIntelligence/prism` `top-model/`.\n");
+    out
+}
+
+#[derive(Default)]
+struct G2Benches {
+    hellaswag: Option<f64>,
+    arc_easy: Option<f64>,
+    arc_challenge: Option<f64>,
+    piqa: Option<f64>,
+    winogrande: Option<f64>,
+    boolq: Option<f64>,
+    lambada: Option<f64>,
+    openbookqa: Option<f64>,
+}
+
+fn extract_g2(metrics: Option<&serde_json::Value>) -> G2Benches {
+    G2Benches {
+        hellaswag: g2_acc(metrics, &["org.g2.hellaswag_acc", "g2.hellaswag.acc_norm"]),
+        arc_easy: g2_acc(metrics, &["org.g2.arc_easy_acc", "g2.arc_easy.acc_norm"]),
+        arc_challenge: g2_acc(
+            metrics,
+            &["org.g2.arc_challenge_acc", "g2.arc_challenge.acc_norm"],
+        ),
+        piqa: g2_acc(metrics, &["org.g2.piqa_acc", "g2.piqa.acc_norm"]),
+        winogrande: g2_acc(
+            metrics,
+            &["org.g2.winogrande_acc", "g2.winogrande.acc_norm"],
+        ),
+        boolq: g2_acc(metrics, &["org.g2.boolq_acc", "g2.boolq.acc_norm"]),
+        lambada: g2_acc(metrics, &["org.g2.lambada_acc", "g2.lambada.acc_norm"]),
+        openbookqa: g2_acc(
+            metrics,
+            &[
+                "org.g2.obqa_acc",
+                "g2.openbookqa.acc_norm",
+                "org.g2.openbookqa_acc",
+            ],
+        ),
+    }
+}
+
+fn g2_acc(metrics: Option<&serde_json::Value>, keys: &[&str]) -> Option<f64> {
+    let m = metrics?;
+    for k in keys {
+        if let Some(v) = lookup_num(m, k) {
+            return Some(v);
+        }
+        // battery.groups.g2.metrics.<key>
+        if let Some(v) = m
+            .pointer(&format!("/battery/groups/g2/metrics/{k}"))
+            .and_then(json_num)
+        {
+            return Some(v);
+        }
+        if let Some(v) = m
+            .pointer(&format!("/battery/metrics/{k}/value"))
+            .and_then(json_num)
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn lookup_num(m: &serde_json::Value, key: &str) -> Option<f64> {
+    m.get(key)
+        .and_then(|v| json_num(v).or_else(|| v.get("value").and_then(json_num)))
+        .or_else(|| {
+            m.pointer(&format!("/battery/metrics/{key}/value"))
+                .and_then(json_num)
+        })
+}
+
+fn json_num(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_i64().map(|i| i as f64))
+        .or_else(|| v.as_u64().map(|u| u as f64))
+}
+
+fn metric_f64(metrics: Option<&serde_json::Value>, keys: &[&str]) -> Option<f64> {
+    let m = metrics?;
+    for k in keys {
+        if let Some(v) = if k.contains('.') {
+            m.pointer(&format!("/{}", k.replace('.', "/")))
+                .and_then(json_num)
+        } else {
+            lookup_num(m, k)
+        } {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn metric_u64(metrics: Option<&serde_json::Value>, keys: &[&str]) -> Option<u64> {
+    metric_f64(metrics, keys).and_then(|f| {
+        if !f.is_finite() || f < 0.0 || f > u64::MAX as f64 {
+            return None;
+        }
+        // Truncate toward zero after finite/range gate (JSON numbers arrive as f64).
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            Some(f as u64)
+        }
+    })
+}
+
+fn metric_str(metrics: Option<&serde_json::Value>, keys: &[&str]) -> Option<String> {
+    let m = metrics?;
+    for k in keys {
+        if let Some(s) = m.get(*k).and_then(|v| v.as_str()) {
+            return Some(s.to_owned());
+        }
+    }
+    None
+}
+
+fn train_tokens(metrics: Option<&serde_json::Value>) -> Option<u64> {
+    metric_u64(metrics, &["train_metrics.tokens"])
+        .or_else(|| metric_u64(metrics, &["tokens_seen"]).filter(|&t| t > 10_000))
+}
+
+fn bench_row_higher(name: &str, ours: Option<f64>, base: f64, digits: usize) -> String {
+    match ours {
+        Some(v) => {
+            let delta = v - base;
+            let (arrow, verdict) = if (delta).abs() < 1e-9 {
+                ("=", "tie")
+            } else if delta > 0.0 {
+                ("↑", "✓ better")
+            } else {
+                ("↓", "worse")
+            };
+            format!(
+                "| {name} | {v:.digits$} | {base:.digits$} | {arrow} {delta:+.digits$} | {verdict} |\n"
+            )
+        }
+        None => format!("| {name} | — | {base:.digits$} | — | _(missing)_ |\n"),
+    }
+}
+
+fn bench_row_lower(name: &str, ours: Option<f64>, base: f64, digits: usize) -> String {
+    match ours {
+        Some(v) => {
+            let delta = v - base;
+            let (arrow, verdict) = if (delta).abs() < 1e-9 {
+                ("=", "tie")
+            } else if delta < 0.0 {
+                ("↓", "✓ better")
+            } else {
+                ("↑", "worse")
+            };
+            format!(
+                "| {name} | {v:.digits$} | {base:.digits$} | {arrow} {delta:+.digits$} | {verdict} |\n"
+            )
+        }
+        None => format!("| {name} | — | {base:.digits$} | — | _(missing)_ |\n"),
+    }
 }
 
 const CONFIGURATION_PRISM_PY: &str = r#"
@@ -631,8 +894,10 @@ fn is_publishable_source(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::await_holding_lock)]
     use super::*;
+    use crate::publish::require_topmodel_weights;
+    use crate::publish::topmodel_env_lock;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -641,12 +906,28 @@ mod tests {
             submission_id: "subm-hf".into(),
             arch_id: Some("arch_hf".into()),
             owner_hotkey: "cd".repeat(32),
-            bpb: 1.1,
+            bpb: 3.9,
             architecture_py: "def build_model(ctx):\n    return None\n".into(),
             training_py: "def train(model, ctx):\n    return {}\n".into(),
             metrics_json: Some(serde_json::json!({
-                "n_params": 1,
-                "battery": {"g1": {"status": "ok"}},
+                "n_params": 112_000_000_u64,
+                "tokens_seen": 1000,
+                "train_metrics": {"tokens": 2_000_000_000_u64, "wall_seconds": 10_000.0},
+                "wall_clock_seconds": 10_000.0,
+                "gpu_type": "GPU 0: NVIDIA GeForce RTX 5090",
+                "battery": {
+                    "metrics": {
+                        "org.g2.hellaswag_acc": {"value": 0.40},
+                        "org.g2.arc_easy_acc": {"value": 0.30},
+                        "org.g2.arc_challenge_acc": {"value": 0.25},
+                        "org.g2.piqa_acc": {"value": 0.70},
+                        "org.g2.winogrande_acc": {"value": 0.50},
+                        "org.g2.boolq_acc": {"value": 0.60},
+                        "org.g2.lambada_acc": {"value": 0.90},
+                        "org.g2.obqa_acc": {"value": 0.28},
+                    },
+                    "groups": {"g2": {"status": "ok"}},
+                },
                 "flow": "v3",
                 "eval_tier": "public",
             })),
@@ -660,6 +941,8 @@ mod tests {
 
     #[tokio::test]
     async fn commits_custom_arch_pack() {
+        let _lock = topmodel_env_lock();
+        std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/repos/create"))
@@ -690,6 +973,56 @@ mod tests {
         assert!(keys.contains(&"config.json"));
         assert!(keys.contains(&"modeling_prism.py"));
         assert!(keys.contains(&"sources/nemo_automodel/components/models/toy/layers.py"));
+    }
+
+    #[test]
+    fn require_weights_defaults_closed() {
+        // Serialize env mutation across this crate's HF tests.
+        let _lock = topmodel_env_lock();
+        let prev = std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS").ok();
+        std::env::remove_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS");
+        assert!(require_topmodel_weights());
+        std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
+        assert!(!require_topmodel_weights());
+        std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "1");
+        assert!(require_topmodel_weights());
+        match prev {
+            Some(v) => std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", v),
+            None => std::env::remove_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS"),
+        }
+    }
+
+    #[tokio::test]
+    async fn refuses_without_checkpoint_when_weights_required() {
+        let _lock = topmodel_env_lock();
+        std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "1");
+        let server = MockServer::start().await;
+        let p = HfTopModelPublisher::with_config(
+            "hf_tok_test",
+            server.uri(),
+            "BaseIntelligence/top-prism-architecture",
+            "main",
+        )
+        .unwrap();
+        let err = p.publish(&req()).await.unwrap_err();
+        assert!(
+            matches!(err, PublishError::Transport(ref s) if s.contains("checkpoint missing")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn readme_benchmarks_first_vs_gpt2_large() {
+        let md = hub_readme(&req(), "arch_hf", true);
+        assert!(md.contains("Benchmarks vs GPT-2 Large"), "{md}");
+        assert!(md.contains(BANNER_URL), "{md}");
+        assert!(md.contains("HellaSwag"), "{md}");
+        assert!(md.contains("✓ better") || md.contains("worse"), "{md}");
+        assert!(md.contains("TFLOPS"), "{md}");
+        assert!(md.contains("LAMBADA"), "{md}");
+        assert!(md.contains("OpenBookQA"), "{md}");
+        assert!(!md.contains("no GPT-2 Large ref"), "{md}");
+        assert!(!md.contains("GPT-2 Small"), "{md}");
     }
 
     #[test]

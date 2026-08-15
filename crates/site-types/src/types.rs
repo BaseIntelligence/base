@@ -176,6 +176,12 @@ pub struct PrismBenchmarks {
     /// BoolQ accuracy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boolq: Option<f64>,
+    /// LAMBADA accuracy (`org.g2.lambada_acc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lambada: Option<f64>,
+    /// OpenBookQA accuracy (`org.g2.obqa_acc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openbookqa: Option<f64>,
 }
 
 impl PrismBenchmarks {
@@ -188,6 +194,8 @@ impl PrismBenchmarks {
             && self.piqa.is_none()
             && self.winogrande.is_none()
             && self.boolq.is_none()
+            && self.lambada.is_none()
+            && self.openbookqa.is_none()
     }
 
     /// Merge non-empty fields from `other` into `self` (fill gaps only).
@@ -209,6 +217,12 @@ impl PrismBenchmarks {
         }
         if self.boolq.is_none() {
             self.boolq = other.boolq;
+        }
+        if self.lambada.is_none() {
+            self.lambada = other.lambada;
+        }
+        if self.openbookqa.is_none() {
+            self.openbookqa = other.openbookqa;
         }
     }
 }
