@@ -617,6 +617,19 @@ judge is the mandatory `submit_verdict` function-call. Agentic must not treat
 generic modern-LM components as plagiarism; AST bands (`≥8500` suspicious /
 `≥9500` cheat) remain the structural copy thresholds.
 
+**Tokenizer verification (v2.2, `agentic_v5`).** The tokenizer is
+miner-submitted (`tokenizer/` files or `build_tokenizer(ctx)` hook — see
+`PRISM_RECIPE.md`), and the harness ships an objective **tokenizer card** in
+`METRICS_JSON["tokenizer"]["card"]` (compression on a fixed probe, roundtrip
+fidelity, sampled vocab shape, soft flags). The metrics-aware pass reads the
+card + any tokenizer source in the delta and marks `tokenizer_gaming` as
+`cheat` when the tokenizer is engineered for metrics instead of language
+modeling: multi-word / answer-phrase single tokens, vocab stuffed with
+eval-looking strings, `decode()` that rewrites output, memorizing
+compression. An honestly **weak** tokenizer is explicitly not a cheat (it
+only hurts its owner — G1 is tokenizer-neutral bits/byte); card flags alone
+without corroborating source evidence cap at `suspicious`.
+
 | Verdict | Leaf effect |
 |---------|-------------|
 | `clean` | proceed; score = pure bpb on `[0, SCORE_MAX]` |

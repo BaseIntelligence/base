@@ -61,6 +61,22 @@ slot** — fix the manifest or the script and resubmit immediately, no time
 window. (Operator-side infra hiccups keep the existing 30-minute resubmit
 window.)
 
+**Bring your own tokenizer — verified.** The tokenizer is part of your
+submission: ship `tokenizer/` files in your tree (≤ 12 files, ≤ 8 MiB,
+loaded offline with `AutoTokenizer.from_pretrained(dir,
+local_files_only=True)`) or export `def build_tokenizer(ctx)` next to
+`build_model` in `architecture.py` (train/wrap anything, offline). The
+harness hands it back as `ctx["tokenizer"]` / `ctx["vocab_size"]`; the
+`gpt2` pin is only the default when you ship nothing. Two things keep this
+fair: (1) G1 scores **bits/byte**, tokenizer-neutral — exotic vocabularies
+buy you nothing on the headline metric; (2) every run emits an objective
+**tokenizer card** (compression on a fixed probe, roundtrip fidelity,
+vocab-shape scan) that the LLM anti-cheat review reads. A tokenizer
+engineered to game metrics — multi-word answer phrases as single tokens,
+vocab stuffed with eval-looking strings, a `decode()` that rewrites output,
+memorizing compression — is a **cheat** (`tokenizer_gaming`, Score 0). A
+merely weak tokenizer is not a cheat; it just hurts your own score.
+
 **Legacy recipe 1.x rejected on live.** Two-script ZIPs
 (`architecture.py` + `training.py`), 1.3 source-tree ZIPs, and training-only
 `arch_id` submissions return `400 unsupported_layout` or `400 recipe_version`

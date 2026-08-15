@@ -305,6 +305,21 @@ The miner subprocess runs under `unshare --net`: a tokenizer that would need a
 download fails closed with a clear error instead of stalling inside
 `transformers`. Never call `from_pretrained("<hub id>")` yourself.
 
+**Anti-cheat verification (v2.2).** Tokenizer freedom is not a cheat
+surface: `validate()` also computes an objective **tokenizer card**
+(`METRICS_JSON["tokenizer"]["card"]`): `probe_tokens_per_byte` on a fixed
+paragraph, `probe_roundtrip_ok`, a sampled vocab-shape scan
+(`vocab_multiword_frac`, `vocab_max_token_bytes`) and soft `flags`
+(`extreme_compression` < 0.08 tokens/byte, `multiword_tokens` — BPE/SP
+pre-tokenization never merges across spaces, so alpha-space-alpha tokens
+are engineered — and `lossy_roundtrip`). Flags never fail the pod run; the
+card is **evidence** for the metrics-aware agentic pass, whose domain rules
+(`agentic_v5`) judge **intent to game** (`tokenizer_gaming`: answer-phrase
+single tokens, vocab stuffing, decode-side output rewriting, memorizing
+compression) as `cheat`, while an honestly weak tokenizer (byte-level,
+small vocab) is explicitly NOT a cheat. G1 already scores tokenizer-neutral
+bits/byte, so a weak tokenizer only hurts its owner.
+
 Every resolved tokenizer is validated before your code sees it — callable,
 `decode`, vocab in `[256, 262144]`, all probe ids inside that vocab, exact
 encode/decode roundtrip on an ASCII probe — and fingerprinted (sha256 over

@@ -48,6 +48,7 @@ deep inside `transformers`.
 import hashlib
 import json
 import os
+import re
 
 from . import DEFAULT_TOKENIZER
 
@@ -78,6 +79,88 @@ PROBE_TEXTS = (
 )
 #: Spec fields that must be identical in the train and eval phases.
 CHECKED_SPEC_KEYS = ("source", "id", "vocab_size", "fingerprint")
+
+#: Anti-cheat card knobs. The card is **evidence, not a gate**: it ships in
+#: METRICS_JSON["tokenizer"]["card"] for the master-side agentic review (a
+#: tokenizer engineered for metrics instead of language modeling is a cheat
+#: vector; a merely weak tokenizer is not a cheat). Facts + soft flags only —
+#: the run never fails on a flag.
+CARD_PROBE = (
+    "The committee reviewed the quarterly report and found that revenue "
+    "grew by twelve percent while operating costs stayed flat. Engineers "
+    "shipped the new parser, fixed two regressions, and wrote tests. "
+    "Elle a ouvert la porte, regarde le ciel, et decide de rester encore."
+)
+#: ≥ this many sampled vocab entries joining two word-ish segments = flag
+#: (BPE/SentencePiece pre-tokenization never merges across spaces, so
+#: alpha-space-alpha tokens are engineered — classic answer-embedding move).
+CARD_MULTIWORD_FRAC = 0.005
+#: Below this tokens/byte on the fixed probe = flag (GPT-2 ≈ 0.23; even
+#: aggressive 256k BPEs stay ≥ 0.15; < 0.08 ≈ engineered compression).
+CARD_MIN_TOKENS_PER_BYTE = 0.08
+#: Sampled vocab-scan budget (ids), keeps the card O(1) on huge vocabs.
+CARD_VOCAB_SAMPLES = 4096
+_WORD_JOIN = re.compile(r"[A-Za-z0-9][ \t]+[A-Za-z0-9]")
+
+
+def _token_str(tok, i):
+    conv = getattr(tok, "convert_ids_to_tokens", None)
+    if callable(conv):
+        try:
+            s = conv([i])
+            s = s[0] if isinstance(s, (list, tuple)) else s
+            return s if isinstance(s, str) else None
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        return decode(tok, [i])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def card(tok, n_vocab):
+    """Objective gaming-relevant stats for the agentic tokenizer review.
+
+    Never raises and never fails the run: structural facts (compression,
+    roundtrip fidelity, vocab shape) plus soft `flags`. The LLM reviewer —
+    not this function — decides cheat vs legitimate: judging *intent to
+    game* (multi-word answer tokens, vocab stuffing, rewrite-y decode) vs
+    an honestly weak tokenizer is exactly the judgment call the card feeds.
+    """
+    out = {}
+    try:
+        ids = encode(tok, CARD_PROBE)
+        n_bytes = len(CARD_PROBE.encode("utf-8"))
+        out["probe_tokens_per_byte"] = round(len(ids) / float(n_bytes), 5)
+        out["probe_roundtrip_ok"] = bool(decode(tok, ids).strip() == CARD_PROBE.strip())
+    except Exception:  # noqa: BLE001
+        out["probe_tokens_per_byte"] = None
+        out["probe_roundtrip_ok"] = False
+    sampled = multiword = longest = 0
+    step = max(1, int(n_vocab) // CARD_VOCAB_SAMPLES)
+    for i in range(0, int(n_vocab), step):
+        s = _token_str(tok, i)
+        if not s:
+            continue
+        sampled += 1
+        body = s.replace("\u0120", " ").replace("\u2581", " ").strip()
+        longest = max(longest, len(body.encode("utf-8", "ignore")))
+        if _WORD_JOIN.search(body):
+            multiword += 1
+    if sampled:
+        out["vocab_sampled"] = int(sampled)
+        out["vocab_multiword_frac"] = round(multiword / float(sampled), 5)
+        out["vocab_max_token_bytes"] = int(longest)
+    flags = []
+    tpb = out.get("probe_tokens_per_byte")
+    if tpb is not None and tpb < CARD_MIN_TOKENS_PER_BYTE:
+        flags.append("extreme_compression")
+    if out.get("vocab_multiword_frac", 0.0) > CARD_MULTIWORD_FRAC:
+        flags.append("multiword_tokens")
+    if not out.get("probe_roundtrip_ok", False):
+        flags.append("lossy_roundtrip")
+    out["flags"] = flags
+    return out
 # Harness-internal ctx keys never handed to miner code (mirrors the
 # `_HARNESS_CTX_KEYS` tuple of the phase entries).
 _HOOK_CTX_DROP = ("arch_path", "train_path", "workdir")
@@ -195,6 +278,9 @@ def validate(tok, source, tok_id=None):
         "vocab_size": int(n_vocab),
         "probe_tokens": int(n_ids),
         "fingerprint": h.hexdigest(),
+        # Anti-cheat evidence for the master-side agentic review (soft —
+        # facts + flags; a flag alone never fails the pod run).
+        "card": card(tok, n_vocab),
     }
 
 
