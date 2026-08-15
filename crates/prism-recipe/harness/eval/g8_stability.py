@@ -157,7 +157,12 @@ def _mup_sweep(ctx, budget):
     device = ctx["device"]
     # Reduced fixed probe base — not full production build_ctx geometry.
     base_ctx = mup_probe_base_ctx(ctx.get("build_ctx"))
-    lrs = [3e-4, 1e-3, 3e-3]
+    # v2.1 field fix (2026-08-14 A/B runs): the fixed grid diverged at 4x
+    # width for EVERY architecture tested (dense, hybrid delta, looped MoE),
+    # zeroing mup_lr_stability across the board. Two sub-peak points keep at
+    # least one finite loss per width so the transfer ratio (and the v2.1
+    # scaling-slope probe) stay measurable.
+    lrs = [1e-4, 3e-4, 1e-3, 3e-3]
     steps = 4 if common.tiny_caps() else 10
     best_by_width = {}
     best_loss_by_width = {}
