@@ -10,7 +10,10 @@ Unit note (modular tokenizer): `bpb` is bits per **token** of the submitted
 tokenizer and stays the v1/v2 scoring key, bit-identical for a submission
 that keeps the pinned default. The additional `bits_per_byte` is total bits
 over the UTF-8 bytes actually scored — the tokenizer-neutral number to
-compare submissions that chose different vocabularies.
+compare submissions that chose different vocabularies. Shadow leaf ranking
+still uses per-token `bpb` (v2 contract); G1 composite anchors already use
+`bits_per_byte`. A shadow-leaf flip to bits/byte needs an explicit
+scoring-version / governance change (see docs/PRISM.md § shadow leaf unit).
 """
 
 from . import LN2

@@ -43,7 +43,10 @@ carries 6 square projections vs attention's 4; both baselines land at
 G8 µP LR-transfer honors `ctx["prism_width_multiplier"]`: scales
 `d_model` / `mlp_hidden` / `delta_{key,value}_dim` (and `attn_heads` to
 keep head_dim) so a 4× build exceeds 1.5× base params. Multiplier `1.0`
-(default / absent) leaves the anchor unchanged (still ≤350M).
+(default / absent) leaves the anchor unchanged (still ≤350M). The harness
+µP sweep starts from a fixed small probe geometry (not the scored ≤350M
+config) before applying the multiplier; honor top-level / `arch`
+width-depth overrides as well.
 
 ## The delta block (canonical formulation, appendix 03 §2)
 

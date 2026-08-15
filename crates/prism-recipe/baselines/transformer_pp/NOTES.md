@@ -97,7 +97,11 @@ constraint; accumulation would trade steps for tokens 1:1).
 7. G8 µP LR-transfer honors `ctx["prism_width_multiplier"]`: scales
    `d_model` / `mlp_hidden` (and `n_head` to keep head_dim) so a 4×
    build exceeds 1.5× base params. Multiplier `1.0` (default / absent)
-   leaves the anchor config unchanged (still ≤350M).
+   leaves the anchor config unchanged (still ≤350M). The harness µP
+   sweep overlays a fixed small probe geometry (`d_model=128`,
+   `n_layer=4`, …) before applying the multiplier — not the scored
+   ≤350M config — so 4× stays on-GPU; honor top-level / `arch`
+   width-depth overrides as well.
 
 ## lib.rs registration snippet (for the integrator — do NOT apply here)
 

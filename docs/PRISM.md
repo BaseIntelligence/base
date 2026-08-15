@@ -329,7 +329,12 @@ Zone A `org.*` metrics):
 `1/(1+|log2(best_lr_wide/best_lr_base)|)` when the sweep converges; **0.0
 fail-closed** when the sweep path runs but diverges / build fails / width
 knob unsupported / budget cuts it short (so the G8 composite always sees
-the key after a real sweep). Tiny-caps test skips omit the key.
+the key after a real sweep). Tiny-caps test skips omit the key. The sweep
+builds from a **fixed small width/depth probe** (`d_model=128`, `n_layer=4`,
+… — see harness `eval/g8_stability.py`), **not** the scored submission's
+full geometry: 4× of a near-cap 350M model is unbuildable on the eval GPU.
+`build_model` must honor top-level / `arch` width-depth overrides **and**
+`ctx["prism_width_multiplier"]` (reference baselines do).
 
 **G5 scored keys (recipe ≥ 1.4.0).** The battery is an evaluation of
 **pretrained base LMs** — completion / few-shot base prompts, short EM or
@@ -351,13 +356,18 @@ internal G5 weights (group weight stays 0.15):
 per-metric fixed-anchor normalization clipped to `[0,1]` against the
 pre-registered anchor set (`prism-recipe/anchors/v0.json`; versioned,
 hash-committed via `/v1/preregistration`, placeholder until measured on the
-baselines); two-level means → group scores (G5 uses the unequal internal
-weights above; other groups default equal); mirror-gap penalty
+baselines); **within each group**: weighted **arithmetic** mean of
+normalized sub-metrics → `g_k` (G5 uses the unequal internal weights above;
+other groups default equal weight 1 — a single zero sub-metric lowers `g_k`
+proportionally, it does **not** zero the whole group); mirror-gap penalty
 `max(0, (x_public − x_mirror) − 0.05)` deducted from G2/G4/G5; lexicographic
 gates (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget caps `350M` params / `6h`, CI
-half-width ≤ `0.05`); weighted geometric mean `C = ∏ g_k^{w_k}`; clustered
-bootstrap (B = 1000) → `SE(C)`; **LCB ranking**:
-`lattice = round(SCORE_MAX × max(0, C − 1.645·SE))`.
+half-width ≤ `0.05`); **across groups**: weighted **geometric** mean
+`C = ∏ g_k^{w_k}` (a **group** score of exactly 0 collapses `C` to 0 — that
+is intentional no-compensation; individual G5 zeros such as
+`helmet_rag_acc=0` / `lstar=0` only dilute G5 arithmetically unless the
+whole G5 mean hits 0); clustered bootstrap (B = 1000) → `SE(C)`; **LCB
+ranking**: `lattice = round(SCORE_MAX × max(0, C − 1.645·SE))`.
 
 **Zone A vs Zone B.** Every metric lives in exactly one zone. Zone A
 (`org.*`) is organizer-measured and feeds scoring. Zone B
@@ -400,6 +410,19 @@ no auto-retry.
 measured (no `placeholder` statuses) and pre-registered; from then rows
 carry `scoring_version 3` (`SCORING_VERSION_V3`). The v2 bpb column is
 still recorded on every v3 run (it is a G1 input and the shadow score).
+
+**Shadow leaf unit (tokenizer-dependent).** Live `PRISM_SCORING_MODE=shadow`
+still maps **per-token** `bpb = CE / ln 2` through `score_from_bpb`. That
+unit is comparable only within one tokenizer; a byte-level vocab
+(`MIN_VOCAB=256`) can look artificially strong on bits/token. Tokenizer-
+neutral `bits_per_byte` is already computed on every run and drives **G1**
+anchors (`org.g1.bits_per_byte_*`). Switching the shadow leaf itself to
+`bits_per_byte` would break the v2 bit-identical contract and needs an
+explicit scoring-version / governance change — tracked as a follow-up
+(plan: keep recording both; add `score_from_bits_per_byte`; flip shadow
+leaf + public board primary sort together, or wait for `composite`).
+Public UI should prefer G2 benches / group scores as the hero display
+while shadow emissions remain bpb.
 
 ## Agentic anti-cheat + AST + metrics gate
 
