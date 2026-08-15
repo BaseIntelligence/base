@@ -358,6 +358,110 @@ impl Backend {
     }
 }
 
+/// Parse a boot-seed list: `challenge_id=url` entries separated by commas
+/// and/or newlines. Empty / whitespace-only input yields an empty vec.
+///
+/// Optional `;weight` suffix (default 1): `design=http://design:8093;2`.
+///
+/// # Errors
+///
+/// [`RegistryError::Invalid`] on malformed entries or bad URLs.
+pub fn parse_backend_seed_list(raw: &str) -> Result<Vec<CreateBackend>, RegistryError> {
+    let mut out = Vec::new();
+    for part in raw.split([',', '\n', '\r']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (challenge_id, rest) = part.split_once('=').ok_or_else(|| {
+            RegistryError::Invalid(format!(
+                "backend seed entry must be challenge_id=url[,…]; got `{part}`"
+            ))
+        })?;
+        let challenge_id = challenge_id.trim();
+        if challenge_id.is_empty() {
+            return Err(RegistryError::Invalid(
+                "backend seed challenge_id must be non-empty".into(),
+            ));
+        }
+        let (url_raw, weight) = match rest.rsplit_once(';') {
+            Some((url, w)) if w.trim().is_empty() => (url, 1u32),
+            Some((url, w)) if !w.contains("://") => {
+                let weight: u32 = w.trim().parse().map_err(|_| {
+                    RegistryError::Invalid(format!(
+                        "backend seed weight must be u32; got `{}`",
+                        w.trim()
+                    ))
+                })?;
+                (url, weight)
+            }
+            _ => (rest, 1u32),
+        };
+        out.push(CreateBackend {
+            challenge_id: challenge_id.to_owned(),
+            base_url: normalize_base_url(url_raw)?,
+            weight,
+        });
+    }
+    Ok(out)
+}
+
+/// `BASE_GATEWAY_BACKENDS` — comma/newline `challenge_id=url` list.
+pub const BACKENDS_ENV: &str = "BASE_GATEWAY_BACKENDS";
+/// Optional file whose contents are parsed like [`BACKENDS_ENV`] (wins when set).
+pub const BACKENDS_FILE_ENV: &str = "BASE_GATEWAY_BACKENDS_FILE";
+
+/// Load optional boot-seed backends from env / file.
+///
+/// # Errors
+///
+/// Unreadable file or malformed seed list.
+pub fn load_backend_seed_from_env() -> Result<Vec<CreateBackend>, RegistryError> {
+    if let Ok(path) = std::env::var(BACKENDS_FILE_ENV) {
+        let path = path.trim();
+        if !path.is_empty() {
+            let raw = std::fs::read_to_string(path).map_err(|e| {
+                RegistryError::Invalid(format!("read {BACKENDS_FILE_ENV} `{path}`: {e}"))
+            })?;
+            return parse_backend_seed_list(&raw);
+        }
+    }
+    match std::env::var(BACKENDS_ENV) {
+        Ok(raw) if !raw.trim().is_empty() => parse_backend_seed_list(&raw),
+        _ => Ok(Vec::new()),
+    }
+}
+
+impl Registry {
+    /// Insert seed backends; skip rows already present (`Duplicate`).
+    ///
+    /// Returns how many rows were newly created.
+    ///
+    /// # Errors
+    ///
+    /// Propagates non-duplicate [`RegistryError`] from [`Self::create`].
+    pub fn seed(&self, backends: &[CreateBackend]) -> Result<usize, RegistryError> {
+        let mut created = 0usize;
+        for req in backends {
+            match self.create(req) {
+                Ok(_) => created += 1,
+                Err(RegistryError::Duplicate { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(created)
+    }
+
+    /// Seed from [`load_backend_seed_from_env`].
+    ///
+    /// # Errors
+    ///
+    /// Seed parse/load failures, or non-duplicate registry insert errors.
+    pub fn seed_from_env(&self) -> Result<usize, RegistryError> {
+        self.seed(&load_backend_seed_from_env()?)
+    }
+}
+
 fn normalize_base_url(raw: &str) -> Result<String, RegistryError> {
     let s = raw.trim().trim_end_matches('/').to_owned();
     if s.is_empty() {
@@ -543,5 +647,33 @@ mod tests {
         assert_eq!(view.base_url, "http://prism-challenge:8092");
         let picked = reg.pick("prism").expect("pick prism");
         assert_eq!(picked.base_url, "http://prism-challenge:8092");
+    }
+
+    #[test]
+    fn parse_and_seed_compose_backends() {
+        let list = parse_backend_seed_list(
+            "prism=http://prism-challenge:8092, design=http://design-challenge:8093\n",
+        )
+        .expect("parse");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].challenge_id, "prism");
+        assert_eq!(list[0].base_url, "http://prism-challenge:8092");
+        assert_eq!(list[1].challenge_id, "design");
+        assert_eq!(list[1].weight, 1);
+
+        let reg = Registry::with_defaults();
+        assert_eq!(reg.seed(&list).expect("seed"), 2);
+        assert_eq!(reg.seed(&list).expect("idempotent"), 0);
+        assert_eq!(reg.list(None).len(), 2);
+        assert_eq!(
+            reg.pick("design").unwrap().base_url,
+            "http://design-challenge:8093"
+        );
+    }
+
+    #[test]
+    fn parse_backend_seed_rejects_bad_entry() {
+        let err = parse_backend_seed_list("not-a-pair").unwrap_err();
+        assert!(matches!(err, RegistryError::Invalid(_)));
     }
 }

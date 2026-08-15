@@ -40,7 +40,7 @@ Compose always runs a digest-pinned `postgres` service (`base-pgdata` volume, he
 | Gateway raw weight leaves + sealed bundles | **Postgres** (`raw_weight_snapshot`, `epoch_bundle`, …) |
 | Validator attestations (when DB configured) | **Postgres** |
 | Design sandbox staging files | volume `${BASE_STATE_DIR}/design/staging` + `design-artifacts` |
-| Gateway challenge **backend registry** | **in-memory** — re-seed after gateway restart (`remote-deploy.sh` does this on master) |
+| Gateway challenge **backend registry** | **in-memory**, boot-seeded from `BASE_GATEWAY_BACKENDS` (compose default: prism+design DNS URLs); `remote-deploy.sh` POST reseed stays idempotent |
 | site-api (`GET /v1/site/*`) | no DB — proxies challenge upstreams via gateway |
 | Unit/integration tests | may construct `Memory*Store` directly; omit `BASE_DATABASE_URL` only there |
 
@@ -102,6 +102,14 @@ A seal older than ~256 blocks can never be verified by the validator (public RPC
 install -m 0755 deploy/scripts/prod-real-seal.sh /opt/base/deploy/scripts/prod-real-seal.sh
 install -m 0644 deploy/systemd/base-real-seal.{service,timer} /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now base-real-seal.timer
+```
+
+**Challenge backend reseed (until boot-seed images are everywhere):** `base-reseed-backends.timer` (every **2 min**) drives [`scripts/prod-reseed-backends.sh`](scripts/prod-reseed-backends.sh) so a gateway restart cannot leave `/challenge/*` at 503 and `/v1/site/*` empty. Install on the master:
+
+```bash
+install -m 0755 deploy/scripts/prod-reseed-backends.sh /opt/base/deploy/scripts/prod-reseed-backends.sh
+install -m 0644 deploy/systemd/base-reseed-backends.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now base-reseed-backends.timer
 ```
 
 ## Chain endpoint failover (`BASE_CHAIN_ENDPOINTS`)

@@ -1,0 +1,10 @@
+[Unit]
+Description=BASE reseed gateway challenge backends (prism + design)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/base/deploy/scripts/prod-reseed-backends.sh
+Nice=10
+TimeoutStartSec=60
