@@ -1,8 +1,4 @@
-//! Lium job orchestrator: claim→screen→review→pod→score; epoch emitter via
-//! [`Orchestrator::run_emitter`]. State in store; API is a projection.
-//!
-//! Pre-pod order is fail-closed: copy/static/similarity + LLM quality +
-//! agentic (sources) must pass before any Lium rent.
+//! Lium orchestrator: claim→screen→review→pod→score; emitter via `run_emitter`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -421,8 +417,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
         let bpb = metrics.as_ref().map(|m| m.bpb);
 
-        // Metrics-aware agentic pass (inconsistent_metrics / eval forge).
-        // Structural cheats already failed closed pre-pod — this never rents.
+        // Metrics-aware agentic (inconsistent_metrics / forge); never rents.
         let Some(agentic) = self
             .agentic_step(&id, &row, metrics.as_ref(), receipt.as_ref())
             .await
@@ -451,6 +446,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 similarity_evidence: similarity.evidence.clone(),
                 agentic: agentic.verdict,
                 composite,
+                metrics: blob.clone(),
             },
             None => FinalOutcome::ChallengeInternal,
         };

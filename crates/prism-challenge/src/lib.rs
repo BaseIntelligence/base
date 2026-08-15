@@ -1,8 +1,4 @@
-//! PRISM challenge orchestrator on Base.
-//!
-//! Master-centralized GPU eval via Lium (or Sim). **No Phala CVM.**
-//! Miner submit API mirrors agent/hypertraining shape; scores emit D24 leaves
-//! under `challenge_id = "prism"`.
+//! PRISM challenge orchestrator on Base (Lium GPU eval; D24 leaves; no Phala).
 
 #![forbid(unsafe_code)]
 #![allow(clippy::cast_precision_loss)]
@@ -24,21 +20,20 @@ pub use challenge_common::{
 pub use leaf_emit::emit_signed_leaf_set;
 pub use orchestrator::{Orchestrator, OrchestratorConfig};
 pub use prism_challenge_task::{
-    CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, TASK_ID_DOMAIN,
+    CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, SCORING_VERSION_V3,
+    SCORING_VERSION_V4, TASK_ID_DOMAIN,
 };
 pub use prism_emit::{EmitError, EmitSummary, EpochEmitter};
 pub use prism_eval_store::{DbEvalStore, MemoryEvalStore};
-pub use prism_store::eval::EvalStore;
-// 2×2 attribution matrix (module lives in prism-recipe beside SourceTree for
-// the per-crate LOC cap; conceptually prism_challenge::attribution).
-pub use prism_final::{combine_final, FinalOutcome};
+pub use prism_final::{combine_final, score_from_g2_benchmarks, FinalOutcome};
 pub use prism_pipeline::{
     example_automodel_request, example_valid_request, expand_zip_fields, run_eval_pipeline,
     run_sim_pipeline, score_from_bpb, score_from_pipeline, submission_id, validate, PipelineError,
-    PipelineInput, PipelineOutcome, PipelineResult, PrismConfig, QueuedSubmission,
+    PipelineInput, PipelineOutcome, PipelineResult, PrismConfig, QueuedSubmission, ScoringMode,
     SubmissionAccepted, SubmissionError, SubmissionId, SubmissionRequest, SubmissionService,
 };
 pub use prism_recipe::attribution;
+pub use prism_store::eval::EvalStore;
 pub use prism_store::{
     DbPrismStore, FinalScore, MemoryPrismStore, PrismStore, Stage, StageEvent, StatePatch,
     StoreError, SubmissionState,

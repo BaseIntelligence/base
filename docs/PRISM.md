@@ -1,7 +1,7 @@
 # PRISM challenge (Base)
 
 **challenge_id:** `prism`  
-**scoring_version:** `2` live (bpb-only; v1 blended a 0.3 LLM quality vote; the architecture competition below reallocates credits *inside* this same lattice — no chain-facing version change). **v3 addition (opt-in):** composite scoring ships behind `PRISM_SCORING_MODE` (`shadow` default — v2 score bit-identical, composite observed; `composite` — v3 lattice becomes the score, rows carry `scoring_version 3`). See **v3 composite scoring** below.  
+**scoring_version:** `4` live (equal-weight **G2 public-suite accuracies** → lattice; tokenizer length no longer farms the leaf). Legacy: `2` = pure bits/token bpb (`PRISM_SCORING_MODE=shadow`); `3` = full G1–G8 composite (`composite`, anchors required). Default mode is `benchmarks`. See **v4 G2 benchmark scoring** and **v3 composite scoring** below.  
 **recipe_version:** `2.0.0` (pinned NeMo AutoModel base + miner unified diff; legacy **1.x** two-script / source-tree layouts rejected on live — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))  
 **port:** `8092`  
 **emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
@@ -32,8 +32,9 @@ violation (`missing_telemetry_hooks` → `Score(0)`, terminal). Cheap
 `score ≥ 0.9` (`SUSPICIOUS_HARD_ZERO_THRESHOLD`) and evidence is not
 generic-trope-only. Agentic is the primary anti-cheat judge and must not
 treat standard LM components as plagiarism. The LLM quality vote is a
-**coherence gate, never a grader**: the final score is pure bpb, with
-hard-zero on agentic `cheat`/`suspicious` and cheap `Copied` / high-confidence
+**coherence gate, never a grader**: the live leaf is the **v4 G2 benchmark
+lattice** (equal-weight mean of public-suite accuracies), with hard-zero on
+agentic `cheat`/`suspicious` and cheap `Copied` / high-confidence
 `Suspicious`. Missing agentic verdict is fail-closed (`ChallengeInternal`).
 Leaves are D24-complete per chain epoch, emitted at
 epoch close from the finalized-since-last-epoch batch (see **Leaf emission**
@@ -274,17 +275,49 @@ Operators may re-stage via `POST /v1/admin/artifacts/{id}/receive` (same
 admin Bearer; requires `X-Prism-Sha256`; `n_params` from store or
 `X-Prism-N-Params`) — never an open pod upload.
 
-## v3 composite scoring (versioned addition — opt-in)
+## v4 G2 benchmark scoring (live default)
 
-Everything in this section is a **versioned addition**: the live leaf score
-stays v2 pure-bpb until governance flips `PRISM_SCORING_MODE=composite`
-after the placeholder anchors are measured on the E6 baselines and
-hash-committed. Modes (`prism-pipeline::ScoringMode`):
+**Breaking change vs v2:** the emission leaf is no longer
+`score_from_bpb` (bits/token). Tokenizer length cannot farm the rank.
+`PRISM_SCORING_MODE` modes (`prism-pipeline::ScoringMode`):
 
 | Mode | Leaf score | `scoring_version` on rows |
 |------|-----------|---------------------------|
-| `shadow` (default; the v2/"legacy" behavior) | v2 `score_from_bpb` — **bit-identical** | `2` |
-| `composite` | v3 lattice (fail-closed `0` without a scored composite) | `3` |
+| `benchmarks` (**default**) | equal-weight mean of available G2 public accuracies → `round(SCORE_MAX × mean)` | `4` |
+| `shadow` | v2 `score_from_bpb` (legacy; bits/token) | `2` |
+| `composite` | v3 G1–G8 lattice (fail-closed `0` without a scored composite) | `3` |
+
+**Formula.** From METRICS_JSON / Zone-A `org.g2.*` (battery aliases accepted),
+take each present accuracy in `[0, 1]` among:
+
+`hellaswag`, `arc_easy`, `arc_challenge`, `piqa`, `winogrande`, `boolq`,
+`lambada` (prefer `org.g2.lambada_strict_acc`), `openbookqa`.
+
+Equal-weight mean over the **available subset** (missing tasks are omitted,
+not zero-filled). Empty suite → **`Score(0)`** (fail-closed). **Never** falls
+back to bits/token bpb for the leaf. Bits/token bpb and tokenizer-neutral
+`org.g1.bits_per_byte_*` remain recorded for display / future composite; they
+do not move the v4 lattice.
+
+**Historical rows.** Terminal rows already scored under v2 keep their stored
+`final_score` until an operator re-score. Recompute from stored
+`metrics_json` without re-renting GPUs:
+
+```bash
+prism-challenge rescore-g2 --dry-run          # plan
+prism-challenge rescore-g2                   # apply (clears emitted_epoch)
+prism-challenge rescore-g2 --id <submission>
+```
+
+Requires `BASE_DATABASE_URL`. Already-sealed epoch leaves stay; the next
+epoch-close outbox picks up the new lattice.
+
+## v3 composite scoring (versioned addition — opt-in)
+
+Everything in this section remains a **versioned addition** behind
+`PRISM_SCORING_MODE=composite` after placeholder anchors are measured on the
+E6 baselines and hash-committed. The live default is **v4 benchmarks** (above),
+not shadow bpb.
 
 **Source-tree submissions (v3 / recipe 1.3–1.4 historical).** Under recipe
 ≤ 1.4.0, miners could submit a full source tree as a ZIP (`zip_base64` or
@@ -498,7 +531,7 @@ for the bpb score (coherence gate, never a grader).
 
 | Crate | Role |
 |-------|------|
-| `prism-challenge-task` | Identity constants / domains (`SCORING_VERSION` 2, `SCORING_VERSION_V3` 3) |
+| `prism-challenge-task` | Identity constants / domains (`SCORING_VERSION` 2, `SCORING_VERSION_V3` 3, `SCORING_VERSION_V4` 4 live) |
 | `prism-lium-types` | Lium data contract: error taxonomy, provider shapes, pod telemetry series, signed `EvalReceipt` + `NoScoreGate` |
 | `prism-lium` | Lium REST client, real recipe exec over SSH, post-train asset staging, `SimLiumBackend`; re-exports `prism-lium-types` |
 | `prism-recipe` | Contract validation, dataset pin, multi-file harness + G1–G8 battery + cheatguard, baseline sources, source-tree intake (`zip_submit`), attribution, anchor sets, v3 baselines |

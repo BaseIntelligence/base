@@ -26,8 +26,9 @@ use challenge_agentic::{AgenticBackend, OpenRouterAgent, SimAgent};
 use challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
 use prism_challenge::{
-    submission_router, AppState, DbEvalStore, DbPrismStore, EvalStore, MemoryEvalStore,
-    MemoryPrismStore, Orchestrator, OrchestratorConfig, PrismStore, CHALLENGE_ID, SCORING_VERSION,
+    score_from_g2_benchmarks, submission_router, AppState, DbEvalStore, DbPrismStore, EvalStore,
+    FinalScore, MemoryEvalStore, MemoryPrismStore, Orchestrator, OrchestratorConfig, PrismStore,
+    Stage, StageEvent, StatePatch, CHALLENGE_ID,
 };
 use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
 use prism_lium_payer::{allow_operator_lium_fallback, PayerBackendFactory, PayerKeyVault};
@@ -114,10 +115,22 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Print identity.
+    /// Print identity (id, live scoring_version/mode, public key).
     Identity,
     /// Run server + workers (default).
     Serve,
+    /// Recompute final_score from stored G2 metrics (v4). Requires BASE_DATABASE_URL.
+    RescoreG2 {
+        /// Print planned updates only.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Optional single submission id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Max champion rows to scan.
+        #[arg(long, default_value_t = 500)]
+        limit: u32,
+    },
 }
 
 fn main() -> ExitCode {
@@ -139,8 +152,18 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
-    if matches!(cli.cmd, Some(Cmd::Identity)) {
-        return cmd_identity(&resolve_sk_path(cli.challenge_sk_file.as_ref())?);
+    match &cli.cmd {
+        Some(Cmd::Identity) => {
+            return cmd_identity(&resolve_sk_path(cli.challenge_sk_file.as_ref())?);
+        }
+        Some(Cmd::RescoreG2 { dry_run, id, limit }) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            return rt.block_on(cmd_rescore_g2(*dry_run, id.clone(), *limit));
+        }
+        _ => {}
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -166,8 +189,79 @@ fn cmd_identity(path: &Path) -> Result<(), String> {
     let sk = load_challenge_secret(path).map_err(|e| e.to_string())?;
     let pk = prism_challenge::public_key_from_secret(&sk)?;
     println!("challenge_id={CHALLENGE_ID}");
-    println!("scoring_version={SCORING_VERSION}");
+    let mode = prism_challenge::ScoringMode::from_env();
+    println!("scoring_version={}", mode.scoring_version());
+    println!("scoring_mode={}", mode.name());
     println!("public_key={}", encode_hex(&pk));
+    Ok(())
+}
+
+async fn cmd_rescore_g2(dry_run: bool, id: Option<String>, limit: u32) -> Result<(), String> {
+    let url = std::env::var("BASE_DATABASE_URL")
+        .map_err(|_| "BASE_DATABASE_URL required for rescore-g2".to_string())?;
+    let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
+    let store = DbPrismStore::new(pool.clone());
+    let rows = if let Some(id) = id.as_deref() {
+        match store.get(id).await.map_err(|e| e.to_string())? {
+            Some(r) => vec![r],
+            None => return Err(format!("unknown submission {id}")),
+        }
+    } else {
+        store
+            .list_champions(limit)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    let mut updated = 0u32;
+    let mut skipped = 0u32;
+    for row in rows {
+        let Some(metrics) = row.metrics_json.as_ref() else {
+            skipped += 1;
+            continue;
+        };
+        let new_score = score_from_g2_benchmarks(metrics);
+        let old = match row.final_score {
+            Some(FinalScore::Score(v)) => v,
+            _ => 0,
+        };
+        if old == new_score {
+            skipped += 1;
+            continue;
+        }
+        println!("{}: {old} -> {new_score}", row.id);
+        if dry_run {
+            updated += 1;
+            continue;
+        }
+        store
+            .apply(
+                &row.id,
+                &StatePatch {
+                    status: Some(Stage::Terminated),
+                    final_score: Some(FinalScore::Score(new_score)),
+                    ..StatePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: Stage::Terminated,
+                    detail: Some(serde_json::json!({
+                        "rescore": "g2_benchmarks",
+                        "scoring_version": 4,
+                        "old_score": old,
+                        "new_score": new_score,
+                    })),
+                    at_ms: 0,
+                }),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE prism_submission SET emitted_epoch = NULL WHERE id = $1")
+            .bind(&row.id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        updated += 1;
+    }
+    println!("rescore-g2 done updated={updated} skipped={skipped} dry_run={dry_run}");
     Ok(())
 }
 
@@ -427,7 +521,7 @@ fn orchestrator_config(
         stuck_grace_secs: 10 * 3600,
         stage_delay,
         auto_retry_max: cli.auto_retry_max,
-        // scoring_mode from PRISM_SCORING_MODE (default shadow).
+        // scoring_mode from PRISM_SCORING_MODE (default benchmarks / v4 G2).
         ..Default::default()
     }
 }
@@ -536,8 +630,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     )
     .with_topmodel(topmodel)
     // v3: persist the METRICS_JSON v2 battery + compute the composite
-    // (scoring mode from PRISM_SCORING_MODE; default shadow keeps the v2
-    // score bit-identical).
+    // (scoring mode from PRISM_SCORING_MODE; default benchmarks = v4 G2).
     .with_eval_store(Some(eval_store))
     .with_runtime(Arc::clone(&active_jobs), Arc::clone(&log_buf));
     orchestrator = attach_miner_payer(orchestrator, payer_vault, live_ssh, operator_key.is_some());

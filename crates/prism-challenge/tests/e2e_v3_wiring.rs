@@ -14,7 +14,7 @@ use crypto::KEY_LEN;
 use prism_challenge::{
     example_valid_request, submission_id, EvalStore, FinalScore, GatewayClient,
     GatewayClientConfig, MemoryEvalStore, MemoryPrismStore, Orchestrator, OrchestratorConfig,
-    PrismStore, Stage, SubmissionState,
+    PrismStore, ScoringMode, Stage, SubmissionState,
 };
 use prism_lium::{
     EvalJobBackend, Instance, InstanceSpec, LiumError, Offer, RemoteExecResult, SimLiumBackend,
@@ -156,6 +156,7 @@ fn mk_orchestrator(
     Orchestrator::new(
         OrchestratorConfig {
             netuid: 541,
+            scoring_mode: ScoringMode::Shadow,
             claim_poll: std::time::Duration::from_millis(10),
             ..Default::default()
         },

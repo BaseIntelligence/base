@@ -32,6 +32,8 @@ prism-review = { path = "../../crates/prism-review" }
 submission-gating = { path = "../../crates/submission-gating" }
 crypto = { path = "../../crates/crypto" }
 db = { path = "../../crates/db" }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 telemetry = { path = "../../crates/telemetry" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 trustroot = { path = "../../crates/trustroot" }

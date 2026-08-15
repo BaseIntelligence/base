@@ -16,7 +16,7 @@ use challenge_agentic::{AgenticBackend, AgenticError, AgenticVerdict, ReviewRequ
 use crypto::KEY_LEN;
 use prism_challenge::{
     FinalScore, GatewayClient, GatewayClientConfig, MemoryPrismStore, Orchestrator,
-    OrchestratorConfig, PrismStore, Stage, SubmissionState,
+    OrchestratorConfig, PrismStore, ScoringMode, Stage, SubmissionState,
 };
 use prism_lium::{
     EvalJobBackend, Instance, InstanceSpec, LiumError, Offer, RemoteExecResult, SimLiumBackend,
@@ -196,6 +196,7 @@ async fn agentic_infra_pre_pod_never_provisions() {
     let orch = Orchestrator::new(
         OrchestratorConfig {
             netuid: 541,
+            scoring_mode: ScoringMode::Shadow,
             auto_retry_max: 1,
             claim_poll: std::time::Duration::from_millis(10),
             ..Default::default()
@@ -281,6 +282,7 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
     let orch = Orchestrator::new(
         OrchestratorConfig {
             netuid: 541,
+            scoring_mode: ScoringMode::Shadow,
             auto_retry_max: 1,
             claim_poll: std::time::Duration::from_millis(10),
             ..Default::default()

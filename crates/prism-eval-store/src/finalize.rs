@@ -364,10 +364,7 @@ async fn persist_run(
         CompositeOutcome::Scored(s) => &s.groups,
         CompositeOutcome::Ineligible(i) => &i.groups,
     };
-    let scoring_mode = match ScoringMode::from_env() {
-        ScoringMode::Shadow => "shadow",
-        ScoringMode::Composite => "composite",
-    };
+    let scoring_mode = ScoringMode::from_env().name();
     let run = EvalRunRecord {
         run_id: String::new(),     // store-assigned
         created_at: String::new(), // store-assigned
@@ -553,7 +550,7 @@ mod tests {
 
         let run = st.eval_run("sub-2").await.unwrap().expect("run row");
         assert_eq!(run.anchor_version, 0);
-        assert_eq!(run.scoring_mode, "shadow");
+        assert_eq!(run.scoring_mode, "benchmarks");
         assert_eq!(run.prereg_hash, AnchorInput::v0_placeholder().prereg_hash());
         assert_eq!(run.eval_tier.as_deref(), Some("battery-v1"));
         assert_eq!(run.netns, Some(true));
@@ -573,7 +570,7 @@ mod tests {
         assert_eq!(prereg[0].hash, run.prereg_hash);
 
         let detail = eval_detail(&run, &groups);
-        assert_eq!(detail["scoring_mode"], "shadow");
+        assert_eq!(detail["scoring_mode"], "benchmarks");
         assert_eq!(detail["groups"].as_array().unwrap().len(), 8);
         assert!(detail["composite"].as_f64().unwrap() > 0.95);
     }

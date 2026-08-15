@@ -232,7 +232,7 @@ mod tests {
             submission_id: sub.into(),
             anchor_version: 0,
             prereg_hash: "ff".repeat(32),
-            scoring_mode: "shadow".into(),
+            scoring_mode: "benchmarks".into(),
             pod_manifest: None,
             harness_files_sha256: None,
             netns: None,

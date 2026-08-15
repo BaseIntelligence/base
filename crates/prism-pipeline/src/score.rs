@@ -1,30 +1,23 @@
-//! Map BPB / pipeline outcomes to integer leaf scores (pipeline path).
+//! Map BPB / pipeline outcomes / G2 benches to integer leaf scores.
 
 use std::sync::OnceLock;
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
-use prism_challenge_task::{SCORE_MAX, SCORING_VERSION, SCORING_VERSION_V3};
+use prism_challenge_task::{SCORE_MAX, SCORING_VERSION, SCORING_VERSION_V3, SCORING_VERSION_V4};
 
 use crate::composite::CompositeOutcome;
 
 /// Terminal measured outcome after master eval.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineOutcome {
-    /// Measured BPB (lower is better).
     Measured { bpb: f64 },
-    /// Miner-attributable zero.
     MinerZero,
-    /// Operator / challenge fault.
     ChallengeInternal,
-    /// Explicit NoScore.
     NoScore { reason: NoScoreReasonCode },
-    /// Already resolved.
     Resolved(ScoreOrAbsence),
 }
 
-/// Invert BPB into lattice score: lower bpb → higher score.
-///
-/// Uses a soft map: `score = SCORE_MAX * (1 / (1 + bpb))` clamped.
+/// Soft map: `SCORE_MAX * (1 / (1 + bpb))` clamped.
 #[must_use]
 pub fn score_from_bpb(bpb: f64) -> u64 {
     if !bpb.is_finite() || bpb < 0.0 {
@@ -41,82 +34,72 @@ pub fn score_from_bpb(bpb: f64) -> u64 {
     }
 }
 
-/// v3 scoring-mode selection, read once from `PRISM_SCORING_MODE`
-/// (`shadow` default | `composite`).
-///
-/// In `shadow` mode the composite (when present) is computed/stored by
-/// callers but the leaf score stays `score_from_bpb` — v2 remains live until
-/// anchors are calibrated and governance flips the mode. In `composite` mode
-/// the v3 lattice is the leaf score and rows carry [`SCORING_VERSION_V3`]
-/// (via [`ScoringMode::scoring_version`]).
+/// `PRISM_SCORING_MODE`: default `benchmarks` (v4); `shadow`=v2 bpb; `composite`=v3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoringMode {
-    /// v2 stays the score; v3 composite is observed only.
     Shadow,
-    /// v3 lattice is the score (fail-closed to 0 without a scored composite).
     Composite,
+    Benchmarks,
 }
 
 impl ScoringMode {
-    /// Parse the raw env value: exactly `composite` selects composite mode.
     #[must_use]
     pub fn parse(raw: Option<&str>) -> Self {
-        match raw {
+        match raw.map(str::trim) {
+            Some("shadow") => Self::Shadow,
             Some("composite") => Self::Composite,
-            _ => Self::Shadow,
+            Some("benchmarks") | None | Some(_) => Self::Benchmarks,
         }
     }
 
-    /// Mode for this process, read from `PRISM_SCORING_MODE` once.
     #[must_use]
     pub fn from_env() -> Self {
         static MODE: OnceLock<ScoringMode> = OnceLock::new();
         *MODE.get_or_init(|| Self::parse(std::env::var("PRISM_SCORING_MODE").ok().as_deref()))
     }
 
-    /// `challenge_scoring_version` stamped on rows scored under this mode.
     #[must_use]
     pub const fn scoring_version(self) -> u16 {
         match self {
             Self::Shadow => SCORING_VERSION,
             Self::Composite => SCORING_VERSION_V3,
+            Self::Benchmarks => SCORING_VERSION_V4,
         }
     }
 
-    /// Stable label for logs, run rows, and terminal events.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Shadow => "shadow",
             Self::Composite => "composite",
+            Self::Benchmarks => "benchmarks",
         }
     }
 }
 
-/// Final integer lattice score after the (caller-applied) hard-zero gates,
-/// honoring the scoring mode.
-///
-/// - `shadow`: always the v2 `score_from_bpb` number (bit-identical).
-/// - `composite`: the v3 lattice of an attached scored composite; an
-///   ineligible or missing composite fails closed to 0 (emission burns).
+/// Lattice for `mode`. Benchmarks uses `g2_lattice` only (never bpb).
 #[must_use]
-pub fn final_lattice(bpb: f64, composite: Option<&CompositeOutcome>, mode: ScoringMode) -> u64 {
+pub fn final_lattice(
+    bpb: f64,
+    composite: Option<&CompositeOutcome>,
+    mode: ScoringMode,
+    g2_lattice: Option<u64>,
+) -> u64 {
     match mode {
         ScoringMode::Shadow => score_from_bpb(bpb),
         ScoringMode::Composite => match composite {
             Some(CompositeOutcome::Scored(s)) => s.lattice,
             Some(CompositeOutcome::Ineligible(_)) => 0,
             None => {
-                tracing::warn!(
-                    "composite scoring mode but no CompositeOutcome attached; scoring 0"
-                );
+                tracing::warn!("composite mode without CompositeOutcome; scoring 0");
                 0
             }
         },
+        ScoringMode::Benchmarks => g2_lattice.unwrap_or(0),
     }
 }
 
-/// Map pipeline outcome to leaf payload.
+/// Map pipeline outcome to leaf payload (legacy bpb path).
 #[must_use]
 pub fn score_from_pipeline(outcome: &PipelineOutcome) -> ScoreOrAbsence {
     match outcome {
@@ -151,23 +134,29 @@ mod tests {
     }
 
     #[test]
-    fn scoring_mode_parse_defaults_to_shadow() {
-        assert_eq!(ScoringMode::parse(None), ScoringMode::Shadow);
+    fn scoring_mode_parse_defaults_to_benchmarks() {
+        assert_eq!(ScoringMode::parse(None), ScoringMode::Benchmarks);
+        assert_eq!(
+            ScoringMode::parse(Some("benchmarks")),
+            ScoringMode::Benchmarks
+        );
         assert_eq!(ScoringMode::parse(Some("shadow")), ScoringMode::Shadow);
         assert_eq!(
             ScoringMode::parse(Some("composite")),
             ScoringMode::Composite
         );
-        assert_eq!(ScoringMode::parse(Some("COMPOSITE")), ScoringMode::Shadow);
-        assert_eq!(ScoringMode::parse(Some("garbage")), ScoringMode::Shadow);
+        assert_eq!(
+            ScoringMode::parse(Some("COMPOSITE")),
+            ScoringMode::Benchmarks
+        );
+        assert_eq!(ScoringMode::parse(Some("garbage")), ScoringMode::Benchmarks);
     }
 
     #[test]
     fn scoring_version_marks_mode() {
-        assert_eq!(ScoringMode::Shadow.scoring_version(), SCORING_VERSION);
-        assert_eq!(ScoringMode::Composite.scoring_version(), SCORING_VERSION_V3);
         assert_eq!(ScoringMode::Shadow.scoring_version(), 2);
         assert_eq!(ScoringMode::Composite.scoring_version(), 3);
+        assert_eq!(ScoringMode::Benchmarks.scoring_version(), 4);
     }
 
     #[test]
@@ -175,12 +164,11 @@ mod tests {
         let composite = sample_scored(424_242);
         for bpb in [0.0, 0.5, 1.0, 4.0] {
             assert_eq!(
-                final_lattice(bpb, Some(&composite), ScoringMode::Shadow),
+                final_lattice(bpb, Some(&composite), ScoringMode::Shadow, Some(1)),
                 score_from_bpb(bpb),
-                "shadow ignores the composite"
             );
             assert_eq!(
-                final_lattice(bpb, None, ScoringMode::Shadow),
+                final_lattice(bpb, None, ScoringMode::Shadow, None),
                 score_from_bpb(bpb)
             );
         }
@@ -190,16 +178,24 @@ mod tests {
     fn composite_mode_uses_lattice_and_fails_closed() {
         let composite = sample_scored(424_242);
         assert_eq!(
-            final_lattice(4.0, Some(&composite), ScoringMode::Composite),
+            final_lattice(4.0, Some(&composite), ScoringMode::Composite, None),
             424_242,
-            "composite mode emits the v3 lattice, not bpb"
         );
         let ineligible = CompositeOutcome::Ineligible(sample_ineligible());
         assert_eq!(
-            final_lattice(0.5, Some(&ineligible), ScoringMode::Composite),
+            final_lattice(0.5, Some(&ineligible), ScoringMode::Composite, None),
             0
         );
-        assert_eq!(final_lattice(0.5, None, ScoringMode::Composite), 0);
+        assert_eq!(final_lattice(0.5, None, ScoringMode::Composite, None), 0);
+    }
+
+    #[test]
+    fn benchmarks_mode_uses_g2_never_bpb() {
+        assert_eq!(
+            final_lattice(0.01, None, ScoringMode::Benchmarks, Some(123_456)),
+            123_456
+        );
+        assert_eq!(final_lattice(0.01, None, ScoringMode::Benchmarks, None), 0);
     }
 
     fn sample_scored(lattice: u64) -> CompositeOutcome {
