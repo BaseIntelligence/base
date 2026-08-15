@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -489,18 +490,19 @@ struct PrismDetailFanout {
 
 /// Fetch bounded challenge detail payloads keyed by submission id.
 async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, PrismDetailFanout> {
-    let mut out = HashMap::new();
-    for id in ids {
-        if id.is_empty() {
-            continue;
-        }
-        if let Some(mut detail) =
-            upstream::get_json_opt(st, PRISM, &format!("/v1/submissions/{id}")).await
-        {
+    let futs = ids.iter().filter(|id| !id.is_empty()).map(|id| {
+        let st = st.clone();
+        let id = id.clone();
+        async move {
+            let Some(mut detail) =
+                upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await
+            else {
+                return None;
+            };
             // Optional /diff for pin_id when detail alone lacks era signals.
             if pin_id_from_payload(&detail).is_none() {
                 if let Some(diff) =
-                    upstream::get_json_opt(st, PRISM, &format!("/v1/submissions/{id}/diff")).await
+                    upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}/diff")).await
                 {
                     if let Some(pin) = diff.get("pin_id").and_then(Value::as_str) {
                         if let Some(obj) = detail.as_object_mut() {
@@ -509,11 +511,15 @@ async fn fetch_prism_details(st: &SiteState, ids: &[String]) -> HashMap<String, 
                     }
                 }
             }
-            let zone_a = fetch_prism_zone_a_if_needed(st, id, &detail).await;
-            out.insert(id.clone(), PrismDetailFanout { detail, zone_a });
+            let zone_a = fetch_prism_zone_a_if_needed(&st, &id, &detail).await;
+            Some((id, PrismDetailFanout { detail, zone_a }))
         }
-    }
-    out
+    });
+    join_all(futs)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// When detail metrics omit public G2 benches, pull Zone-A rows from the eval store.
