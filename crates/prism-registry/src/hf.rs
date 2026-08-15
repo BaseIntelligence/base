@@ -15,6 +15,7 @@
 //! text). Absent/empty → graceful no-op.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -482,6 +483,7 @@ fn sanitize_hub_path(rel: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Hub markdown card template
 fn hub_readme(req: &TopModelRequest, arch: &str, has_ckpt: bool) -> String {
     let benches = extract_g2(req.metrics_json.as_ref());
     let n_params = metric_u64(req.metrics_json.as_ref(), &["n_params"]);
@@ -518,15 +520,18 @@ fn hub_readme(req: &TopModelRequest, arch: &str, has_ckpt: bool) -> String {
     out.push_str("license: apache-2.0\n");
     out.push_str("---\n\n");
     out.push_str("<div align=\"center\">\n\n");
-    out.push_str(&format!("![BASE Banner]({BANNER_URL})\n\n"));
+    let _ = writeln!(out, "![BASE Banner]({BANNER_URL})");
+    out.push('\n');
     out.push_str("<h1 align=\"center\">PRISM top architecture</h1>\n\n");
     out.push_str("<p align=\"center\"><b>Global-best miner architecture on Base PRISM — benchmarks vs GPT-2 Large</b></p>\n\n");
     out.push_str("</div>\n\n---\n\n");
     out.push_str("## Benchmarks vs GPT-2 Large\n\n");
     out.push_str("Prism-protocol **public** eval pack. Accuracy: **↑ higher better**. BPB: **↓ lower better**. ");
-    out.push_str(&format!(
-        "Reference: [{GPT2_LABEL}]({GPT2_SOURCE}) (eval-only; not a miner train).\n\n"
-    ));
+    let _ = writeln!(
+        out,
+        "Reference: [{GPT2_LABEL}]({GPT2_SOURCE}) (eval-only; not a miner train)."
+    );
+    out.push('\n');
     out.push_str("| Metric | This model | GPT-2 Large | Δ | vs GPT-2 Large |\n");
     out.push_str("|---|---:|---:|---:|:---|\n");
     out.push_str(&bench_row_lower("Val BPB (G1)", Some(req.bpb), GPT2_BPB, 4));
@@ -544,39 +549,43 @@ fn hub_readme(req: &TopModelRequest, arch: &str, has_ckpt: bool) -> String {
     }
     out.push_str("\n### Compute notes\n\n");
     out.push_str("| | This model | GPT-2 Large |\n|---|---|---|\n");
-    out.push_str(&format!("| Parameters | {params_cell} | {gpt2_params} |\n"));
-    out.push_str(&format!("| Size vs reference | {params_vs} | 1× |\n"));
-    out.push_str(&format!(
-        "| Train tokens | {tokens_cell} | _(eval-only reference)_ |\n"
-    ));
-    out.push_str(&format!(
-        "| Wall clock | {wall_cell} | _(eval-only reference)_ |\n"
-    ));
-    out.push_str(&format!(
-        "| Sustained train throughput | {tflops_cell} | n/a (no Prism train) |\n"
-    ));
-    out.push_str(&format!(
-        "| GPU (harness) | `{gpu}` | 1×RTX 5090 (eval) |\n"
-    ));
+    let _ = writeln!(out, "| Parameters | {params_cell} | {gpt2_params} |");
+    let _ = writeln!(out, "| Size vs reference | {params_vs} | 1× |");
+    let _ = writeln!(
+        out,
+        "| Train tokens | {tokens_cell} | _(eval-only reference)_ |"
+    );
+    let _ = writeln!(
+        out,
+        "| Wall clock | {wall_cell} | _(eval-only reference)_ |"
+    );
+    let _ = writeln!(
+        out,
+        "| Sustained train throughput | {tflops_cell} | n/a (no Prism train) |"
+    );
+    let _ = writeln!(out, "| GPU (harness) | `{gpu}` | 1×RTX 5090 (eval) |");
     out.push_str(
         "\nThroughput ≈ `6 × N × D / wall` TFLOPS (dense transformer train FLOPs rule of thumb).\n\n",
     );
     out.push_str("## Model card\n\n");
     out.push_str("| field | value |\n|---|---|\n");
-    out.push_str(&format!("| arch_id | `{arch}` |\n"));
-    out.push_str(&format!("| bpb | `{:.6}` |\n", req.bpb));
-    out.push_str(&format!("| submission | `{}` |\n", req.submission_id));
-    out.push_str(&format!("| owner_hotkey | `{hotkey}…` |\n"));
-    out.push_str(&format!("| hub repo | `{DEFAULT_REPO}` |\n\n"));
+    let _ = writeln!(out, "| arch_id | `{arch}` |");
+    let _ = writeln!(out, "| bpb | `{:.6}` |", req.bpb);
+    let _ = writeln!(out, "| submission | `{}` |", req.submission_id);
+    let _ = writeln!(out, "| owner_hotkey | `{hotkey}…` |");
+    let _ = writeln!(out, "| hub repo | `{DEFAULT_REPO}` |");
+    out.push('\n');
     out.push_str("## Load (trust_remote_code)\n\n");
     out.push_str("```python\n");
     out.push_str("from transformers import AutoModel, AutoConfig\n");
-    out.push_str(&format!(
-        "cfg = AutoConfig.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)\n"
-    ));
-    out.push_str(&format!(
-        "model = AutoModel.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)\n"
-    ));
+    let _ = writeln!(
+        out,
+        "cfg = AutoConfig.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)"
+    );
+    let _ = writeln!(
+        out,
+        "model = AutoModel.from_pretrained(\"{DEFAULT_REPO}\", trust_remote_code=True)"
+    );
     out.push_str("```\n\n");
     out.push_str(ckpt_note);
     out.push_str("\n\nCompanion GitHub publish (when configured) lives under `BaseIntelligence/prism` `top-model/`.\n");
@@ -675,7 +684,16 @@ fn metric_f64(metrics: Option<&serde_json::Value>, keys: &[&str]) -> Option<f64>
 }
 
 fn metric_u64(metrics: Option<&serde_json::Value>, keys: &[&str]) -> Option<u64> {
-    metric_f64(metrics, keys).map(|f| f as u64)
+    metric_f64(metrics, keys).and_then(|f| {
+        if !f.is_finite() || f < 0.0 || f > u64::MAX as f64 {
+            return None;
+        }
+        // Truncate toward zero after finite/range gate (JSON numbers arrive as f64).
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            Some(f as u64)
+        }
+    })
 }
 
 fn metric_str(metrics: Option<&serde_json::Value>, keys: &[&str]) -> Option<String> {
@@ -876,14 +894,18 @@ fn is_publishable_source(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::await_holding_lock)]
     use super::*;
     use crate::publish::require_topmodel_weights;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, PoisonError};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     fn req() -> TopModelRequest {
         TopModelRequest {
@@ -925,7 +947,7 @@ mod tests {
 
     #[tokio::test]
     async fn commits_custom_arch_pack() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -962,7 +984,7 @@ mod tests {
     #[test]
     fn require_weights_defaults_closed() {
         // Serialize env mutation across this crate's HF tests.
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let prev = std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS").ok();
         std::env::remove_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS");
         assert!(require_topmodel_weights());
@@ -978,7 +1000,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_without_checkpoint_when_weights_required() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "1");
         let server = MockServer::start().await;
         let p = HfTopModelPublisher::with_config(
