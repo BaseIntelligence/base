@@ -5171,6 +5171,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chain",
+ "futures",
  "gateway-registry",
  "hex",
  "http-body-util",
