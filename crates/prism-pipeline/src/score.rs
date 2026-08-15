@@ -2,9 +2,9 @@
 
 use std::sync::OnceLock;
 
+use crate::composite::CompositeOutcome;
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use prism_challenge_task::{SCORE_MAX, SCORING_VERSION, SCORING_VERSION_V3, SCORING_VERSION_V4};
-use crate::composite::CompositeOutcome;
 /// Terminal measured outcome after master eval.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineOutcome {
@@ -36,25 +36,25 @@ pub enum ScoringMode {
     Benchmarks,
 }
 impl ScoringMode {
-        pub fn parse(raw: Option<&str>) -> Self {
+    pub fn parse(raw: Option<&str>) -> Self {
         match raw.map(str::trim) {
             Some("shadow") => Self::Shadow,
             Some("composite") => Self::Composite,
             _ => Self::Benchmarks,
         }
     }
-        pub fn from_env() -> Self {
+    pub fn from_env() -> Self {
         static MODE: OnceLock<ScoringMode> = OnceLock::new();
         *MODE.get_or_init(|| Self::parse(std::env::var("PRISM_SCORING_MODE").ok().as_deref()))
     }
-        pub const fn scoring_version(self) -> u16 {
+    pub const fn scoring_version(self) -> u16 {
         match self {
             Self::Shadow => SCORING_VERSION,
             Self::Composite => SCORING_VERSION_V3,
             Self::Benchmarks => SCORING_VERSION_V4,
         }
     }
-        pub const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Shadow => "shadow",
             Self::Composite => "composite",
