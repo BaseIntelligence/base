@@ -38,8 +38,18 @@ pub const ANCHOR_SET_V0_JSON: &str = include_str!("../anchors/v0.json");
 /// baselines and pre-registered before scoring against it.
 pub const ANCHOR_SET_V1_JSON: &str = include_str!("../anchors/v1.json");
 
-/// Latest anchor-set version known to this build (v2.1 additions).
-pub const LATEST_ANCHOR_VERSION: u16 = 1;
+/// Embedded v2 anchor set (Prism **v2.2** swap; PLACEHOLDER values).
+///
+/// v2 = v1 with `org.g2.lambada_acc` (4-way MC over random-word
+/// distractors — saturated: 0.955 at 112M, 0.985 GPT-2 Large) replaced by
+/// `org.g2.lambada_strict_acc` — the canonical LAMBADA protocol
+/// (unconstrained greedy last-word exact match, chance ≈ 0, real headroom).
+/// Same asset, same weights/gates/mirror/bootstrap; the harness emits both
+/// keys so v0/v1 scoring is untouched.
+pub const ANCHOR_SET_V2_JSON: &str = include_str!("../anchors/v2.json");
+
+/// Latest anchor-set version known to this build (v2.2 LAMBADA-strict swap).
+pub const LATEST_ANCHOR_VERSION: u16 = 2;
 
 /// The anchor-set version live scoring defaults to (`PRISM_ANCHOR_VERSION`
 /// absent). Stays 0 until v1 anchors are measured + pre-registered.
@@ -200,6 +210,7 @@ impl AnchorSet {
         match version {
             0 => Ok(ANCHOR_SET_V0_JSON),
             1 => Ok(ANCHOR_SET_V1_JSON),
+            2 => Ok(ANCHOR_SET_V2_JSON),
             v => Err(AnchorError::UnknownVersion(v)),
         }
     }
@@ -307,7 +318,10 @@ mod tests {
         let v1 = AnchorSet::load(1).expect("v1 parses");
         assert_eq!(v1.version, 1);
         assert_eq!(v1.status, "placeholder");
-        assert_eq!(AnchorSet::latest().expect("latest").version, 1);
+        assert_eq!(
+            AnchorSet::latest().expect("latest").version,
+            LATEST_ANCHOR_VERSION
+        );
         assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
 
         // Identical group weights, gates, mirror, bootstrap.
@@ -344,6 +358,53 @@ mod tests {
         assert_ne!(
             AnchorSet::prereg_hash_for(0).expect("v0 hash"),
             AnchorSet::prereg_hash_for(1).expect("v1 hash")
+        );
+    }
+
+    #[test]
+    fn v2_swaps_saturated_mc_lambada_for_strict() {
+        let v1 = AnchorSet::load(1).expect("v1 parses");
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        assert_eq!(v2.version, 2);
+        assert_eq!(v2.status, "placeholder");
+        assert_eq!(LATEST_ANCHOR_VERSION, 2);
+        assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
+
+        // Identical group weights, gates, mirror, bootstrap — one key swap.
+        for key in v1.groups.keys() {
+            let (a, b) = (&v1.groups[key], &v2.groups[key]);
+            assert!((a.weight - b.weight).abs() < 1e-12, "{key} weight moved");
+        }
+        assert_eq!(v1.gates, v2.gates);
+        assert_eq!(v1.mirror, v2.mirror);
+        assert_eq!(v1.bootstrap, v2.bootstrap);
+
+        let g2_v1 = &v1.groups["g2"].metrics;
+        let g2_v2 = &v2.groups["g2"].metrics;
+        assert_eq!(g2_v1.len(), g2_v2.len(), "swap, not add/remove");
+        assert!(g2_v1.contains_key("org.g2.lambada_acc"), "v1 keeps MC form");
+        assert!(
+            !g2_v2.contains_key("org.g2.lambada_acc"),
+            "saturated MC out"
+        );
+        let strict = &g2_v2["org.g2.lambada_strict_acc"];
+        assert_eq!(strict.status.as_deref(), Some("placeholder"));
+        // Open-vocabulary exact match: chance floor is ~0.
+        assert!(matches!(strict.norm, NormKind::Accuracy { chance } if chance == 0.0));
+        // Everything outside G2 is inherited unchanged from v1.
+        for (name, group) in &v1.groups {
+            if name == "g2" {
+                continue;
+            }
+            assert_eq!(
+                group.metrics.keys().collect::<Vec<_>>(),
+                v2.groups[name].metrics.keys().collect::<Vec<_>>(),
+                "{name} keys moved"
+            );
+        }
+        assert_ne!(
+            AnchorSet::prereg_hash_for(1).expect("v1 hash"),
+            AnchorSet::prereg_hash_for(2).expect("v2 hash")
         );
     }
 

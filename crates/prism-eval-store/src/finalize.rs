@@ -75,14 +75,31 @@ impl AnchorInput {
         }
     }
 
+    /// The embedded v2 placeholder set (Prism v2.2 swap: saturated MC
+    /// `org.g2.lambada_acc` replaced by canonical strict
+    /// `org.g2.lambada_strict_acc`; canonical bytes shared with
+    /// `prism-recipe/anchors/v2.json`).
+    #[must_use]
+    pub fn v2_placeholder() -> Self {
+        Self {
+            canonical_json: include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../prism-recipe/anchors/v2.json"
+            ))
+            .to_owned(),
+            status: "placeholder".into(),
+        }
+    }
+
     /// Anchor set selected by `PRISM_ANCHOR_VERSION` (`0` default → v0,
-    /// bit-identical live behavior; `1` → the v2.1 set). Unknown values
-    /// fail safe to v0 with a warning — never a new scoring surface by
-    /// accident.
+    /// bit-identical live behavior; `1` → the v2.1 set; `2` → the v2.2
+    /// LAMBADA-strict set). Unknown values fail safe to v0 with a warning —
+    /// never a new scoring surface by accident.
     #[must_use]
     pub fn from_env() -> Self {
         match std::env::var("PRISM_ANCHOR_VERSION").ok().as_deref() {
             Some("1") => Self::v1_placeholder(),
+            Some("2") => Self::v2_placeholder(),
             None | Some("0") => Self::v0_placeholder(),
             Some(other) => {
                 tracing::warn!(

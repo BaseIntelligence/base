@@ -484,7 +484,7 @@ governance action like the `composite` mode flip.
 |------|--------|---------|--------|
 | `PRISM_EMISSION_MODE` | `wta` \| `top3` | `wta` | `top3`: the top three positive credits keep 100 % / 50 % / 25 % of their own lattice score (ranks by the WTA tie convention; a scaled positive never rounds below 1); everything else is zeroed. Funds exploration behind the champion. |
 | `PRISM_OWNER_ARCH_CREDIT_BPS` | `0..=5000` | `0` | Post-collapse split of the **winner's own leaf**: the registry owner of the winning architecture receives `score × bps/10000`, the winner keeps the rest. No-op when the winner is the owner, the winning row has no published `arch_id`, or the cut rounds to 0. An off-metagraph owner's leaf is dropped by the D24 expected-set filter (cut burns — the legacy lex-tie theft vector stays closed). This — not flipping `OWNER_ARCH_CREDIT_ENABLED` (which stays `false`/dead) — is the sanctioned owner-credit path. |
-| `PRISM_ANCHOR_VERSION` | `0` \| `1` | `0` | Selects the composite anchor set. v1 = v0 plus two battery keys (below); identical group weights, gates, mirrors, bootstrap. Unknown values fall back to v0 with a warning. |
+| `PRISM_ANCHOR_VERSION` | `0` \| `1` \| `2` | `0` | Selects the composite anchor set. v1 = v0 plus two battery keys (below); v2 = v1 with the saturated MC LAMBADA swapped for the canonical strict protocol (below). Identical group weights, gates, mirrors, bootstrap. Unknown values fall back to v0 with a warning. |
 
 **Anchor set v1 battery keys** (emitted by the harness on every real run;
 inert under v0 since unknown `org.*` keys are ignored):
@@ -509,6 +509,24 @@ pre-register before selecting `PRISM_ANCHOR_VERSION=1` for scoring.
 Emission plumbing: `prism_registry::emission_leaves` (competition credits
 → configured collapse → optional owner split) — with default knobs it is
 bit-identical to `apply_wta(competition_scores(..))`, enforced by test.
+
+**Anchor set v2 (v2.2): LAMBADA strict.** The G2 LAMBADA item was scored
+as a 4-way MC over **random-word distractors** — but the gold word is
+uniquely determined by the long context (that is the design of LAMBADA),
+so the MC form saturates and discriminates nothing: **0.955** for a 112M/1h
+miner model and **0.985** for the GPT-2 Large reference on the harness
+protocol (literature-strict GPT-2 Large is ~0.52–0.60). v2 anchors
+(`prism-recipe/anchors/v2.json`) replace `org.g2.lambada_acc` with
+`org.g2.lambada_strict_acc`: **unconstrained greedy last-word exact match**
+over the full vocabulary (`g2.lambada_strict.acc`, chance ≈ 0, expected
+~0.10–0.35 at the 350M/6h operating point — real headroom and spread).
+Same `lambada.jsonl` asset (the gold word is recovered from
+`choices[gold]`) — no eval-pack rebuild; the harness emits **both** keys so
+v0/v1 scoring is bit-identical. The MC key stays outside v2 (a saturated
+metric only dilutes G2 weight). Ops note: re-measure the GPT-2 Large
+public reference row under the strict protocol before selecting
+`PRISM_ANCHOR_VERSION=2` (the published HF top-model card's LAMBADA
+column reflects the old MC protocol until then).
 
 ## Modular pod image + miner-installable dependencies (recipe-v10)
 

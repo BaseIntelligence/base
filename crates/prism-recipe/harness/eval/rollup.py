@@ -182,6 +182,14 @@ def flatten_metrics(battery_groups, items=None):
         v = g2.get(f"g2.{task}.acc_norm")
         if v is not None:
             out[org_key] = _series(v, clusters)
+    # Strict LAMBADA (anchors v2): canonical greedy last-word exact match.
+    # The 4-way MC key above stays for anchor sets v0/v1; this one has real
+    # headroom (the MC form saturates ~0.95+ because random-word distractors
+    # cannot compete with a context-determined gold word).
+    v = g2.get("g2.lambada_strict.acc")
+    if v is not None:
+        clusters = _cluster_means(items_dump, "g2.lambada_strict.acc", None, None)
+        out["org.g2.lambada_strict_acc"] = _series(v, clusters)
 
     g5 = _group_metrics(battery_groups, "g5")
     for org_key, internal in _G5_DIRECT.items():

@@ -348,6 +348,20 @@ Practical consequence for architecture design: under anchor set v1,
 "thinks more when it's hard" designs and "scales steeper" designs earn
 score on dedicated axes instead of only paying G7/G6 penalties.
 
+### v2.2: LAMBADA scored strict (anchor set v2, opt-in)
+
+The G2 LAMBADA item used to be a 4-way multiple choice against random
+distractor words — nearly free points (0.95+ for everyone, 0.985 for the
+GPT-2 Large reference), because LAMBADA's gold word is uniquely determined
+by its long context. The harness now **also** emits
+`org.g2.lambada_strict_acc`: unconstrained **greedy last-word exact match**
+(the canonical protocol — GPT-2 Large lands around 0.52–0.60, small 1-hour
+models around 0.10–0.30). Under anchor set v2 the strict key replaces the
+saturated MC key in the composite; v0/v1 scoring is unchanged. For your
+model this means last-word prediction quality is measured for real: test
+locally by greedy-decoding the final word of LAMBADA passages, not by
+ranking four candidate words.
+
 ## Useful routes
 
 | Route | Use |
