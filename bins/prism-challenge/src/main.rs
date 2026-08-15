@@ -115,11 +115,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Print identity (id, live scoring_version/mode, public key).
+    /// Print identity (id, live `scoring_version`/`mode`, public key).
     Identity,
     /// Run server + workers (default).
     Serve,
-    /// Recompute final_score from stored G2 metrics (v4). Requires BASE_DATABASE_URL.
+    /// Recompute `final_score` from stored G2 metrics (v4). Requires `BASE_DATABASE_URL`.
     RescoreG2 {
         /// Print planned updates only.
         #[arg(long, default_value_t = false)]
