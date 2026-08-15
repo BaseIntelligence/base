@@ -305,7 +305,7 @@ async fn cmd_republish_topmodel(id: String) -> Result<(), String> {
         row.arch_id,
         gh.is_some()
     );
-    prism_registry::force_publish_topmodel(&store, gh.as_deref(), &row).await;
+    prism_registry::post_score_hooks(&store, gh.as_deref(), &row, true).await;
     if let Ok(Some(pub_row)) = store.last_publication().await {
         println!(
             "publication submission_id={} repo={} commit={:?}",

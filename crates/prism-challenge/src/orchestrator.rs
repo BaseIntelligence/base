@@ -481,7 +481,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .map_err(|e| e.to_string())?;
 
         if let Ok(Some(scored)) = self.store.get(&id).await {
-            prism_registry::post_score_hooks(&self.store, self.topmodel.as_deref(), &scored).await;
+            prism_registry::post_score_hooks(&self.store, self.topmodel.as_deref(), &scored, false)
+                .await;
         }
         self.logs.clear(&id);
         Ok(())
@@ -988,12 +989,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await
             .map_err(|e| e.to_string())?;
         if let Some(s) = &summary {
-            info!(
-                epoch = s.epoch,
-                leaves = s.leaves,
-                batch = s.batch,
-                "epoch leaf set emitted"
-            );
+            #[rustfmt::skip]
+            info!(epoch = s.epoch, leaves = s.leaves, batch = s.batch, "epoch leaf set emitted");
         }
         Ok(summary)
     }

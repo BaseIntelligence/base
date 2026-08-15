@@ -26,26 +26,11 @@ use tracing::{info, warn};
 use crate::publish::{TopModelPublisher, TopModelRequest, TOPMODEL_REPO_PATH};
 
 /// Run registry + top-model bookkeeping for one finalized row.
-pub async fn post_score_hooks(
-    store: &Arc<dyn PrismStore>,
-    publisher: Option<&TopModelPublisher>,
-    row: &SubmissionState,
-) {
-    post_score_hooks_inner(store, publisher, row, false).await;
-}
-
-/// Operator force-publish (republish CLI): same path as the auto trigger but
-/// skips the global-best / beats-published guards.
-pub async fn force_publish_topmodel(
-    store: &Arc<dyn PrismStore>,
-    publisher: Option<&TopModelPublisher>,
-    row: &SubmissionState,
-) {
-    post_score_hooks_inner(store, publisher, row, true).await;
-}
-
+///
+/// When `force` is true (operator republish CLI), skip the global-best /
+/// beats-published guards and publish anyway.
 #[allow(clippy::too_many_lines)]
-async fn post_score_hooks_inner(
+pub async fn post_score_hooks(
     store: &Arc<dyn PrismStore>,
     publisher: Option<&TopModelPublisher>,
     row: &SubmissionState,
@@ -117,17 +102,11 @@ async fn post_score_hooks_inner(
         return;
     }
     if force {
-        info!(
-            submission_id = %row.id,
-            score = lattice,
-            "top-model: force republish (operator)"
-        );
+        info!(submission_id = %row.id, score = lattice, "top-model: force republish");
     } else {
         let last = store.last_publication_score().await.unwrap_or(None);
         let global = store.best_scored_score().await.unwrap_or(None);
-        let is_global_best = global.is_some_and(|g| *lattice >= g);
-        let beats_published = last.is_none_or(|l| *lattice > l);
-        if !(is_global_best && beats_published) {
+        if !(global.is_some_and(|g| *lattice >= g) && last.is_none_or(|l| *lattice > l)) {
             return;
         }
     }
@@ -168,13 +147,7 @@ async fn post_score_hooks_inner(
     if let Some(publisher) = publisher {
         match publisher.publish(&req).await {
             Ok(sha) => {
-                info!(
-                    submission_id = %row.id,
-                    score = lattice,
-                    bpb,
-                    commit = %sha,
-                    "top model published to GitHub"
-                );
+                info!(submission_id = %row.id, score = lattice, bpb, commit = %sha, "top model published");
                 let rec = TopModelPublication {
                     submission_id: row.id.clone(),
                     arch_id: arch_id.clone(),

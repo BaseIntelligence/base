@@ -28,7 +28,7 @@ mod weights;
 
 pub use competition::{apply_wta, competition_scores, OWNER_ARCH_CREDIT_ENABLED};
 pub use hf::HfTopModelPublisher;
-pub use hooks::{force_publish_topmodel, post_score_hooks};
+pub use hooks::post_score_hooks;
 pub use publish::{
     require_topmodel_weights, TopModelPublisher, TopModelRequest, TOPMODEL_REPO_PATH,
 };

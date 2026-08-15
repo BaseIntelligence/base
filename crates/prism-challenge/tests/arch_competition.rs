@@ -349,7 +349,7 @@ async fn topmodel_hooks_graceful_without_publisher() {
     r.metrics_json = Some(serde_json::json!({"n_params": 12_000_000}));
     store.insert_queued(&r).await.unwrap();
 
-    prism_registry::post_score_hooks(&store, None, &r).await;
+    prism_registry::post_score_hooks(&store, None, &r, false).await;
 
     // Arch published even without a GitHub publisher; nothing journaled.
     assert!(store
