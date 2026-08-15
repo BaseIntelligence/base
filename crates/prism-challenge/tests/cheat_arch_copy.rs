@@ -12,7 +12,7 @@ use challenge_agentic::SimAgent;
 use crypto::KEY_LEN;
 use prism_challenge::{
     FinalScore, GatewayClient, GatewayClientConfig, MemoryPrismStore, Orchestrator,
-    OrchestratorConfig, PrismStore, Stage, SubmissionState,
+    OrchestratorConfig, PrismStore, ScoringMode, Stage, SubmissionState,
 };
 use prism_lium::{EvalJobBackend, SimLiumBackend};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
@@ -93,6 +93,7 @@ async fn baseline_arch_train_copy_scores_zero() {
     let orch = Arc::new(Orchestrator::new(
         OrchestratorConfig {
             netuid: 541,
+            scoring_mode: ScoringMode::Shadow,
             claim_poll: std::time::Duration::from_millis(10),
             ..Default::default()
         },

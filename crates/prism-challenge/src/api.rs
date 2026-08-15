@@ -1488,7 +1488,7 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK);
         let eval = &v["submission"]["eval"];
-        assert_eq!(eval["scoring_mode"], "shadow");
+        assert_eq!(eval["scoring_mode"], "benchmarks");
         assert_eq!(
             eval["status"], "ineligible",
             "partial battery is ineligible"

@@ -3869,6 +3869,8 @@ dependencies = [
  "prism-recipe",
  "prism-registry",
  "prism-review",
+ "serde_json",
+ "sqlx",
  "submission-gating",
  "telemetry",
  "tempfile",

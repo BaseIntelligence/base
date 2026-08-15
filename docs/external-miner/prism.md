@@ -3,7 +3,7 @@
 # Prism challenge — HTTP AutoModel patch submit
 
 **challenge_id:** `prism`  
-**scoring_version:** `2` live (bpb leaf; LLM review is an anti-cheat gate, not a grader). **v3 harness (default):** every scored run executes the **G1–G8 battery** (leaf score stays bpb while `PRISM_SCORING_MODE=shadow`); see *v3 scoring* below.  
+**scoring_version:** `4` live (equal-weight G2 public-suite accuracies → lattice; LLM review is an anti-cheat gate, not a grader). **v3 harness (default):** every scored run executes the **G1–G8 battery**; the leaf uses G2 benches while `PRISM_SCORING_MODE=benchmarks` (default). Legacy `shadow` = bits/token bpb; `composite` = full G1–G8 lattice when anchors are ready.  
 **recipe_version:** `2.0.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) base + miner unified diff; legacy 1.x layouts rejected on live)  
 **Path:** HTTP only — **no Phala/CVM**
 
@@ -201,8 +201,11 @@ submission and never rents a Lium pod.
 
 ## Scoring (summary)
 
-Final leaf score is pure bits-per-byte (bpb) on the lattice `[0, SCORE_MAX]`.
-The shared **agentic** gate (AST + metrics/receipt) hard-zeros `cheat` /
+Final leaf score (live `scoring_version` **4**) is the **equal-weight mean of
+available G2 public accuracies** mapped to `round(SCORE_MAX × mean)` — not
+bits/token bpb. Tokenizer length cannot farm the rank. Bits/token bpb and
+tokenizer-neutral `bits_per_byte` remain recorded for display / G1. The shared
+**agentic** gate (AST + metrics/receipt) hard-zeros `cheat` /
 `suspicious`. Cheap LLM similarity hard-zeros `Copied`, and `Suspicious` only
 when confidence `≥ 0.9` with non-generic evidence (below that — e.g. 0.7 citing
 RMSNorm/SwiGLU/LayerNorm — does **not** wipe your score). Copy/similarity
@@ -214,7 +217,7 @@ quality is coherence-only, not a grader.
 Public gallery/leaderboard show champions only.
 **Competition (temporary):** emission uses **your own best training score
 only** — architecture-owner credit (rewarding arch owners when others train
-well on their code) is **disabled** for now so the best-BPB trainer keeps
+well on their code) is **disabled** for now so the best-scoring trainer keeps
 Prism's weights. Emission remains **winner-take-all**: only the single highest
 own score that epoch receives Prism's share (50% of the subnet); ties break by
 lexicographically smallest hotkey. Scores first land in the leaf
@@ -229,7 +232,7 @@ published to
 `BaseIntelligence/top-prism-architecture` (custom-arch / AutoModel novelty +
 weights, `trust_remote_code`). See [`PRISM.md`](../PRISM.md).
 
-## v3 scoring (shadow-by-default)
+## v3 scoring (battery always; leaf mode via env)
 
 Recipe ≥ 1.3.0 harnesses run a **two-phase pod flow**: your code trains
 (`phase=train`), checkpoints, and only then does the operator stage private
@@ -269,12 +272,14 @@ terminal-loss band) and the cross-miner cohort, and land a stored verdict
 (`ok` / `flagged` / `quarantined`) — verdicts are evidence, never an
 auto-zero. Malformed or over-cap envelopes reject `422` and store nothing.
 
-While `PRISM_SCORING_MODE=shadow` (default) the leaf score stays pure bpb
-(**bits/token** = CE / ln 2 — tokenizer-dependent; byte-level vocabs can look
-artificially strong). Tokenizer-neutral `bits_per_byte` is recorded on every
-run and already feeds G1; a shadow-leaf switch to bits/byte is deferred until
-an explicit scoring-version / governance change (see [`PRISM.md`](../PRISM.md)
-§ shadow leaf unit). After the reference baselines (**Transformer++** and
+While `PRISM_SCORING_MODE=benchmarks` (default) the leaf score is the
+**equal-weight mean of available G2 public accuracies** (HellaSwag, ARC-E/C,
+PIQA, WinoGrande, BoolQ, LAMBADA strict when present, OpenBookQA), mapped to
+`round(SCORE_MAX × mean)`. Missing every listed bench → `0` (fail-closed).
+**Tokenizer length no longer farms the rank** — bits/token bpb is still
+recorded (and tokenizer-neutral `bits_per_byte` feeds G1) but does **not**
+drive emission. `PRISM_SCORING_MODE=shadow` restores legacy pure bits/token
+bpb (v2). After the reference baselines (**Transformer++** and
 **hybrid delta** — published in-repo under `crates/prism-recipe/baselines/`)
 are measured and the anchor set is pre-registered, governance may flip to
 `composite`: group scores are anchor-normalized (**arithmetic** mean within

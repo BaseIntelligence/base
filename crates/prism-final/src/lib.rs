@@ -7,61 +7,53 @@
 #![allow(clippy::doc_markdown)]
 
 mod agentic;
+mod g2;
+
 pub use agentic::{build_review_request, corpus_from_rows, gate_corpus_from_rows, same_miner};
+pub use g2::{extract_g2_accuracies, score_from_g2_benchmarks, G2_PUBLIC_BENCHES};
 
 use bundle::NoScoreReasonCode;
 use prism_pipeline::{final_lattice, CompositeOutcome, ScoringMode};
 use prism_review::cheap_similarity_hard_zeros;
+use serde_json::Value;
 
-/// Final outcomes after LLM review + similarity + agentic gates (orchestrator v2).
+/// Final outcomes after LLM review + similarity + agentic gates (orchestrator).
 #[derive(Debug, Clone, PartialEq)]
 pub enum FinalOutcome {
-    /// Measured bpb + LLM quality (0..1000) + similarity + agentic verdict.
+    /// Measured metrics + review gates. Leaf uses [`ScoringMode`].
     Measured {
-        /// Bits-per-byte on the pinned val cut (lower is better).
+        /// Bits-per-byte on the pinned val cut (lower is better; audit / G1).
         bpb: f64,
         /// LLM quality verdict 0..1000.
         quality: u16,
         /// Cheap single-shot similarity class.
         similarity: prism_review::SimilarityKind,
-        /// Cheap LLM similarity confidence `0.0..1.0` (compared for
-        /// `Suspicious`; see [`prism_review::SUSPICIOUS_HARD_ZERO_THRESHOLD`]).
+        /// Cheap LLM similarity confidence `0.0..1.0`.
         similarity_score: f64,
         /// Cheap LLM evidence lines (trope-only → no Score wipe).
         similarity_evidence: Vec<String>,
         /// Agentic anti-cheat verdict (primary gate).
         agentic: challenge_agentic::VerdictKind,
         /// v3 G1–G8 composite when the battery ran; `None` on the v2 path.
-        /// Under `PRISM_SCORING_MODE=shadow` (default) it never moves the
-        /// score; under `composite` its lattice becomes the score.
         composite: Option<CompositeOutcome>,
+        /// METRICS_JSON blob (G2 benches for [`ScoringMode::Benchmarks`]).
+        metrics: Option<Value>,
     },
     /// Operator fault (any pipeline/review/similarity/agentic failure).
     ChallengeInternal,
 }
 
-/// Map the measured outcome into the integer lattice under `mode`
-/// (`OrchestratorConfig.scoring_mode`; v2 bit-identical under
-/// [`ScoringMode::Shadow`]).
+/// Map the measured outcome into the integer lattice under `mode`.
 ///
-/// The score is **pure bpb** in shadow mode: the LLM review is an
-/// anti-cheat / coherence GATE, never a grader — its quality vote and issues
-/// are recorded as audit events but never add nor remove points.
-///
-/// Hard gates (miner-attributable `Score{0}`), all checked *before* any
-/// scoring-mode logic:
-/// - Agentic `Cheat` / `Suspicious` (AST bands already applied upstream).
-/// - Cheap LLM `Copied`.
-/// - Cheap LLM `Suspicious` **only** when
+/// Live default is [`ScoringMode::Benchmarks`] (G2 equal-weight accuracies).
+/// Hard gates (miner-attributable `Score{0}`) run *before* scoring-mode logic:
+/// - Agentic `Cheat` / `Suspicious`
+/// - Cheap LLM `Copied`
+/// - Cheap LLM `Suspicious` when
 ///   `similarity_score >=` [`prism_review::SUSPICIOUS_HARD_ZERO_THRESHOLD`]
-///   `(0.9)` **and** evidence is not generic-trope-only (RMSNorm / SwiGLU /
-///   LayerNorm / …). Below the threshold (e.g. 0.7 tropes) → no score wipe.
+///   and evidence is not generic-trope-only
 ///
-/// Missing agentic verdict is fail-closed upstream as
-/// [`FinalOutcome::ChallengeInternal`].
-///
-/// # Panics
-/// Never.
+/// Missing agentic is fail-closed upstream as [`FinalOutcome::ChallengeInternal`].
 #[must_use]
 pub fn combine_final(outcome: &FinalOutcome, mode: ScoringMode) -> prism_store::FinalScore {
     use challenge_agentic::VerdictKind;
@@ -77,6 +69,7 @@ pub fn combine_final(outcome: &FinalOutcome, mode: ScoringMode) -> prism_store::
             similarity_evidence,
             agentic,
             composite,
+            metrics,
             ..
         } => {
             if matches!(agentic, VerdictKind::Cheat | VerdictKind::Suspicious) {
@@ -85,7 +78,8 @@ pub fn combine_final(outcome: &FinalOutcome, mode: ScoringMode) -> prism_store::
             if cheap_similarity_hard_zeros(*similarity, *similarity_score, similarity_evidence) {
                 return FinalScore::Score(0);
             }
-            FinalScore::Score(final_lattice(*bpb, composite.as_ref(), mode))
+            let g2 = metrics.as_ref().map(score_from_g2_benchmarks);
+            FinalScore::Score(final_lattice(*bpb, composite.as_ref(), mode, g2))
         }
     }
 }
@@ -97,6 +91,7 @@ mod final_tests {
     use prism_review::SimilarityKind::Copied;
     use prism_review::SimilarityKind::Original;
     use prism_review::SimilarityKind::Suspicious;
+    use serde_json::json;
 
     fn measured(
         similarity: prism_review::SimilarityKind,
@@ -112,11 +107,10 @@ mod final_tests {
             similarity_evidence: evidence.iter().map(|s| (*s).to_owned()).collect(),
             agentic,
             composite: None,
+            metrics: None,
         }
     }
 
-    /// Clean-gate row at bpb 0.5 with a v3 composite attached (or not), for the
-    /// scoring-mode tests. `similarity` lets one case trip the v2 hard gate.
     fn measured_composite(
         similarity: prism_review::SimilarityKind,
         composite: Option<CompositeOutcome>,
@@ -129,6 +123,7 @@ mod final_tests {
             similarity_evidence: vec![],
             agentic: challenge_agentic::VerdictKind::Clean,
             composite,
+            metrics: None,
         }
     }
 
@@ -184,8 +179,6 @@ mod final_tests {
 
     #[test]
     fn hard_gates_precede_composite_scoring() {
-        // Even with a scored v3 composite attached, the v2 hard gates fire
-        // first, independent of scoring mode.
         let o = measured_composite(Copied, Some(scored_composite(999_999)));
         assert_eq!(
             combine_final(&o, ScoringMode::Composite),
@@ -195,8 +188,6 @@ mod final_tests {
 
     #[test]
     fn shadow_mode_ignores_attached_composite() {
-        // Shadow (the default): the v2 number is bit-identical whether or
-        // not a composite is attached.
         let bare = measured_composite(Original, None);
         let with = measured_composite(Original, Some(scored_composite(1)));
         assert_eq!(
@@ -216,7 +207,6 @@ mod final_tests {
             combine_final(&o, ScoringMode::Composite),
             prism_store::FinalScore::Score(777)
         );
-        // Missing composite fails closed to 0 under composite mode.
         let bare = measured_composite(Original, None);
         assert_eq!(
             combine_final(&bare, ScoringMode::Composite),
@@ -225,9 +215,43 @@ mod final_tests {
     }
 
     #[test]
+    fn benchmarks_mode_uses_g2_never_bpb() {
+        let o = FinalOutcome::Measured {
+            bpb: 0.01, // would dominate under shadow
+            quality: 900,
+            similarity: Original,
+            similarity_score: 0.0,
+            similarity_evidence: vec![],
+            agentic: challenge_agentic::VerdictKind::Clean,
+            composite: None,
+            metrics: Some(json!({
+                "org.g2.hellaswag_acc": 0.2,
+                "org.g2.piqa_acc": 0.4,
+            })),
+        };
+        assert_eq!(
+            combine_final(&o, ScoringMode::Benchmarks),
+            prism_store::FinalScore::Score(300_000)
+        );
+        let no_benches = FinalOutcome::Measured {
+            bpb: 0.01,
+            quality: 900,
+            similarity: Original,
+            similarity_score: 0.0,
+            similarity_evidence: vec![],
+            agentic: challenge_agentic::VerdictKind::Clean,
+            composite: None,
+            metrics: Some(json!({"bpb": 0.01})),
+        };
+        assert_eq!(
+            combine_final(&no_benches, ScoringMode::Benchmarks),
+            prism_store::FinalScore::Score(0),
+            "no G2 → fail-closed; never bpb"
+        );
+    }
+
+    #[test]
     fn quality_never_moves_the_score() {
-        // Anti-cheat review gates eligibility only; the quality vote must not
-        // shift the integer score by a single point.
         let hi = FinalOutcome::Measured {
             bpb: 0.5,
             quality: 900,
@@ -236,6 +260,7 @@ mod final_tests {
             similarity_evidence: vec![],
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: None,
+            metrics: None,
         };
         let lo_same_bpb = FinalOutcome::Measured {
             bpb: 0.5,
@@ -245,6 +270,7 @@ mod final_tests {
             similarity_evidence: vec![],
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: None,
+            metrics: None,
         };
         assert_eq!(
             combine_final(&hi, ScoringMode::Shadow),
@@ -259,6 +285,7 @@ mod final_tests {
             similarity_evidence: vec![],
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: None,
+            metrics: None,
         };
         match (
             combine_final(&hi, ScoringMode::Shadow),

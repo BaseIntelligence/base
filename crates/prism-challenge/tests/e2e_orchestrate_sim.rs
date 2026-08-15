@@ -13,7 +13,7 @@ use crypto::KEY_LEN;
 use prism_challenge::FinalScore;
 use prism_challenge::{
     example_valid_request, submission_id, GatewayClient, GatewayClientConfig, MemoryPrismStore,
-    Orchestrator, OrchestratorConfig, PrismStore, Stage, StatePatch, SubmissionState,
+    Orchestrator, OrchestratorConfig, PrismStore, ScoringMode, Stage, StatePatch, SubmissionState,
 };
 use prism_lium::{EvalJobBackend, SimLiumBackend};
 use prism_review::SimReviewer;
@@ -103,6 +103,7 @@ fn mk_orchestrator(
     Orchestrator::new(
         OrchestratorConfig {
             netuid: 541,
+            scoring_mode: ScoringMode::Shadow,
             claim_poll: std::time::Duration::from_millis(10),
             ..Default::default()
         },
