@@ -483,10 +483,9 @@ if [[ '$ROLE' == 'master' ]]; then
   else
     echo "gateway health: probe deferred"
   fi
-  # Registry is in-memory — re-seed challenge backends after every redeploy.
-  # The gateway races this script on boot, so retry until registration sticks,
-  # then prove proxy routing end-to-end: a missed reseed leaves /challenge/*
-  # at 503 while /healthz stays green. Both must fail the deploy loudly.
+  # Registry is in-memory; compose BASE_GATEWAY_BACKENDS boot-seeds on start.
+  # Still POST-reseed here: older images and a race on first listen leave
+  # /challenge/* at 503 while /healthz stays green. Both must fail loudly.
   # Gateway /v1/admin/* requires Authorization: Bearer (gateway_admin_token).
   echo "remote-deploy: registering challenge backends"
   reseed_ok=0

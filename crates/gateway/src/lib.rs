@@ -399,6 +399,18 @@ where
     let metrics = init_metrics()?;
     // Prefer registry knobs from config when the shared handle was default-built.
     let _ = &config.registry;
+    // In-memory registry: seed from BASE_GATEWAY_BACKENDS(_FILE) so compose/prod
+    // restarts never leave /challenge/* at 503 until a manual admin POST.
+    let seeded = registry
+        .seed_from_env()
+        .map_err(|e| GatewayError::Config(format!("backend seed: {e}")))?;
+    if seeded > 0 {
+        tracing::info!(
+            event = "gateway_backends_seeded",
+            created = seeded,
+            "boot-seeded challenge backends into in-memory registry"
+        );
+    }
     let app = build_app(metrics, registry, chain, &config.tls, stores, extra)?;
 
     let listener = TcpListener::bind(config.listen)
