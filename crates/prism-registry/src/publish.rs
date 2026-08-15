@@ -9,6 +9,20 @@
 //! publisher is `None` and the orchestrator skips publishing entirely
 //! (graceful no-op).
 
+/// Whether top-model publish must include a parked checkpoint.
+///
+/// Default **true** (`PRISM_TOPMODEL_REQUIRE_WEIGHTS` unset/`1`). Set to
+/// `0`/`false`/`no` for source-only publish (legacy / tests).
+#[must_use]
+pub fn require_topmodel_weights() -> bool {
+    !matches!(
+        std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS")
+            .unwrap_or_else(|_| "1".into())
+            .trim(),
+        "0" | "false" | "FALSE" | "no" | "NO"
+    )
+}
+
 /// Repo directory that always mirrors the current global top model.
 pub const TOPMODEL_REPO_PATH: &str = "top-model";
 
@@ -136,12 +150,7 @@ impl TopModelPublisher {
     /// `0`/`false` to allow source-only publish (legacy / tests).
     pub async fn publish(&self, req: &TopModelRequest) -> Result<String, PublishError> {
         let arch = req.arch_id.as_deref().unwrap_or("arch-unregistered");
-        let require_weights = !matches!(
-            std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS")
-                .unwrap_or_else(|_| "1".into())
-                .trim(),
-            "0" | "false" | "FALSE" | "no" | "NO"
-        );
+        let require_weights = require_topmodel_weights();
         let mut weight_note = String::new();
         if let Some(path) = &req.checkpoint_path {
             let meta = self.publish_checkpoint(path, arch, req.bpb).await?;

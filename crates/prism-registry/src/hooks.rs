@@ -84,8 +84,8 @@ pub async fn post_score_hooks(
     }
 
     // (3) Top-model publish on a new global best — GitHub (optional) + HF
-    // (optional). GitHub weights require secure receive (RECEIPT.json);
-    // HF publishes sources regardless so the champion card stays current.
+    // (optional). Both require a verified secure-receive receipt when
+    // `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1` (default); source-only is opt-in.
     // Recipe 2.0 / AutoModel only — legacy 1.x never becomes the published
     // top-model champion (historical FE rows stay in Postgres).
     if !row.weight_eligible() {

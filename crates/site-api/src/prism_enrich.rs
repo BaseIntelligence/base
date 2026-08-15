@@ -35,6 +35,10 @@ pub const GPT2_PIQA: f64 = 0.69;
 pub const GPT2_WINOGRANDE: f64 = 0.545;
 /// BoolQ `org.g2.boolq_acc`.
 pub const GPT2_BOOLQ: f64 = 0.64;
+/// LAMBADA `org.g2.lambada_acc` (Prism public pack on 1×RTX 5090).
+pub const GPT2_LAMBADA: f64 = 0.985;
+/// OpenBookQA `org.g2.obqa_acc` (Prism public pack on 1×RTX 5090).
+pub const GPT2_OPENBOOKQA: f64 = 0.335;
 
 /// Frozen public GPT-2 baseline(s) for `GET …/references`.
 #[must_use]
@@ -51,6 +55,8 @@ pub fn prism_reference_baselines() -> Vec<PrismReferenceBaseline> {
             piqa: Some(GPT2_PIQA),
             winogrande: Some(GPT2_WINOGRANDE),
             boolq: Some(GPT2_BOOLQ),
+            lambada: Some(GPT2_LAMBADA),
+            openbookqa: Some(GPT2_OPENBOOKQA),
         },
         source_url: GPT2_SOURCE_URL.into(),
         disclaimer: GPT2_DISCLAIMER.into(),
@@ -175,6 +181,23 @@ pub fn map_benchmarks(metrics: Option<&Value>) -> PrismBenchmarks {
         boolq: metric_f64(
             metrics,
             &["org.g2.boolq_acc", "g2.boolq.acc_norm", "g2.boolq.acc"],
+        ),
+        lambada: metric_f64(
+            metrics,
+            &[
+                "org.g2.lambada_acc",
+                "g2.lambada.acc_norm",
+                "g2.lambada.acc",
+            ],
+        ),
+        openbookqa: metric_f64(
+            metrics,
+            &[
+                "org.g2.obqa_acc",
+                "org.g2.openbookqa_acc",
+                "g2.openbookqa.acc_norm",
+                "g2.openbookqa.acc",
+            ],
         ),
     }
 }
@@ -501,6 +524,8 @@ mod tests {
         assert!((refs[0].bpb.unwrap() - GPT2_BPB).abs() < 1e-9);
         assert!((refs[0].params_m - 774.0).abs() < f64::EPSILON);
         assert!((refs[0].benchmarks.hellaswag.unwrap() - GPT2_HELLASWAG).abs() < f64::EPSILON);
+        assert!((refs[0].benchmarks.lambada.unwrap() - GPT2_LAMBADA).abs() < f64::EPSILON);
+        assert!((refs[0].benchmarks.openbookqa.unwrap() - GPT2_OPENBOOKQA).abs() < f64::EPSILON);
         assert!(refs[0].disclaimer.contains("Prism-protocol"));
         assert!(refs[0].source_url.contains("gpt2-large"));
     }
