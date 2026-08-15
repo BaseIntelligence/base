@@ -60,7 +60,6 @@ const GPT2_SMALL_LAMBADA: f64 = 0.97;
 const GPT2_SMALL_OPENBOOKQA: f64 = 0.32;
 const GPT2_SMALL_SOURCE: &str = "https://huggingface.co/openai-community/gpt2";
 
-
 /// HuggingFace Hub publisher (token never `Debug`/`Display`'d).
 pub struct HfTopModelPublisher {
     http: reqwest::Client,
@@ -772,8 +771,6 @@ fn train_tokens(metrics: Option<&serde_json::Value>) -> Option<u64> {
         .or_else(|| metric_u64(metrics, &["tokens_seen"]).filter(|&t| t > 10_000))
 }
 
-
-
 fn verdict_higher(delta: f64) -> (&'static str, &'static str) {
     if delta.abs() < 1e-9 {
         ("=", "tie")
@@ -839,7 +836,6 @@ fn bench_row_lower_dual(
         ),
     }
 }
-
 
 const CONFIGURATION_PRISM_PY: &str = r#"
 """Prism custom-arch Hub config (trust_remote_code)."""

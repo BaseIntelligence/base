@@ -559,10 +559,16 @@ mod tests {
         assert!((refs[1].bpb.unwrap() - GPT2_SMALL_BPB).abs() < 1e-9);
         assert!((refs[0].params_m - 774.0).abs() < f64::EPSILON);
         assert!((refs[1].params_m - 124.4).abs() < 1e-9);
-        assert!((refs[0].benchmarks.hellaswag.unwrap() - GPT2_LARGE_HELLASWAG).abs() < f64::EPSILON);
-        assert!((refs[1].benchmarks.hellaswag.unwrap() - GPT2_SMALL_HELLASWAG).abs() < f64::EPSILON);
+        assert!(
+            (refs[0].benchmarks.hellaswag.unwrap() - GPT2_LARGE_HELLASWAG).abs() < f64::EPSILON
+        );
+        assert!(
+            (refs[1].benchmarks.hellaswag.unwrap() - GPT2_SMALL_HELLASWAG).abs() < f64::EPSILON
+        );
         assert!((refs[0].benchmarks.lambada.unwrap() - GPT2_LARGE_LAMBADA).abs() < f64::EPSILON);
-        assert!((refs[1].benchmarks.openbookqa.unwrap() - GPT2_SMALL_OPENBOOKQA).abs() < f64::EPSILON);
+        assert!(
+            (refs[1].benchmarks.openbookqa.unwrap() - GPT2_SMALL_OPENBOOKQA).abs() < f64::EPSILON
+        );
         assert!(refs[0].disclaimer.contains("Prism-protocol"));
         assert!(refs[1].disclaimer.contains("Prism-protocol"));
         assert!(refs[0].source_url.contains("gpt2-large"));
