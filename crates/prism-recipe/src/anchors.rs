@@ -48,11 +48,43 @@ pub const ANCHOR_SET_V1_JSON: &str = include_str!("../anchors/v1.json");
 /// keys so v0/v1 scoring is untouched.
 pub const ANCHOR_SET_V2_JSON: &str = include_str!("../anchors/v2.json");
 
-/// Latest anchor-set version known to this build (v2.2 LAMBADA-strict swap).
-pub const LATEST_ANCHOR_VERSION: u16 = 2;
+/// Embedded v3 anchor set (Prism **v3 measurement**; PLACEHOLDER values).
+///
+/// v3 = v2 with the measurement changes of the dual-cap budget:
+///
+/// - **removes** `org.g8.mup_scaling_slope` from the scored set. It is
+///   confounded: for `L = E + A/N^α` the measured local slope is
+///   `α·(1 − E/L)`, i.e. only ~30–56 % of `α`, so a model better *in level*
+///   can look like it scales *worse*. The harness keeps emitting the key —
+///   it is cheap and informative — but a key absent from the anchor set is
+///   inert (the `unknown_metrics_are_ignored` path), which is precisely the
+///   "telemetry, never scored" outcome.
+/// - **adds** three byte-denominated / compute-milestone G6 keys
+///   (`auc_log_bytes`, `bytes_to_bpb_threshold`, `bpb_at_half_budget`),
+///   re-reading G6 as *data and compute* efficiency.
+/// - **adds** the confirmation-tier `org.conf.*` keys under a `conf` group
+///   at weight 0. That group is *structurally* inert, not merely
+///   down-weighted: `prism_pipeline::composite` hardcodes
+///   `GROUP_KEYS = [g1..g8]`, so a group outside that list is never
+///   validated, normalized, or required.
+/// - **adds** the compute gates `max_flops` + `min_spend_fraction`, and
+///   lowers `max_wall_s` 21600 → 18000 because wall-clock is now only the
+///   anti-DoS bound.
+///
+/// Every numeric is `placeholder` and must be measured on the E6 baselines
+/// and pre-registered before any governance flip.
+pub const ANCHOR_SET_V3_JSON: &str = include_str!("../anchors/v3.json");
+
+/// Latest anchor-set version known to this build (v3 measurement set).
+pub const LATEST_ANCHOR_VERSION: u16 = 3;
 
 /// The anchor-set version live scoring defaults to (`PRISM_ANCHOR_VERSION`
-/// absent). Stays 0 until v1 anchors are measured + pre-registered.
+/// absent). Stays 0 until v1+ anchors are measured + pre-registered.
+///
+/// This is load-bearing, not caution theatre: v1/v2/v3 are hash-committed
+/// pre-registration artifacts, and v3 declares keys the battery does not
+/// emit yet. Selecting it early would make every in-flight submission fail
+/// the `MissingMetric` completeness gate — `Ineligible`, lattice 0.
 pub const DEFAULT_ANCHOR_VERSION: u16 = 0;
 
 /// Per-metric normalization descriptor (research/12 §7 step 1).
@@ -120,19 +152,12 @@ pub struct GroupAnchors {
 }
 
 /// Lexicographic gate thresholds (research/12 §7 step 3).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct GateThresholds {
-    /// Minimum G3 (recall probes) group score.
-    pub g3_min: f64,
-    /// Minimum G8 (stability) group score.
-    pub g8_min: f64,
-    /// Max per-axis clustered 95% CI half-width δ.
-    pub ci_half_width_delta: f64,
-    /// Fixed-recipe parameter budget.
-    pub max_params: u64,
-    /// Fixed-recipe wall-clock budget (seconds; 6h = 21600).
-    pub max_wall_s: f64,
-}
+///
+/// Re-exported from `prism-budget` so the anchor registry and the scorer
+/// parse **one** schema rather than two structs that must be kept in sync by
+/// hand — the compute gates (`max_flops`, `min_spend_fraction`) have to mean
+/// the same thing on both sides of the JSON.
+pub use prism_budget::GateThresholds;
 
 /// Mirror-gap (contamination) penalty parameters (§7 step 2.5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -211,6 +236,7 @@ impl AnchorSet {
             0 => Ok(ANCHOR_SET_V0_JSON),
             1 => Ok(ANCHOR_SET_V1_JSON),
             2 => Ok(ANCHOR_SET_V2_JSON),
+            3 => Ok(ANCHOR_SET_V3_JSON),
             v => Err(AnchorError::UnknownVersion(v)),
         }
     }
@@ -369,7 +395,13 @@ mod tests {
         let v2 = AnchorSet::load(2).expect("v2 parses");
         assert_eq!(v2.version, 2);
         assert_eq!(v2.status, "placeholder");
-        assert_eq!(LATEST_ANCHOR_VERSION, 2);
+        // v2 must stay embedded and loadable however far LATEST advances, and
+        // whatever LATEST points at must itself parse.
+        assert!(AnchorSet::load(2).is_ok(), "v2 must stay loadable");
+        assert!(
+            AnchorSet::load(LATEST_ANCHOR_VERSION).is_ok(),
+            "LATEST_ANCHOR_VERSION must name a set that parses"
+        );
         assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
 
         // Identical group weights, mirror, bootstrap — one key swap.
@@ -485,6 +517,280 @@ mod tests {
             g6_py.contains("CENSORED_TOKENS"),
             "harness must fail-closed on right-censored curves"
         );
+    }
+
+    /// v3 is the **measurement** set: it drops the confounded scaling slope,
+    /// adds byte/compute-denominated G6 keys, adds the inert confirmation
+    /// tier, and adds the compute gates. Same spirit as
+    /// `v2_swaps_saturated_mc_lambada_for_strict` — assert the exact
+    /// differences, not equality.
+    #[test]
+    fn v3_drops_confounded_slope_and_adds_compute_keys() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        assert_eq!(v3.version, 3);
+        assert_eq!(v3.status, "placeholder");
+        assert_eq!(LATEST_ANCHOR_VERSION, 3);
+        assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
+
+        // Every scored group weight is inherited unchanged; the g1..g8
+        // weights must still sum to 1 with the `conf` group excluded.
+        for key in v2.groups.keys() {
+            let (a, b) = (&v2.groups[key], &v3.groups[key]);
+            assert!((a.weight - b.weight).abs() < 1e-12, "{key} weight moved");
+        }
+        assert_eq!(v2.mirror, v3.mirror);
+        assert_eq!(v2.bootstrap, v3.bootstrap);
+        let scored_sum: f64 = v3
+            .groups
+            .iter()
+            .filter(|(k, _)| k.starts_with('g'))
+            .map(|(_, g)| g.weight)
+            .sum();
+        assert!(
+            (scored_sum - 1.0).abs() < 1e-9,
+            "scored g1..g8 weights must still sum to 1, got {scored_sum}"
+        );
+
+        // Every other scored group's key set is inherited verbatim.
+        for (name, group) in &v2.groups {
+            if name == "g6" || name == "g8" {
+                continue;
+            }
+            assert_eq!(
+                group.metrics.keys().collect::<Vec<_>>(),
+                v3.groups[name].metrics.keys().collect::<Vec<_>>(),
+                "{name} keys moved"
+            );
+        }
+
+        // Distinct canonical bytes ⇒ distinct pre-registration hashes.
+        let hashes: Vec<String> = (0u16..=3)
+            .map(|v| AnchorSet::prereg_hash_for(v).expect("hash"))
+            .collect();
+        for (i, a) in hashes.iter().enumerate() {
+            for (j, b) in hashes.iter().enumerate() {
+                assert!(i == j || a != b, "v{i} and v{j} share a prereg hash");
+            }
+        }
+    }
+
+    /// The confounded slope must be gone from the scored set — and still
+    /// **emitted**, because demotion to telemetry is the decision, not
+    /// deletion. A key absent from the anchor set is inert, not missing.
+    #[test]
+    fn v3_demotes_the_scaling_slope_to_telemetry() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        let g8 = &v3.groups["g8"].metrics;
+        assert!(
+            !g8.contains_key("org.g8.mup_scaling_slope"),
+            "the scaling slope is confounded (measured slope is only \
+             α·(1 − E/L) ≈ 30–56% of α) and must not be scored in any form"
+        );
+        assert!(
+            v2.groups["g8"]
+                .metrics
+                .contains_key("org.g8.mup_scaling_slope"),
+            "v2 must stay byte-frozen WITH the slope"
+        );
+        assert_eq!(g8.len(), v2.groups["g8"].metrics.len() - 1, "removal only");
+        // ...but the harness must still EMIT it: demoted to telemetry, not
+        // deleted. A key absent from the anchor set is inert, not missing.
+        let g8_py = crate::HARNESS_FILES
+            .iter()
+            .find(|(p, _)| *p == "eval/g8_stability.py")
+            .map(|(_, b)| *b)
+            .expect("g8_stability.py embedded");
+        assert!(
+            g8_py.contains("scaling_slope"),
+            "slope must remain emitted as unscored telemetry"
+        );
+    }
+
+    /// The three new G6 keys re-read the group as *data and compute*
+    /// efficiency. The byte-denominated names are only honest because the
+    /// probe curve now records bytes — asserted here, not assumed.
+    #[test]
+    fn v3_adds_byte_and_compute_denominated_g6_keys() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        let g6 = &v3.groups["g6"].metrics;
+        for added in [
+            "org.g6.auc_log_bytes",
+            "org.g6.bytes_to_bpb_threshold",
+            "org.g6.bpb_at_half_budget",
+        ] {
+            let m = g6.get(added).unwrap_or_else(|| panic!("{added} missing"));
+            assert_eq!(m.status.as_deref(), Some("placeholder"), "{added}");
+            assert!(
+                !v2.groups["g6"].metrics.contains_key(added),
+                "{added} must not be in the byte-frozen v2"
+            );
+        }
+        // Direction: `cap < reference` is the ONLY encoding of lower-better
+        // (there is no direction flag) — the v0 auc bug got this backwards.
+        for lower_better in ["org.g6.auc_log_bytes", "org.g6.bytes_to_bpb_threshold"] {
+            match g6[lower_better].norm {
+                NormKind::EfficiencyLogRatio { reference, cap } => assert!(
+                    cap < reference,
+                    "{lower_better} must encode lower-better (cap < reference), \
+                     got reference={reference} cap={cap}"
+                ),
+                ref other => panic!("{lower_better}: unexpected norm {other:?}"),
+            }
+        }
+        assert!(matches!(
+            g6["org.g6.bpb_at_half_budget"].norm,
+            NormKind::BpbLogRatio { chance, reference } if chance > reference
+        ));
+        // The token-denominated predecessor is superseded, and the byte form
+        // is only honest because the probe curve now records bytes.
+        assert!(
+            !g6.contains_key("org.g6.auc_log_tokens"),
+            "the tokenizer-dependent token form is superseded by auc_log_bytes"
+        );
+        let all = crate::HARNESS_FILES
+            .iter()
+            .map(|(_, c)| *c)
+            .collect::<String>();
+        for byte_marker in ["bytes_seen", "bytes_per_token", "probe_bits_per_byte"] {
+            assert!(
+                all.contains(byte_marker),
+                "org.g6.auc_log_bytes requires the probe curve to carry \
+                 {byte_marker} — otherwise the key name would be a lie"
+            );
+        }
+    }
+
+    /// The confirmation tier is a separate audit record, so it must be
+    /// **structurally** inert rather than merely down-weighted.
+    #[test]
+    fn v3_confirmation_tier_is_structurally_inert() {
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        let conf = v3.groups.get("conf").expect("conf group present");
+        assert!(
+            conf.weight.abs() < f64::EPSILON,
+            "the confirmation tier is a separate audit record, not part of \
+             the Stage-1 composite"
+        );
+        assert!(
+            !v3.groups.contains_key("g9"),
+            "must NOT be named g9: composite hardcodes GROUP_KEYS = [g1..g8], \
+             so a g9-looking group would read as a scored group that is silently \
+             ignored"
+        );
+        for key in [
+            "org.conf.isoflop_min_bpb",
+            "org.conf.isoflop_convexity_r2",
+            "org.conf.isoflop_argmin_nbody",
+            "org.conf.advantage_growth",
+        ] {
+            let m = conf.metrics.get(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!(m.status.as_deref(), Some("placeholder"), "{key}");
+        }
+        // The two never-scorable statistics carry a degenerate normalizer, so
+        // promoting them into a scored group collapses the geometric mean to
+        // 0 instead of quietly ranking noise (argmin is ±17–47% in N; the
+        // advantage-growth MDD 0.019–0.028 straddles the 0.013–0.065 signal).
+        for never_scored in ["org.conf.isoflop_argmin_nbody", "org.conf.advantage_growth"] {
+            match conf.metrics[never_scored].norm {
+                NormKind::EfficiencyLogRatio { reference, cap } => assert!(
+                    (reference - cap).abs() < f64::EPSILON,
+                    "{never_scored} must keep a degenerate normalizer"
+                ),
+                ref other => panic!("{never_scored}: unexpected norm {other:?}"),
+            }
+        }
+    }
+
+    /// The compute gates are the currency: `max_flops` + the underspend
+    /// floor, with the wall bound demoted. And every v3 numeric must still be
+    /// a placeholder whose note states the measurement obligation.
+    #[test]
+    fn v3_adds_compute_gates_and_keeps_every_numeric_placeholder() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        assert_eq!(v2.gates.max_flops, None, "v2 predates the FLOPs currency");
+        assert_eq!(v2.gates.min_spend_fraction, None);
+        assert_eq!(v3.gates.max_flops, Some(crate::TRAIN_FLOPS_CAP));
+        assert_eq!(v3.gates.min_spend_fraction, Some(crate::MIN_SPEND_FRACTION));
+        assert!(
+            (v3.gates.max_wall_s - crate::TRAIN_HOURS_CAP * 3600.0).abs() < f64::EPSILON,
+            "max_wall_s must track TRAIN_HOURS_CAP (now the anti-DoS bound)"
+        );
+        assert!(
+            (v2.gates.max_wall_s - 21_600.0).abs() < f64::EPSILON,
+            "v2 frozen at 6h"
+        );
+        // max_params is unchanged: under iso-FLOPs it is non-binding (the
+        // 0.02-nat plateau spans ~88–236M body params), so it is a VRAM
+        // parameter, not a scientific one.
+        assert_eq!(v3.gates.max_params, v2.gates.max_params);
+        assert_eq!(v3.gates.max_params, 1_000_000_000);
+        assert_eq!(
+            v2.gates,
+            GateThresholds {
+                max_wall_s: 21_600.0,
+                max_flops: None,
+                min_spend_fraction: None,
+                ..v3.gates
+            },
+            "wall bound + the two compute gates are the ONLY gate differences"
+        );
+
+        // Every numeric is still a placeholder awaiting E6 measurement, and
+        // every note says so.
+        for (gk, g) in &v3.groups {
+            for (mk, m) in &g.metrics {
+                assert_eq!(
+                    m.status.as_deref(),
+                    Some("placeholder"),
+                    "{gk}/{mk} must stay placeholder until measured on E6"
+                );
+                let note = m.note.as_deref().unwrap_or("");
+                assert!(
+                    note.contains("MUST") || note.contains("NEVER"),
+                    "{gk}/{mk} note must state the measurement/scoring \
+                     obligation, got {note:?}"
+                );
+            }
+        }
+        assert!(v3.notes.contains("MUST be measured"));
+        assert!(v3.notes.contains("emit before declare"));
+    }
+
+    /// v0/v1/v2 are hash-committed pre-registration artifacts. Their bytes
+    /// are the commitment, so this pins the exact hashes: any edit to those
+    /// files — including a "harmless" reformat — breaks the commitment and
+    /// must fail here rather than in an audit.
+    #[test]
+    fn v0_v1_v2_stay_byte_frozen() {
+        for (version, want) in [
+            (
+                0u16,
+                "581643c789faca19b9acb9980856aa9cac718c2a3cad279b8aa0bf89099de671",
+            ),
+            (
+                1u16,
+                "85998f13355171ff2e6632f1a730e627a4e10eeaa530149fa9e3af5cdd6323ef",
+            ),
+            (
+                2u16,
+                "6a6246c5f4c3cb25751df254b1b8e78017c66df72d79aef4aadbf0a036c2bc79",
+            ),
+        ] {
+            let got = AnchorSet::prereg_hash_for(version).expect("hash");
+            assert_eq!(
+                got, want,
+                "anchors/v{version}.json is a hash-committed pre-registration \
+                 artifact and must stay byte-identical"
+            );
+        }
+        // v3 is new, so it only has to be self-consistent and distinct.
+        let v3 = AnchorSet::prereg_hash_for(3).expect("v3 hash");
+        assert_eq!(v3.len(), 64);
+        assert!(v3.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
