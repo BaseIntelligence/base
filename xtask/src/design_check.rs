@@ -28,7 +28,7 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("scoring_version", "challenge_scoring_version"),
     ("scoring_version_3", "u16 = 3"),
     ("bundle_protocol_version", "protocol_version = 1"),
-    ("emission_share", "emission_share_bps = 5000"),
+    ("emission_share", "emission_share_bps = 0"),
     ("bps_sum", "10000"),
     ("SCORE_MAX", "1_000_000"),
     ("compose_port", "8093"),
@@ -134,10 +134,10 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
         failures.push("content pin no_latest_ban: spec must mention :latest as forbidden".into());
     }
 
-    // Emission split must be explicit (50/50 with prism; sum 10000).
-    if !body.contains("emission_share_bps = 5000") {
+    // Emission split must be explicit (prism 100%; design 0).
+    if !body.contains("emission_share_bps = 0") {
         failures.push(
-            "content pin emission_posture: need explicit design emission_share_bps = 5000".into(),
+            "content pin emission_posture: need explicit design emission_share_bps = 0".into(),
         );
     }
 
@@ -199,7 +199,7 @@ mod tests {
             .any(|(n, v)| *n == "challenge_id" && *v == "design"));
         assert!(CONTENT_PINS
             .iter()
-            .any(|(n, v)| *n == "emission_share" && *v == "emission_share_bps = 5000"));
+            .any(|(n, v)| *n == "emission_share" && *v == "emission_share_bps = 0"));
         assert!(CONTENT_PINS
             .iter()
             .any(|(n, v)| *n == "bank_v1" && *v == "bank_v1.json"));

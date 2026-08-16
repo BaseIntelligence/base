@@ -69,7 +69,7 @@ Sandbox containers attach only to the internal Docker network
 | Listen port | `8093` (local overlay `28093`) |
 | Gateway proxy prefix | `/challenge/design/*` |
 | Bundle `protocol_version` | `1` ([`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md)) |
-| `emission_share_bps` | **5000** (equal split with prism; sum `10000`) |
+| `emission_share_bps` | **0** (prism 100%; sum `10000`) |
 | Policy | `all_metagraph_hotkeys` |
 | Round length | `ROUND_SECS = 8_640` (10 rounds / UTC day) |
 | Agent run timeout | `AGENT_RUN_TIMEOUT_SECS = 1_800` (30 min; distinct from round length) |
@@ -86,8 +86,8 @@ Staging knobs (defaults above are the prod pins and never change implicitly):
 override round length / run timeout / prompts per round (staging uses ~15-minute
 rounds; `env-staging.yml`).
 
-Emission posture: `emission_share_bps = 5000` for design and `5000` for prism
-(50/50; sum `10000`). Rebalance via the owner ceremony in
+Emission posture: `emission_share_bps = 0` for design and `10000` for prism
+(100% prism; sum `10000`). Rebalance via the owner ceremony in
 [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md)
 and [`config/challenges.toml`](../config/challenges.toml).
 

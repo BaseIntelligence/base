@@ -317,6 +317,6 @@ fail-closes `org.g8.mup_lr_stability = 0.0`.
 | `GET /health` | Liveness |
 
 Emission share for prism is owner-controlled via the trust root. Current split is
-`5000` bps prism / `5000` bps design (50/50) — see
+`10000` bps prism / `0` bps design (100% prism) — see
 [`../runbooks/prism-enable-lium-and-emission.md`](../runbooks/prism-enable-lium-and-emission.md)
 and [`../runbooks/design-enable-and-emission.md`](../runbooks/design-enable-and-emission.md).

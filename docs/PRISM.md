@@ -4,7 +4,7 @@
 **scoring_version:** `4` live (equal-weight **G2 public-suite accuracies** → lattice; tokenizer length no longer farms the leaf). Legacy: `2` = pure bits/token bpb (`PRISM_SCORING_MODE=shadow`); `3` = full G1–G8 composite (`composite`, anchors required). Default mode is `benchmarks`. See **v4 G2 benchmark scoring** and **v3 composite scoring** below.  
 **recipe_version:** `2.0.0` (pinned NeMo AutoModel base + miner unified diff; legacy **1.x** two-script / source-tree layouts rejected on live — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))  
 **port:** `8092`  
-**emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
+**emission_share_bps:** `10000` (100% prism; sum `10000`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
 
 ## What it is

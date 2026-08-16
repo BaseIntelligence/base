@@ -1,8 +1,8 @@
 # Owner-signed challenges trust root (D18/D23/D24).
 # Signed with throwaway owner key (see owner.pubkey). Production rotation: CEREMONY.md.
 #
-# Emission: design = 5000 bps, prism = 5000 bps (50/50; rebalanced 2026-08-07 from
-# design 2000 / prism 8000 activated 2026-08-06). Same owner key + challenge keys;
+# Emission: design = 0 bps, prism = 10000 bps (100% prism; rebalanced 2026-08-16 from
+# design 5000 / prism 5000 activated 2026-08-07). Same owner key + challenge keys;
 # a future production owner/key ceremony per CEREMONY.md remains pending).
 version = 1
 introduced_epoch = 0
@@ -10,11 +10,11 @@ introduced_epoch = 0
 [[challenges]]
 id = "design"
 public_key = "3e27f87d8330006a73174001120c3455f16b95fee098bb8c2bab9d5053840418"
-emission_share_bps = 5000
+emission_share_bps = 0
 policy = "all_metagraph_hotkeys"
 
 [[challenges]]
 id = "prism"
 public_key = "bcd50bb830e050ed4b011dd8f1d2f126fdb42dc55b45ece30a7d5c8ceb3c5219"
-emission_share_bps = 5000
+emission_share_bps = 10000
 policy = "all_metagraph_hotkeys"
