@@ -22,7 +22,7 @@ import threading
 import time
 
 from .envutil import log
-from .runner import PHASE_MARK, _open_result_channel, probe_unshare
+from .runner import PHASE_MARK, _open_result_channel, netns_child_cmd, probe_unshare
 
 
 def _kill_group(pgid):
@@ -69,10 +69,7 @@ def run_phase(
             + "); v3 phase subprocess shares the pod network (fallback)"
         )
 
-    cmd = []
-    if netns:
-        cmd.extend(["unshare", "--net", "--"])
-    cmd.extend([sys.executable, "-m", module, ctx_json_path])
+    cmd = netns_child_cmd(netns, [sys.executable, "-m", module, ctx_json_path])
 
     env = dict(os.environ)
     if extra_env:

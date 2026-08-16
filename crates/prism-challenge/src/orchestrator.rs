@@ -50,6 +50,11 @@ pub struct OrchestratorConfig {
     pub auto_retry_max: u32,
     pub scoring_mode: ScoringMode,
     pub orphan_grace_secs: u64,
+    /// GPUs rented per eval pod (`PRISM_POD_GPU_COUNT`, default 4).
+    ///
+    /// Miners may train across all of them; the eval battery stays pinned to
+    /// GPU 0 so G7 timings stay comparable across submissions.
+    pub pod_gpu_count: u32,
 }
 
 impl Default for OrchestratorConfig {
@@ -69,6 +74,7 @@ impl Default for OrchestratorConfig {
             auto_retry_max: 3,
             scoring_mode: ScoringMode::from_env(),
             orphan_grace_secs: DEFAULT_ORPHAN_GRACE_SECS,
+            pod_gpu_count: prism_lium::pod_gpu_count_from_env(),
         }
     }
 }
@@ -707,7 +713,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 name: format!("prism-{}", &id[..12.min(id.len())]),
                 max_lifetime_hours: self.cfg.max_lifetime_hours,
                 max_price_per_hour: self.cfg.max_price_per_hour,
-                gpu_count: 1,
+                gpu_count: self.cfg.pod_gpu_count,
                 image_digest: self.cfg.image_digest.clone(),
                 ssh_public_keys: self.cfg.ssh_public_keys.clone(),
                 ssh_key_name: Some("prism-mission-worker".into()),

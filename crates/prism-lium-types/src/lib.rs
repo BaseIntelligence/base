@@ -22,6 +22,7 @@ mod types;
 pub use error::{CostGuardrailError, LiumError};
 pub use receipt::{EvalReceipt, NoScoreGate};
 pub use types::{
-    effective_gpu_count, gpu_count_from_label, EvalTelemetry, GpuPreference, Instance,
-    InstanceSpec, LiumSshConfig, Offer, ProbePoint, RemoteExecResult, TelemetryPoint,
+    effective_gpu_count, gpu_count_from_label, parse_pod_gpu_count, pod_gpu_count_from_env,
+    EvalTelemetry, GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, ProbePoint,
+    RemoteExecResult, TelemetryPoint, DEFAULT_POD_GPU_COUNT,
 };

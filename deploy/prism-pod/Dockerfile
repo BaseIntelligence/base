@@ -24,9 +24,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # sshd is required by the Lium exec path (harness streamed over SSH); the
 # recipe template keeps startup_commands EMPTY and relies on the image init.
+# iproute2 provides `ip`, which the harness uses to bring `lo` UP inside the
+# `unshare --net` train/eval namespace — required for single-node multi-GPU
+# rendezvous (torch.distributed env:// on 127.0.0.1). A fresh netns still has
+# no route off-host, so isolation is unchanged.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      openssh-server git build-essential ninja-build ca-certificates \
+      openssh-server git build-essential ninja-build ca-certificates iproute2 \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /run/sshd
 

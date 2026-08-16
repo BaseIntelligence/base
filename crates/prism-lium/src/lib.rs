@@ -52,9 +52,9 @@ pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
 // The data contract lives in `prism-lium-types` (per-crate LOC cap); it is
 // re-exported wholesale so `prism_lium::…` stays the single import path.
 pub use prism_lium_types::{
-    effective_gpu_count, gpu_count_from_label, CostGuardrailError, EvalReceipt, EvalTelemetry,
-    GpuPreference, Instance, InstanceSpec, LiumError, LiumSshConfig, NoScoreGate, Offer,
-    ProbePoint, RemoteExecResult, TelemetryPoint,
+    effective_gpu_count, gpu_count_from_label, pod_gpu_count_from_env, CostGuardrailError,
+    EvalReceipt, EvalTelemetry, GpuPreference, Instance, InstanceSpec, LiumError, LiumSshConfig,
+    NoScoreGate, Offer, ProbePoint, RemoteExecResult, TelemetryPoint,
 };
 
 use async_trait::async_trait;

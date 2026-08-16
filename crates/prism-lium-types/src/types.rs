@@ -24,6 +24,31 @@ fn plausible_gpu_count(n: u32) -> bool {
     (2..=16).contains(&n)
 }
 
+/// GPUs to rent per Prism eval pod, from `PRISM_POD_GPU_COUNT`.
+///
+/// Bounded to `1..=8`; anything absent, unparseable or out of range falls back
+/// to the default **4** (recipe-v10 rents 4×RTX 5090).
+///
+/// Multi-GPU contract: miners may train across all 4 GPUs (the harness exposes
+/// `gpu_count` in the miner `ctx`), but the eval battery stays pinned to GPU 0
+/// so G7 timings stay comparable across submissions.
+#[must_use]
+pub fn pod_gpu_count_from_env() -> u32 {
+    parse_pod_gpu_count(std::env::var("PRISM_POD_GPU_COUNT").ok().as_deref())
+}
+
+/// Default GPUs per Prism eval pod when unset (recipe-v10 rents 4×RTX 5090).
+pub const DEFAULT_POD_GPU_COUNT: u32 = 4;
+
+/// Pure core of [`pod_gpu_count_from_env`] (kept separate so bounds and
+/// garbage-fallback are testable without mutating process env).
+#[must_use]
+pub fn parse_pod_gpu_count(raw: Option<&str>) -> u32 {
+    raw.and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| (1..=8).contains(n))
+        .unwrap_or(DEFAULT_POD_GPU_COUNT)
+}
+
 /// Parse a multi-GPU multiplier from a provider label (`8x RTX 5090`,
 /// `RTX 5090 x8`, `8×GeForce`, `8 x RTX`, …). Returns `None` when the label
 /// does not clearly encode a count. SKU digits like `5090` / `H100` are
@@ -384,6 +409,63 @@ mod tests {
         assert_eq!(gpu_count_from_label("RTX 5090 x 8"), Some(8));
         assert_eq!(gpu_count_from_label("NVIDIA GeForce RTX 5090"), None);
         assert_eq!(gpu_count_from_label("H100x8"), Some(8));
+    }
+
+    #[test]
+    fn pod_gpu_count_defaults_to_four_and_bounds() {
+        // Default when unset / empty / garbage (recipe-v10 rents 4×RTX 5090).
+        assert_eq!(parse_pod_gpu_count(None), 4);
+        assert_eq!(parse_pod_gpu_count(Some("")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("   ")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("four")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("2.5")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("-1")), 4);
+        // Out of the 1..=8 band falls back to the default, never clamps.
+        assert_eq!(parse_pod_gpu_count(Some("0")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("9")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("64")), 4);
+        // In-band values are honored (with surrounding whitespace).
+        assert_eq!(parse_pod_gpu_count(Some("1")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("4")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("8")), 8);
+        assert_eq!(parse_pod_gpu_count(Some(" 2 ")), 2);
+        // The env wrapper agrees with the pure core for the unset case.
+        assert_eq!(DEFAULT_POD_GPU_COUNT, 4);
+    }
+
+    #[test]
+    fn four_gpu_request_matches_only_four_gpu_offers() {
+        let mk = |id: &str, gpu_type: &str, gpu_count: u32, price: f64| Offer {
+            id: id.into(),
+            gpu_type: gpu_type.into(),
+            gpu_count,
+            price_per_hour: price,
+            provider: "lium".into(),
+        };
+        let one = mk("1x", "NVIDIA GeForce RTX 5090", 1, 2.0);
+        let four = mk("4x", "NVIDIA GeForce RTX 5090", 4, 1.0);
+        let four_label = mk("4x-label", "4x RTX 5090", 1, 0.9);
+        let eight = mk("8x", "NVIDIA GeForce RTX 5090", 8, 0.48);
+
+        // A request for 4 must not silently land on a 1×GPU offer.
+        assert!(!one.matches_gpu_count(4));
+        assert!(four.matches_gpu_count(4));
+        assert!(four_label.matches_gpu_count(4), "label multiplier wins");
+        assert!(!eight.matches_gpu_count(4), "8x is not an exact 4 match");
+
+        // End-to-end through the pinned filter: only the 4×5090 offers survive,
+        // cheapest first — so the default pod_gpu_count of 4 still rents.
+        let pref = GpuPreference::default_prism();
+        let mut offers = vec![one.clone(), four.clone(), four_label.clone(), eight.clone()];
+        pref.filter_sort_offers(&mut offers, 4);
+        let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["4x-label", "4x"], "4-GPU offers only, cheapest first");
+
+        // Sanity: the historical single-GPU path is unchanged.
+        let mut single_req = vec![one, four, four_label, eight];
+        pref.filter_sort_offers(&mut single_req, 1);
+        let ids: Vec<&str> = single_req.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["1x"]);
     }
 
     #[test]
