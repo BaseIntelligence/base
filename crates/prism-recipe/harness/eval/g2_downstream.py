@@ -45,14 +45,14 @@ def _norm_word(s):
     return (s or "").strip().strip(_PUNCT)
 
 
-def _strict_lambada(ctx, model, tok, device, prompt, choices, gold):
+def _strict_lambada(ctx, model, tok, device, prompt, choices, gold, cluster):
     """Greedy last-word exact match on one row; returns acc01 or None."""
     gold_word = _norm_word(choices[int(gold)])
     if not gold_word:
         return None
     gen = common.greedy_word(model, tok, device, prompt)
     acc = 1.0 if _norm_word(gen) == gold_word else 0.0
-    common.record(ctx, "g2.lambada_strict.acc", "g2/lambada_strict", acc)
+    common.record(ctx, "g2.lambada_strict.acc", cluster, acc)
     common.record_trace(
         ctx,
         {
@@ -72,30 +72,36 @@ def _strict_lambada(ctx, model, tok, device, prompt, choices, gold):
 def run(model, ctx):
     tok = ctx["tokenizer"]
     device = ctx["device"]
-    budget = common.Budget(common.group_budget_s("g2", 1800.0))
+    budget = common.Budget(common.group_budget_s("g2"))
     out = {}
     per_task = {}
     nlls = []
-    cap = common.eval_asset_cap(200, 8, env_key="PRISM_EVAL_G2_CAP")
     for task in TASKS:
         path = common.assets_path(ctx, f"g2/{task}.jsonl")
         if path is None:
             continue
-        rows = common.load_jsonl(path, cap=cap)
+        # Per-task cap: the discriminative tasks get ~1000 rows, the
+        # at-chance ones stay at 200 (see `common.eval_g2_cap`).
+        rows = common.load_jsonl(path, cap=common.eval_g2_cap(task))
         accs = []
         strict_accs = []
-        for row in rows:
+        for i, row in enumerate(rows):
             if not budget.ok():
                 out["g2.partial"] = 1.0
                 break
             prompt, choices, gold = row.get("prompt"), row.get("choices"), row.get("gold")
             if not prompt or not choices or gold is None:
                 continue
+            # Per-ROW cluster id (`g2/<task>#<i>`): the clustered bootstrap
+            # resamples cluster values, so the old constant `g2/<task>`
+            # collapsed each task to one cluster and contributed zero
+            # variance to SE(C). Same convention as `rollup.build_mirrors`.
+            cluster = f"g2/{task}#{i}"
             try:
                 acc, nll = common.score_and_record(
                     ctx,
                     f"g2.{task}.acc",
-                    f"g2/{task}",
+                    cluster,
                     model,
                     tok,
                     device,
@@ -111,7 +117,10 @@ def run(model, ctx):
             nlls.append(nll)
             if task == "lambada":
                 try:
-                    s = _strict_lambada(ctx, model, tok, device, prompt, choices, gold)
+                    s = _strict_lambada(
+                        ctx, model, tok, device, prompt, choices, gold,
+                        f"g2/lambada_strict#{i}",
+                    )
                 except Exception:  # noqa: BLE001
                     s = None
                 if s is not None:

@@ -1248,6 +1248,94 @@ mod tests {
         assert!(json.contains("\"status\":\"scored\""));
     }
 
+    /// Regression for the G1/G2 bootstrap-clustering defect: the harness
+    /// recorded every G1 doc and G2 row under a CONSTANT cluster id, so
+    /// `value_of` resampled a single value and those axes contributed
+    /// exactly zero variance to `SE(C)` — 40% of composite weight, since
+    /// G1 carries 0.25 and G2 carries 0.15. That understated SE, inflated
+    /// the LCB, and made the `ci_half_width_delta` gate vacuous precisely
+    /// where it mattered most. Per-item cluster ids in
+    /// `eval/g1_intrinsic.py` and `eval/g2_downstream.py` restore real
+    /// resampling units.
+    #[test]
+    fn single_cluster_series_is_degenerate_but_per_item_is_not() {
+        let anchors = test_anchors();
+        // Tight per-item spread: enough variance to be measurable, still
+        // inside `ci_half_width_delta` so the run stays eligible. (A WIDE
+        // spread now correctly trips the CI gate — that gate was vacuous on
+        // these axes before, which is the whole point of the fix.)
+        let spread = [0.48, 0.50, 0.52, 0.49, 0.51, 0.50, 0.52, 0.48];
+        let mean = spread.iter().sum::<f64>() / spread.len() as f64;
+
+        // Pre-fix shape: one cluster per metric ⇒ nothing to resample.
+        let mut degenerate = uniform_submission(0.5);
+        degenerate.metrics.insert(
+            "org.g1.bits_per_byte_code".to_string(),
+            series(mean, &[mean]),
+        );
+        degenerate
+            .metrics
+            .insert("org.g2.lambada_acc".to_string(), series(mean, &[mean]));
+        let se_degenerate = scored(&evaluate(&degenerate, &anchors, 21)).se;
+        assert!(
+            se_degenerate.abs() < 1e-12,
+            "constant cluster id must produce zero variance: {se_degenerate}"
+        );
+
+        // Post-fix shape: per-item clusters on the same aggregate value.
+        let mut clustered = uniform_submission(0.5);
+        clustered.metrics.insert(
+            "org.g1.bits_per_byte_code".to_string(),
+            series(mean, &spread),
+        );
+        clustered
+            .metrics
+            .insert("org.g2.lambada_acc".to_string(), series(mean, &spread));
+        let out = evaluate(&clustered, &anchors, 21);
+        let s = scored(&out);
+        assert!(
+            s.se > 1e-6,
+            "per-item clusters must produce real variance: {}",
+            s.se
+        );
+        // The point estimate is unchanged (it reads `series.value`); only
+        // the uncertainty — and therefore the payable LCB — moves.
+        assert!(
+            (s.composite - scored(&evaluate(&degenerate, &anchors, 21)).composite).abs() < 1e-12,
+            "clustering must not move the point estimate"
+        );
+        assert!(s.lcb < s.composite, "honest SE must lower the payable LCB");
+        // And the CI gate is no longer vacuous on those axes.
+        let g1 = &s.groups[0];
+        assert!(
+            g1.ci_hi.expect("ci_hi") - g1.ci_lo.expect("ci_lo") > 0.0,
+            "g1 CI must have non-zero width"
+        );
+
+        // A genuinely noisy G1/G2 now FAILS the CI-sufficiency gate instead
+        // of passing it for free — the gate can finally bind on the two
+        // heaviest axes.
+        let noisy = [0.2, 0.8, 0.3, 0.7, 0.25, 0.75, 0.4, 0.6];
+        let noisy_mean = noisy.iter().sum::<f64>() / noisy.len() as f64;
+        let mut loud = uniform_submission(0.5);
+        loud.metrics.insert(
+            "org.g1.bits_per_byte_code".to_string(),
+            series(noisy_mean, &noisy),
+        );
+        match evaluate(&loud, &anchors, 21) {
+            CompositeOutcome::Ineligible(i) => assert!(
+                i.reasons.iter().any(
+                    |r| matches!(r, GateFailure::CiHalfWidthTooWide { group, .. } if group == "g1")
+                ),
+                "noisy g1 must trip the CI gate: {:?}",
+                i.reasons
+            ),
+            CompositeOutcome::Scored(s) => {
+                panic!("noisy g1 must be ineligible, got se={}", s.se)
+            }
+        }
+    }
+
     #[test]
     fn unknown_metrics_are_ignored() {
         let anchors = test_anchors();
