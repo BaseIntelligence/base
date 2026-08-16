@@ -180,6 +180,10 @@ def _diag_metrics(stream, attest, wall_s):
         "org.diag.flops_probe_cv": float(attest.get("cv", 0.0)),
         "org.diag.flops_probe_unstable": 1.0 if attest.get("unstable") else 0.0,
         "org.diag.flops_probe_samples": float(attest.get("n_samples", 0)),
+        # A reduced-batch probe is a valid per-token measurement but a
+        # DIFFERENT measurement condition, so it is visible, not implicit.
+        "org.diag.flops_probe_rows": float(attest.get("probe_rows", 0)),
+        "org.diag.flops_probe_rows_reduced": 1.0 if attest.get("probe_rows_reduced") else 0.0,
         "org.diag.spend_fraction": rep["spend_fraction"],
         "org.diag.binding_cap": rep["binding_cap"],
         "org.diag.mfu_achieved": flops_mod.mfu(attested, wall_s, n_gpu=n_gpu),

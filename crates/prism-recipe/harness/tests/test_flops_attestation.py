@@ -541,6 +541,65 @@ def test_diag_never_creates_a_battery_out_of_nothing():
     assert merge(battery, {"diag_metrics": "nonsense"}) == battery
 
 
+def test_probe_oom_degrades_to_fewer_rows_instead_of_disarming():
+    """Measured on the hybrid delta-net at 341M params on a 32 GB card: the
+    probe adds a fwd+bwd on top of a resident model and can OOM where
+    training itself would not. A probe that merely fails leaves the FLOPs cap
+    DISARMED -- losing attestation on exactly the memory-heavy architectures,
+    and handing a miner an escape (OOM the probe, get billed by wall-clock).
+    """
+    calls = {"n": 0}
+
+    class OomTwice(TinyModel):
+        def forward(self, input_ids):
+            # Fail while the batch is full, succeed once it has been halved.
+            if input_ids.shape[0] > 1:
+                calls["n"] += 1
+                raise RuntimeError("CUDA out of memory. Tried to allocate 128.00 MiB")
+            return super().forward(input_ids)
+
+    out = F.probe_flops_per_token(OomTwice(), make_stream(), "s", n=3)
+    assert calls["n"] > 0, "the OOM path must actually have been taken"
+    assert out["flops_per_token"] > 0.0, "a reduced-row probe must still attest"
+    assert out["probe_rows"] == 1, out
+    assert out["probe_rows_full"] == BATCH
+    assert out["probe_rows_reduced"] is True
+    assert out["oom_retry"], "the OOM must be recorded, not swallowed"
+    # Per-token cost is unchanged by row count at fixed sequence length, so
+    # the reduced measurement must agree with the full-batch one.
+    full = F.probe_flops_per_token(TinyModel(), make_stream(), "s", n=3)
+    rel = abs(out["flops_per_token"] - full["flops_per_token"]) / full["flops_per_token"]
+    assert rel < 0.10, (
+        f"reduced-row probe {out['flops_per_token']:.4g} disagrees with "
+        f"full-batch {full['flops_per_token']:.4g} by {rel:.1%} — FLOPs/token "
+        "must be invariant to batch rows at fixed seq_len"
+    )
+
+
+def test_non_oom_errors_still_propagate():
+    """Only OOM degrades. Any other failure must surface, not be retried into
+    a wrong number."""
+
+    class Broken(TinyModel):
+        def forward(self, input_ids):
+            raise ValueError("architecture is broken")
+
+    try:
+        F.probe_flops_per_token(Broken(), make_stream(), "s", n=2)
+    except ValueError as exc:
+        assert "broken" in str(exc)
+    else:
+        raise AssertionError("a non-OOM error must not be swallowed")
+
+
+def test_oom_classifier():
+    assert F._is_oom(RuntimeError("CUDA out of memory. Tried to allocate 128 MiB"))
+    assert F._is_oom(MemoryError())
+    assert F._is_oom(RuntimeError("OUT OF MEMORY"))
+    assert not F._is_oom(ValueError("shape mismatch"))
+    assert not F._is_oom(RuntimeError("cuda kernel launch failed"))
+
+
 def test_coefficient_of_variation_edges():
     assert F.coefficient_of_variation([]) == 0.0
     assert F.coefficient_of_variation([5.0]) == 0.0
