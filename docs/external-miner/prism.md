@@ -361,7 +361,16 @@ improvement removes that.
    bootstrap with a fixed, published seed. Anyone can recompute the verdict.
 5. Your **average margin** on decided examples must also clear the dead zone, so
    you cannot win a majority of near-ties while being much worse where you lose.
-6. There must be enough decided examples to conclude anything at all.
+6. There must be at least **100 decided examples**. Below that the win rate
+   cannot be estimated closely enough to mean anything, and the champion holds.
+   On a task where everyone scores nearly the same, that is the normal outcome:
+   the comparison refuses rather than crowning a coin flip.
+
+One consequence worth knowing: you and the champion must have been measured on
+the **same** eval slice for any of this to run. If the slice rotated between the
+champion's run and yours, there is no valid comparison and the champion holds
+until it is re-measured on your slice. That re-measurement is the operator's job,
+not yours.
 
 The bar is 55 % rather than something higher on purpose: a genuinely better
 architecture with a wide per-example spread sits near 55 %, so demanding much

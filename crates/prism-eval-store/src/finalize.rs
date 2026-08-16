@@ -130,52 +130,6 @@ pub enum FinalizeError {
     /// Zone B envelope rejection (malformed/over caps).
     #[error("zone b ingest: {0}")]
     ZoneB(#[from] IngestReject),
-    /// The run produced no contamination evidence while a contamination
-    /// check was required (`PRISM_EVAL_REQUIRE_PRIVATE=1`, implied by
-    /// `PRISM_EMISSION_MODE=sig`).
-    #[error("mirror defence inert: refusing to score an unchecked run")]
-    ContaminationUnchecked,
-}
-
-/// Whether a scored run must carry real contamination evidence.
-///
-/// **Why this is coupled to the emission mode.** The mirror-gap penalty is
-/// inert by construction in the `public_dev` tier (`build_mirrors` makes the
-/// run its own mirror), so "mirror penalty = 0" there means *no check ran*,
-/// not *no contamination*. Under WTA that is a known, documented weakness.
-/// Under the significance-gated rule it becomes load-bearing: the rule
-/// grants a protected 60 % champion share on measured evidence, so scoring
-/// a run whose contamination detector was switched off would hand statistical
-/// authority to an unchecked number.
-///
-/// Therefore: `PRISM_EVAL_REQUIRE_PRIVATE=1` turns the check into a
-/// fail-closed gate, and `PRISM_EMISSION_MODE=sig` **implies** it. Both are
-/// off by default, so CI, Sim, local-e2e and the live `public_dev` path are
-/// unaffected until an operator opts in — which is the strictest option
-/// available that does not break the existing test matrix.
-#[must_use]
-pub fn require_contamination_check() -> bool {
-    static REQUIRE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *REQUIRE.get_or_init(|| {
-        let explicit = std::env::var("PRISM_EVAL_REQUIRE_PRIVATE").is_ok_and(|v| v.trim() == "1");
-        let implied_by_sig = std::env::var("PRISM_EMISSION_MODE").is_ok_and(|v| v.trim() == "sig");
-        explicit || implied_by_sig
-    })
-}
-
-/// Whether the harness reported real contamination evidence.
-///
-/// Reads `battery.mirror_defence.contamination_checked`, the loud flag the
-/// harness emits (`eval/rollup.py::mirror_report`). Absent ⇒ `false`:
-/// an older harness that cannot report the flag has not proven a check ran.
-#[must_use]
-pub fn contamination_checked(metrics_v2: &Value) -> bool {
-    metrics_v2
-        .get("battery")
-        .and_then(|b| b.get("mirror_defence"))
-        .and_then(|m| m.get("contamination_checked"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
 }
 
 /// Run the measurement→composite→storage pipeline for one measured
@@ -202,20 +156,6 @@ pub async fn finalize_composite(
     let Some(sub) = submission_metrics(metrics_v2) else {
         return Ok(None);
     };
-    // Fail-closed contamination discipline: refuse to score a run whose
-    // mirror defence produced no evidence. See `require_contamination_check`.
-    if require_contamination_check() && !contamination_checked(metrics_v2) {
-        tracing::warn!(
-            submission_id,
-            tier = metrics_v2
-                .get("battery")
-                .and_then(|b| b.get("tier"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown"),
-            "refusing to score: mirror defence inert (no contamination evidence)"
-        );
-        return Err(FinalizeError::ContaminationUnchecked);
-    }
     let parsed = CompositeAnchors::from_json(&anchors.canonical_json)?
         .with_prereg_hash(anchors.prereg_hash());
     let outcome = composite::evaluate(&sub, &parsed, seed_for(submission_id));

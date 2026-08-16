@@ -67,7 +67,29 @@ pub const MIN_WIN_RATE_BPS: u64 = 5_500;
 
 /// Minimum decided examples for a verdict. Below this the slice has too
 /// little to go on and the champion holds (saturated axes fail naturally).
-pub const MIN_DECIDED: usize = 30;
+///
+/// **Sized from the win-rate standard error, not picked.** The design
+/// criterion is `SE(win_rate) ≲ 5 %`, and for a proportion
+/// `SE = √(p(1−p)/n)`. At the bar `p = 0.55`:
+///
+/// | n | SE |
+/// |---|---|
+/// | 30 | **9.1 %** — nearly twice the criterion |
+/// | 100 | **4.97 %** |
+/// | 200 | 3.5 % |
+///
+/// So 100 is the smallest n that satisfies the stated criterion, and 30 —
+/// the first draft's value — does not. This matters in the direction that
+/// costs the incumbent nothing and the challenger everything: a thin slice
+/// produces a *wide* bootstrap, and the floor is what stops a verdict being
+/// read off one. The gate is deliberately "automatically stricter when it
+/// has less to go on".
+///
+/// Raising the floor makes displacement harder, which is the incumbent-
+/// squatting risk the design flags — but the mitigation for that is the
+/// tenure-decayed **economic** floor and the champion re-run, never a
+/// weaker statistical bar.
+pub const MIN_DECIDED: usize = 100;
 
 /// Direction of a metric's scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,6 +532,39 @@ mod tests {
         assert_eq!(BOOTSTRAP_CONFIDENCE_BPS, 9_900);
         assert_eq!(BOOTSTRAP_RESAMPLES, 10_000);
         assert_eq!(BOOTSTRAP_SEED, 20_260_816);
-        assert_eq!(MIN_DECIDED, 30);
+        assert_eq!(MIN_DECIDED, 100);
+    }
+
+    #[test]
+    fn min_decided_meets_its_documented_se_criterion() {
+        // The floor exists to bound SE(win_rate) at ~5 % at the bar p=0.55.
+        // Assert the arithmetic rather than trusting the comment, so a
+        // future edit to the constant has to face the criterion.
+        let p = MIN_WIN_RATE_BPS as f64 / 10_000.0;
+        let se = (p * (1.0 - p) / MIN_DECIDED as f64).sqrt();
+        assert!(se <= 0.05, "SE {se} at n={MIN_DECIDED} exceeds 5 %");
+        // And that it is not wastefully large: one step down would fail.
+        let se_smaller = (p * (1.0 - p) / (MIN_DECIDED as f64 - 20.0)).sqrt();
+        assert!(se_smaller > 0.05, "the floor is larger than it needs to be");
+    }
+
+    #[test]
+    fn a_thin_slice_is_refused_rather_than_decided() {
+        // 60 decided examples with a real 0.05 win: still refused, because
+        // the win rate cannot be estimated to the required precision.
+        let champ: Vec<f64> = vec![1.20; 60];
+        let chal: Vec<f64> = vec![1.15; 60];
+        assert_eq!(
+            paired_test(&input(&champ, &chal, Direction::LowerBetter)).unwrap_err(),
+            PairedRefusal::NotEnoughDecided
+        );
+        // The same win on a full slice decides.
+        let champ: Vec<f64> = vec![1.20; 200];
+        let chal: Vec<f64> = vec![1.15; 200];
+        assert!(
+            paired_test(&input(&champ, &chal, Direction::LowerBetter))
+                .unwrap()
+                .displaces
+        );
     }
 }

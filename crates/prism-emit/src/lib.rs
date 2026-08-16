@@ -270,6 +270,15 @@ pub fn build_epoch_leaves_with(
     // `PRISM_EMISSION_MODE` (`wta` | `top3` | `sig`) and
     // `PRISM_OWNER_ARCH_CREDIT_BPS` (0..=5000, owner split of the winner).
     let mode = prism_registry::EmissionMode::from_env();
+    let credits = prism_registry::competition_scores(batch, arch_owners);
+    // The plan is computed **once** and reused for both the projection and
+    // the burn leaf. Recomputing it would be deterministic today but would
+    // let the two drift on any future edit, and a burn that disagrees with
+    // the allocation is a silent conservation break.
+    let plan = (mode == prism_registry::EmissionMode::Significance).then(|| {
+        let fallback = prism_registry::SigContext::default();
+        prism_registry::plan_emission(&credits, sig_ctx.unwrap_or(&fallback))
+    });
     let by_miner = prism_registry::emission_leaves_with(
         batch,
         arch_owners,
@@ -292,8 +301,8 @@ pub fn build_epoch_leaves_with(
         };
         scores.insert(p.hotkey, soa);
     }
-    if mode == prism_registry::EmissionMode::Significance {
-        apply_burn_leaf(&mut scores, expected, batch, arch_owners, sig_ctx);
+    if let Some(plan) = &plan {
+        apply_burn_leaf(&mut scores, expected, plan);
     }
     challenge_common::emit_signed_leaf_set(
         secret,
@@ -325,14 +334,8 @@ pub fn build_epoch_leaves_with(
 fn apply_burn_leaf(
     scores: &mut BTreeMap<Hotkey, ScoreOrAbsence>,
     expected: &ExpectedSet,
-    batch: &[EpochScoreRow],
-    arch_owners: &BTreeMap<String, String>,
-    sig_ctx: Option<&prism_registry::SigContext>,
+    plan: &prism_registry::EmissionPlan,
 ) {
-    let fallback = prism_registry::SigContext::default();
-    let ctx = sig_ctx.unwrap_or(&fallback);
-    let credits = prism_registry::competition_scores(batch, arch_owners);
-    let plan = prism_registry::plan_emission(&credits, ctx);
     if plan.burn_bps == 0 {
         return;
     }

@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-store = { path = "../prism-store" }
+serde_json = "1"
 
 [lints]
 workspace = true

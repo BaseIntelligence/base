@@ -15,6 +15,12 @@
 > (compute currency, `σ_seed` measurement programme). Underlying evidence
 > reviews for #15 are in [`research/incentives-sources/`](research/incentives-sources/).
 > All three are non-normative; `docs/PRISM.md` remains the contract.
+>
+> **Open work item:** [`g2-v3-routing-request.md`](g2-v3-routing-request.md) —
+> the exact G2 task/weight changes requested for `anchors/v3.json` (four of eight
+> sub-metrics normalize to a constant 0 for the whole field), plus the
+> finalize-time contamination gate. Both live in paths owned elsewhere; the
+> harness-side support they need is implemented.
 
 > **Implementation status (2026-08-06, branch `prism-better`):** the proposal
 > is implemented behind `PRISM_SCORING_MODE` (default `shadow` — v2 leaf

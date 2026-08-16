@@ -121,6 +121,15 @@ pub struct SigContext {
     pub archive: EliteArchive,
     /// Previous round's emitted share vector (bps) for the weight EMA.
     pub previous_bps: BTreeMap<String, u64>,
+    /// Whether the round's runs produced live contamination evidence
+    /// ([`crate::contamination`]). **`false` fail-closes the protected
+    /// champion share**: the mirror-gap defence is inert by construction in
+    /// the `public_dev` tier, so an unchecked round's "no contamination
+    /// penalty" is the absence of a measurement, not a clean result. This
+    /// rule pays a protected 60 % on measured evidence, so it must not do so
+    /// on a number whose contamination detector was switched off. Default
+    /// `false` — silence is not evidence.
+    pub contamination_checked: bool,
 }
 
 /// A resolved allocation: who is paid what share, and what burns.
@@ -212,12 +221,19 @@ pub fn plan_emission(scores: &BTreeMap<String, FinalScore>, ctx: &SigContext) ->
     if ranked.is_empty() {
         // Nothing eligible: the whole share burns (fail-closed, matching
         // the existing all-ineligible behavior).
-        return EmissionPlan {
-            shares: BTreeMap::new(),
-            burn_bps: 0,
-            champion: None,
-            displaced: false,
-        };
+        return burn_everything();
+    }
+    // Fail-closed on contamination evidence. The mirror-gap defence is inert
+    // by construction in `public_dev`, so an unchecked round cannot
+    // distinguish "clean" from "not measured" — and this rule's whole
+    // premise is that the protected champion share is granted on *measured*
+    // evidence. Paying it on an unchecked round would be exactly the failure
+    // the significance test exists to prevent, dressed in statistics. The
+    // safe direction is a visible full burn, the same posture the gateway
+    // takes when it has no sealed bundle: no allocation is strictly better
+    // than a confidently wrong one.
+    if !ctx.contamination_checked {
+        return burn_everything();
     }
 
     let (champion, displaced, outcome) = resolve_champion(ctx, &ranked);
@@ -271,7 +287,17 @@ pub fn plan_emission(scores: &BTreeMap<String, FinalScore>, ctx: &SigContext) ->
 
     // Weight EMA, then the tail floor, then conservation.
     let mut shares = apply_ema(&shares, &ctx.previous_bps);
-    shares.retain(|_, bps| *bps > TAIL_FLOOR_BPS);
+    // Only a hotkey with a positive credit **this round** can be paid.
+    //
+    // Without this, the EMA's phase-out term resurrects hotkeys that are in
+    // `previous_bps` but not in this round's credits. Their share would then
+    // count toward `allocated_bps` — so it would not be burned — while
+    // `apply_significance` maps over `scores` and emits no leaf for them, so
+    // it would not be paid either. The mass would silently redistribute to
+    // the champion at `BUNDLE_SPEC` §6.4 normalization. Dropping them here
+    // makes the phase-out honest: an absent hotkey's decayed share burns.
+    let live: BTreeSet<&str> = ranked.iter().map(|(hk, _)| hk.as_str()).collect();
+    shares.retain(|hk, bps| *bps > TAIL_FLOOR_BPS && live.contains(hk.as_str()));
     let allocated: u64 = shares.values().copied().sum();
     // Over-allocation is structurally impossible (60+15+10+5+10 = 100),
     // but clamp rather than underflow if a future parameter edit breaks it.
@@ -283,6 +309,21 @@ pub fn plan_emission(scores: &BTreeMap<String, FinalScore>, ctx: &SigContext) ->
         burn_bps,
         champion,
         displaced,
+    }
+}
+
+/// A plan that allocates nothing and burns the entire share.
+///
+/// `burn_bps = 10_000` rather than 0 so [`EmissionPlan::conserves`] holds
+/// unconditionally and the burn leaf in `prism-emit` carries the full
+/// remainder — "allocated nothing" and "burned everything" are the same
+/// statement and the plan should say so.
+fn burn_everything() -> EmissionPlan {
+    EmissionPlan {
+        shares: BTreeMap::new(),
+        burn_bps: 10_000,
+        champion: None,
+        displaced: false,
     }
 }
 
@@ -368,6 +409,17 @@ mod tests {
             .collect()
     }
 
+    /// A context with contamination evidence present — the precondition for
+    /// any allocation at all. `SigContext::default()` deliberately has it
+    /// `false` (silence is not evidence), so tests about the *allocation*
+    /// rule start from here and the fail-closed path is tested on its own.
+    fn checked() -> SigContext {
+        SigContext {
+            contamination_checked: true,
+            ..SigContext::default()
+        }
+    }
+
     fn win(mean_gap: f64) -> PairedOutcome {
         PairedOutcome {
             n_paired: 200,
@@ -408,10 +460,7 @@ mod tests {
 
     #[test]
     fn cold_start_crowns_the_top_credit() {
-        let plan = plan_emission(
-            &credits(&[("aa", 900), ("bb", 500)]),
-            &SigContext::default(),
-        );
+        let plan = plan_emission(&credits(&[("aa", 900), ("bb", 500)]), &checked());
         assert_eq!(plan.champion.as_deref(), Some("aa"));
         assert!(!plan.displaced);
         // No premium evidence on a cold start ⇒ floor, remainder burns.
@@ -425,7 +474,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("champ".into()),
             challenger: Some(("chal".into(), loss())),
-            ..SigContext::default()
+            ..checked()
         };
         // Challenger has the HIGHER raw credit but did not clear the bar.
         let plan = plan_emission(&credits(&[("champ", 500), ("chal", 900)]), &ctx);
@@ -444,7 +493,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("champ".into()),
             challenger: Some(("clone".into(), PairedOutcome::hold())),
-            ..SigContext::default()
+            ..checked()
         };
         let plan = plan_emission(&credits(&[("champ", 900_000), ("clone", 900_001)]), &ctx);
         assert_eq!(plan.champion.as_deref(), Some("champ"));
@@ -456,7 +505,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("champ".into()),
             challenger: Some(("chal".into(), win(0.05))),
-            ..SigContext::default()
+            ..checked()
         };
         let plan = plan_emission(&credits(&[("champ", 800), ("chal", 900)]), &ctx);
         assert_eq!(plan.champion.as_deref(), Some("chal"));
@@ -473,7 +522,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("champ".into()),
             challenger: Some(("chal".into(), win(0.011))),
-            ..SigContext::default()
+            ..checked()
         };
         let plan = plan_emission(&credits(&[("champ", 800), ("chal", 900)]), &ctx);
         assert!(plan.displaced);
@@ -494,12 +543,12 @@ mod tests {
         let fresh = SigContext {
             incumbent: Some("champ".into()),
             tenure_days: 0,
-            ..SigContext::default()
+            ..checked()
         };
         let stale = SigContext {
             incumbent: Some("champ".into()),
             tenure_days: 200,
-            ..SigContext::default()
+            ..checked()
         };
         let a = plan_emission(&credits(&[("champ", 900)]), &fresh);
         let b = plan_emission(&credits(&[("champ", 900)]), &stale);
@@ -516,7 +565,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("champ".into()),
             archive: archive(&[("g3", "looped", 0.95), ("g7", "sparse", 0.90)]),
-            ..SigContext::default()
+            ..checked()
         };
         let plan = plan_emission(
             &credits(&[("champ", 900), ("looped", 300), ("sparse", 200)]),
@@ -535,7 +584,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("champ".into()),
             archive: archive(&[("g3", "ghost", 0.99)]),
-            ..SigContext::default()
+            ..checked()
         };
         let plan = plan_emission(&credits(&[("champ", 900)]), &ctx);
         assert!(!plan.shares.contains_key("ghost"));
@@ -545,7 +594,7 @@ mod tests {
     #[test]
     fn unallocated_share_burns_rather_than_concentrating() {
         // Single entrant: champion floor only, everything else burns.
-        let plan = plan_emission(&credits(&[("solo", 900)]), &SigContext::default());
+        let plan = plan_emission(&credits(&[("solo", 900)]), &checked());
         assert_eq!(plan.shares.get("solo"), Some(&CHAMPION_FLOOR_BPS));
         assert_eq!(plan.burn_bps, 10_000 - CHAMPION_FLOOR_BPS);
         assert!(plan.conserves());
@@ -561,9 +610,121 @@ mod tests {
                 .iter()
                 .map(|(hk, v)| (hk.clone(), FinalScore::Score(*v)))
                 .collect();
-            let plan = plan_emission(&credits, &SigContext::default());
+            let plan = plan_emission(&credits, &checked());
             assert!(plan.conserves(), "n={n} must conserve: {plan:?}");
             assert!(plan.allocated_bps() <= 10_000, "n={n} over-allocated");
+        }
+    }
+
+    #[test]
+    fn an_unchecked_contamination_round_pays_nobody() {
+        // Fail-closed: the mirror defence is inert by construction in
+        // `public_dev`, so an unchecked round cannot tell "clean" from "not
+        // measured". A protected 60 % share must not be granted on it.
+        let ctx = SigContext {
+            incumbent: Some("champ".into()),
+            challenger: Some(("chal".into(), win(0.05))),
+            contamination_checked: false,
+            ..SigContext::default()
+        };
+        let plan = plan_emission(&credits(&[("champ", 900), ("chal", 950)]), &ctx);
+        assert!(plan.shares.is_empty(), "nothing may be paid: {plan:?}");
+        assert_eq!(plan.burn_bps, 10_000, "the whole share burns");
+        assert_eq!(plan.champion, None);
+        assert!(!plan.displaced);
+        assert!(plan.conserves());
+        // The identical round WITH evidence pays normally — so the burn is
+        // attributable to the missing check, not to anything else.
+        let with_evidence = SigContext {
+            contamination_checked: true,
+            ..ctx
+        };
+        let ok = plan_emission(&credits(&[("champ", 900), ("chal", 950)]), &with_evidence);
+        assert_eq!(ok.shares.get("chal"), Some(&CHAMPION_BPS));
+    }
+
+    #[test]
+    fn default_context_is_fail_closed() {
+        // Silence is not evidence: the zero value of the context must not
+        // authorize payment.
+        assert!(!SigContext::default().contamination_checked);
+        let plan = plan_emission(&credits(&[("aa", 900)]), &SigContext::default());
+        assert_eq!(plan.burn_bps, 10_000);
+        assert!(plan.shares.is_empty());
+    }
+
+    #[test]
+    fn an_empty_field_burns_the_whole_share_not_zero() {
+        // `burn_bps` must be the full share, not 0: "allocated nothing" and
+        // "burned everything" are the same statement, and `prism-emit`'s
+        // burn leaf reads `burn_bps` directly.
+        for c in [BTreeMap::new(), credits(&[("aa", 0), ("bb", 0)])] {
+            let plan = plan_emission(&c, &checked());
+            assert!(plan.shares.is_empty());
+            assert_eq!(plan.burn_bps, 10_000, "empty field must burn everything");
+            assert!(plan.conserves());
+        }
+    }
+
+    #[test]
+    fn ema_ghosts_never_consume_allocation_they_cannot_be_paid() {
+        // Regression: a hotkey in `previous_bps` but absent from this
+        // round's credits used to keep a decayed share. That share counted
+        // as allocated (so it was not burned) while `apply_significance`
+        // emitted no leaf for it (so it was not paid) — the mass silently
+        // redistributed to the champion at BUNDLE_SPEC §6.4 normalization.
+        let previous: BTreeMap<String, u64> =
+            [("ghost".to_owned(), 6_000_u64)].into_iter().collect();
+        let ctx = SigContext {
+            previous_bps: previous,
+            ..checked()
+        };
+        let plan = plan_emission(&credits(&[("aa", 900)]), &ctx);
+        assert!(
+            !plan.shares.contains_key("ghost"),
+            "a hotkey with no credit this round must not be allocated: {plan:?}"
+        );
+        // Every allocated hotkey must be one `apply_significance` can emit.
+        let out = apply_significance(credits(&[("aa", 900)]), &ctx);
+        for hk in plan.shares.keys() {
+            assert!(
+                matches!(out.get(hk), Some(FinalScore::Score(v)) if *v > 0),
+                "allocated {hk} has no positive leaf"
+            );
+        }
+        assert!(plan.conserves());
+    }
+
+    #[test]
+    fn every_allocated_share_reaches_a_leaf() {
+        // The general form of the property above, across field shapes and
+        // a populated previous vector.
+        let previous: BTreeMap<String, u64> =
+            [("old1".to_owned(), 3_000_u64), ("old2".to_owned(), 200)]
+                .into_iter()
+                .collect();
+        for n in 1..8_usize {
+            let rows: Vec<(String, u64)> = (0..n)
+                .map(|i| (format!("hk{i:02}"), 1_000 - (i as u64)))
+                .collect();
+            let c: BTreeMap<String, FinalScore> = rows
+                .iter()
+                .map(|(hk, v)| (hk.clone(), FinalScore::Score(*v)))
+                .collect();
+            let ctx = SigContext {
+                previous_bps: previous.clone(),
+                archive: archive(&[("g3", "hk01", 0.9)]),
+                ..checked()
+            };
+            let plan = plan_emission(&c, &ctx);
+            let out = apply_significance(c.clone(), &ctx);
+            assert!(plan.conserves(), "n={n}");
+            for hk in plan.shares.keys() {
+                assert!(
+                    matches!(out.get(hk), Some(FinalScore::Score(v)) if *v > 0),
+                    "n={n}: allocated {hk} has no positive leaf"
+                );
+            }
         }
     }
 
@@ -574,7 +735,7 @@ mod tests {
         let previous: BTreeMap<String, u64> = [("ghost".to_owned(), 100_u64)].into_iter().collect();
         let ctx = SigContext {
             previous_bps: previous,
-            ..SigContext::default()
+            ..checked()
         };
         let plan = plan_emission(&credits(&[("aa", 900)]), &ctx);
         assert!(
@@ -590,7 +751,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("new".into()),
             previous_bps: previous,
-            ..SigContext::default()
+            ..checked()
         };
         let plan = plan_emission(&credits(&[("new", 900), ("old", 100)]), &ctx);
         let new_share = *plan.shares.get("new").unwrap();
@@ -604,11 +765,11 @@ mod tests {
 
     #[test]
     fn empty_and_all_ineligible_fields_allocate_nothing() {
-        let plan = plan_emission(&BTreeMap::new(), &SigContext::default());
+        let plan = plan_emission(&BTreeMap::new(), &checked());
         assert!(plan.shares.is_empty());
         assert_eq!(plan.champion, None);
         let zeros = credits(&[("aa", 0), ("bb", 0)]);
-        let plan = plan_emission(&zeros, &SigContext::default());
+        let plan = plan_emission(&zeros, &checked());
         assert!(plan.shares.is_empty());
     }
 
@@ -619,7 +780,7 @@ mod tests {
             challenger: Some(("chal".into(), win(0.05))),
             archive: archive(&[("g3", "x", 0.9), ("g7", "y", 0.8)]),
             tenure_days: 7,
-            ..SigContext::default()
+            ..checked()
         };
         let c = credits(&[("champ", 900), ("chal", 950), ("x", 400), ("y", 300)]);
         let a = plan_emission(&c, &ctx);
@@ -649,7 +810,7 @@ mod tests {
         let mut c = credits(&[("aa", 900), ("bb", 500)]);
         c.insert("cc".into(), FinalScore::NoScore(6));
         c.insert("dd".into(), FinalScore::Score(0));
-        let out = apply_significance(c, &SigContext::default());
+        let out = apply_significance(c, &checked());
         assert_eq!(out.get("cc"), Some(&FinalScore::NoScore(6)));
         assert_eq!(out.get("dd"), Some(&FinalScore::Score(0)));
         assert_eq!(
@@ -665,7 +826,7 @@ mod tests {
         let ctx = SigContext {
             incumbent: Some("champ".into()),
             challenger: Some(("chal".into(), win(0.05))),
-            ..SigContext::default()
+            ..checked()
         };
         let out = apply_significance(credits(&[("champ", 800), ("chal", 900)]), &ctx);
         let champ = match out.get("chal") {

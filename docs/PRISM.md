@@ -627,7 +627,7 @@ populated the leaderboard).
 | Knob | Values | Default | Effect |
 |------|--------|---------|--------|
 | `PRISM_EMISSION_MODE` | `wta` \| `top3` \| `sig` | `wta` | `sig`: the significance-gated collapse below. Unknown values (including typos and case variants) are `wta`, fail-safe. |
-| `PRISM_EVAL_REQUIRE_PRIVATE` | `0` \| `1` | `0` | `1` refuses to score a run whose mirror defence produced no contamination evidence. **Implied by `PRISM_EMISSION_MODE=sig`.** |
+| `PRISM_EVAL_REQUIRE_PRIVATE` | `0` \| `1` | `0` | `1` marks a run with no contamination evidence as not scoreable (`prism_competition::contamination`). **Implied by `PRISM_EMISSION_MODE=sig`**, which additionally fail-closes at emission regardless of this knob (below). |
 
 **The rule** (`crates/prism-competition`: `paired.rs`, `frontier.rs`, `sig.rs`,
 `rerun.rs`; wired through `prism_registry::emission_leaves_with` →
@@ -640,10 +640,18 @@ populated the leaderboard).
 ```text
 DECIDED(i)  iff |d_i| >= 0.01          # dead zone, absolute (bits/byte, accuracy)
 win_rate     = #{i : d_i > 0 and DECIDED(i)} / #DECIDED
-B displaces A iff  LCB_99%(win_rate) >= 0.55     # clustered bootstrap, 10 000 resamples, fixed seed
+B displaces A iff  LCB_99%(win_rate) >= 0.55     # paired bootstrap, 10 000 resamples, fixed seed
                AND mean_gap           >= 0.01     # absolute, not relative
-               AND #DECIDED           >= 30
+               AND #DECIDED           >= 100      # sized so SE(win_rate) <= ~5 %
 ```
+
+`#DECIDED >= 100` is sized from the criterion, not chosen: for a proportion
+`SE = √(p(1−p)/n)`, so at the `p = 0.55` bar n=100 gives **4.97 %** while n=30
+would give **9.1 %** — nearly twice the criterion. A thin slice produces a wide
+bootstrap, and this floor is what stops a verdict being read off one; the gate is
+deliberately stricter when it has less to go on. It makes displacement harder,
+which is the incumbent-squatting risk — mitigated by the tenure-decayed
+*economic* floor and the champion re-run, never by weakening the statistical bar.
 
 Margins are **absolute, never relative**: a difference of D nats is D nats of
 evidence whether the loss is 0.02 or 2.0, so a relative margin collapses exactly
@@ -659,6 +667,23 @@ closed round must reach the same verdict.
 mean gap (`PREMIUM_GAP = 0.02`) is required to earn *above* the champion floor.
 "Who is champion" and "how much the champion is paid" are separate questions, so
 a marginal-but-real win does not unlock the full share.
+
+*What the store retains, and the one limit that follows.* `prism_eval_metric`
+persists each `org.*` metric with its **per-cluster values** for every scored run,
+and the harness records one cluster id per item (`g2/<task>#<i>`, `mqar/…`,
+`prose#<i>`; G1 domains per document). So per-example data **is** retained for
+both sides, including past champions — a genuine paired test needs no new state,
+and `prism_competition::evidence` builds it from those rows. But cluster ids are
+**positional**, so they align across two runs only if both scored the *same asset
+slice*. Under a rotating private slice an incumbent measured on the previous
+round's slice shares no real item with the challenger, and the ids may collide
+numerically while referring to different items. `evidence` therefore requires
+`slice_id` equality and **refuses** otherwise (`PairedRefusal::SliceMismatch`); a
+refusal means the champion holds. There is deliberately no fallback that pairs
+aggregates — comparing two independently-bootstrapped levels is exactly what the
+paired design exists to avoid. This is what makes the champion re-run
+load-bearing rather than optional: re-measuring the incumbent on the challenger's
+slice is what produces two same-slice series.
 
 *Allocation of Prism's share.*
 
@@ -721,9 +746,28 @@ contamination-checked when it was not. The harness now emits
 `battery.mirror_defence` with `contamination_checked`, `inert_pairs`,
 `live_pairs` and a reason string, and logs a warning when the defence is inert.
 **A zero mirror penalty in an inert run is the absence of a check, not a clean
-result.** With `PRISM_EVAL_REQUIRE_PRIVATE=1` (implied by `sig`) an unchecked run
-is refused outright (`FinalizeError::ContaminationUnchecked`) rather than scored;
-an absent flag counts as unchecked, so an older harness cannot pass by silence.
+result.** An absent flag counts as unchecked, so an older harness cannot pass by
+silence.
+
+The policy half is `prism_competition::contamination`. Two levels, because they
+have different blast radii:
+
+- **`PRISM_EVAL_REQUIRE_PRIVATE=1`** marks an unchecked run not scoreable
+  (`scoreable()`). Refusing to *persist* an unchecked composite is strictly
+  stronger — it also keeps the number out of the carry set and off the public
+  leaderboard — and the one-line insert for `finalize_composite` is recorded in
+  `contamination::FINALIZE_GATE_PATCH`. It is **not** wired there yet.
+- **`sig` mode fail-closes on its own, and does not wait for that.** An
+  unchecked round allocates **nothing** and burns the entire share
+  (`SigContext::contamination_checked = false`, default `false` — silence is not
+  evidence). This is the strictest posture available that does not break the
+  existing test matrix: `public_dev` is the tier CI, Sim and local-e2e all run
+  in, and every one of those runs is *supposed* to have an inert mirror because
+  no private pack is staged, so a default-on gate would fail-closed on the whole
+  test matrix rather than on a real contamination risk. Hence: **loud always,
+  refused where a protected share is at stake.** The private tier is in that
+  sense mandatory for `sig`-scored rounds — not by a separate switch, but because
+  an unchecked round pays nobody.
 
 **Sequencing constraint — why this ships off.** The clustered bootstrap measures
 **eval-item variance only**. Training-seed variance (`σ_seed`) is absent from the

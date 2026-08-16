@@ -91,6 +91,7 @@ fn sig_mode_projects_shares_and_burns_the_remainder() {
             gates_ok: true,
         }]),
         previous_bps: BTreeMap::new(),
+        contamination_checked: true,
     };
 
     let leaves = build_epoch_leaves_with(&sk(), 11, &exp, &batch, &BTreeMap::new(), Some(&ctx))
@@ -139,6 +140,7 @@ fn sig_mode_holds_the_crown_against_a_clone() {
     let ctx = SigContext {
         incumbent: Some(hex::encode(champ)),
         challenger: Some((hex::encode(clone_hk), PairedOutcome::hold())),
+        contamination_checked: true,
         ..SigContext::default()
     };
 
@@ -160,6 +162,61 @@ fn sig_mode_holds_the_crown_against_a_clone() {
 }
 
 #[test]
+fn sig_mode_burns_everything_when_contamination_is_unchecked() {
+    std::env::set_var("PRISM_EMISSION_MODE", "sig");
+
+    // Same field as the happy path, but the round produced no contamination
+    // evidence (the `public_dev` mirror defence is inert by construction).
+    // Nothing may be paid: the protected champion share is granted on
+    // measured evidence, and there is none.
+    let (sink, champ, chal) = ([0x01; 32], [0xAA; 32], [0xBB; 32]);
+    let exp = expected(&[sink, champ, chal]);
+    let batch = vec![row(champ, 800_000), row(chal, 900_000)];
+    let ctx = SigContext {
+        incumbent: Some(hex::encode(champ)),
+        challenger: Some((hex::encode(chal), displacing_win(0.05))),
+        contamination_checked: false,
+        ..SigContext::default()
+    };
+
+    let leaves = build_epoch_leaves_with(&sk(), 14, &exp, &batch, &BTreeMap::new(), Some(&ctx))
+        .expect("emit sig leaves");
+    // Every miner leaf is zero and the whole share burns to uid 0.
+    assert_eq!(value_of(&leaves, &champ), 0);
+    assert_eq!(value_of(&leaves, &chal), 0);
+    assert_eq!(
+        value_of(&leaves, &sink),
+        bps_to_lattice(10_000),
+        "the full share must burn on an unchecked round"
+    );
+}
+
+#[test]
+fn sig_mode_burn_leaf_is_skipped_when_uid_zero_is_a_real_scorer() {
+    std::env::set_var("PRISM_EMISSION_MODE", "sig");
+
+    // Documented degradation: if uid 0 already carries a positive
+    // competition credit it is a real miner, and its leaf must not be
+    // clobbered by the burn sink. The remainder then dilutes instead.
+    let (sink, other) = ([0x01; 32], [0xAA; 32]);
+    let exp = expected(&[sink, other]);
+    let batch = vec![row(sink, 900_000), row(other, 400_000)];
+    let ctx = SigContext {
+        contamination_checked: true,
+        ..SigContext::default()
+    };
+    let leaves = build_epoch_leaves_with(&sk(), 15, &exp, &batch, &BTreeMap::new(), Some(&ctx))
+        .expect("emit sig leaves");
+    // uid 0 keeps its earned champion share rather than a burn value.
+    assert_eq!(
+        value_of(&leaves, &sink),
+        bps_to_lattice(CHAMPION_FLOOR_BPS),
+        "a real miner at uid 0 keeps its own share"
+    );
+    assert_eq!(value_of(&leaves, &other), bps_to_lattice(BAND_BPS[0]));
+}
+
+#[test]
 fn sig_mode_is_deterministic_across_repeated_emissions() {
     std::env::set_var("PRISM_EMISSION_MODE", "sig");
 
@@ -169,6 +226,7 @@ fn sig_mode_is_deterministic_across_repeated_emissions() {
     let ctx = SigContext {
         incumbent: Some(hex::encode(a)),
         tenure_days: 5,
+        contamination_checked: true,
         ..SigContext::default()
     };
 

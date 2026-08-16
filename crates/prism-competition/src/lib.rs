@@ -9,14 +9,20 @@
 //! ## v3 additions (all default-off)
 //!
 //! - [`paired`] — the paired per-example displacement test: absolute dead
-//!   zone, win-rate bar at a 99 % clustered-bootstrap lower bound with a
-//!   fixed seed (deterministic, consensus-critical).
+//!   zone, win-rate bar at a 99 % bootstrap lower bound with a fixed seed
+//!   (deterministic, consensus-critical).
 //! - [`frontier`] — the per-axis elite archive that makes the exploration
 //!   allocation computable from stored measurements.
 //! - [`sig`] — the significance-gated collapse: champion hold, graded band,
 //!   exploration pool, weight EMA, tail floor, burn remainder.
 //! - [`rerun`] — unannounced champion re-runs: an unpredictable-but-
 //!   verifiable audit schedule plus the regression verdict.
+//! - [`evidence`] — the bridge that builds all of the above from what the
+//!   eval store actually persists (per-cluster metric series), including the
+//!   same-slice refusal that stops a positional pairing across two
+//!   different private slices.
+//! - [`contamination`] — the policy half of the mirror-defence fix: is this
+//!   round's contamination check live, and may an unchecked round be paid.
 //!
 //! `PRISM_EMISSION_MODE=sig` selects it. The default path is unchanged and
 //! a test asserts bit-identity with the historical WTA behavior.
@@ -46,6 +52,8 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod contamination;
+pub mod evidence;
 pub mod frontier;
 pub mod paired;
 pub mod rerun;
@@ -55,10 +63,11 @@ use std::collections::BTreeMap;
 
 use prism_store::{EpochScoreRow, FinalScore};
 
+pub use evidence::{paired_evidence, sig_context, RunEvidence, DISPLACEMENT_METRICS};
 pub use frontier::{AxisScore, EliteArchive, MAX_EXPLORE_SLOTS};
 pub use paired::{
     paired_test, Direction, ExampleSeries, PairedInput, PairedOutcome, PairedRefusal, DEADZONE,
-    MIN_WIN_RATE_BPS,
+    MIN_DECIDED, MIN_WIN_RATE_BPS,
 };
 pub use rerun::{audit_due, judge_rerun, RerunVerdict, AUDIT_PROBABILITY_BPS};
 pub use sig::{
