@@ -104,6 +104,17 @@ pub fn harness_env_pairs(
             prism_recipe::MAX_TRAIN_STEPS.to_string(),
         ),
         ("PRISM_TRAIN_HOURS_CAP", train_hours_cap.to_string()),
+        // The budget CURRENCY. Sent explicitly, like the wall cap above, so
+        // the pod enforces the master's constant rather than the default
+        // compiled into whatever harness copy it happens to run.
+        (
+            "PRISM_TRAIN_FLOPS_CAP",
+            prism_recipe::TRAIN_FLOPS_CAP.to_string(),
+        ),
+        (
+            "PRISM_MIN_SPEND_FRACTION",
+            prism_recipe::MIN_SPEND_FRACTION.to_string(),
+        ),
         ("PRISM_GPU_TYPE", gpu_type.replace('\'', "")),
         (
             "PRISM_HARNESS_FILES_SHA256",
@@ -112,6 +123,21 @@ pub fn harness_env_pairs(
     ];
     for key in [
         "PRISM_TEST_TRAIN_MINUTES",
+        // Operator seed-variance sweep. This list is an ALLOWLIST, so a knob
+        // absent from it never reaches the pod: without this entry the
+        // Phase-0 sweep would set the seed on the control-plane container,
+        // see it ignored over SSH, and silently train every "different seed"
+        // run on the same lattice seed — producing sigma_seed ≈ 0 and a
+        // confident wrong answer. Never set for a scored round: a
+        // miner-chosen seed would make two submissions incomparable.
+        "PRISM_SEED_OVERRIDE",
+        // Reduced-budget FLOPs cap for operator measurement waves.
+        "PRISM_TEST_TRAIN_FLOPS",
+        // FLOPs-probe knobs, so a measurement wave can widen the probe or
+        // the analytic tolerance without rebuilding the harness.
+        "PRISM_FLOPS_PROBE_SAMPLES",
+        "PRISM_FLOPS_PROBE_CV_MAX",
+        "PRISM_FLOPS_ANALYTIC_GAP_MAX",
         "PRISM_TEST_MAX_PARAMS",
         "PRISM_TEST_EVAL_CAPS",
         "PRISM_EVAL_N_ITEMS",

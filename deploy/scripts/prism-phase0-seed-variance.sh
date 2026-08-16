@@ -233,10 +233,34 @@ CONTAINER="${PRISM_CONTAINER:-base-prism-challenge-1}"
 # field: the submission API has no env passthrough, and adding one would let
 # miners choose their own seed. So each seed is applied to the challenge
 # container and the runs go one at a time.
+# Applying the seed depends on how the control plane is deployed, because
+# `PRISM_SEED_OVERRIDE` is read from the CONTROL PLANE's process environment
+# (prism_lium_harness::harness_env_pairs forwards it to the pod over SSH).
+# So an operator running the challenge as a bare process, or under a
+# non-compose supervisor, needs a different action than a compose stack —
+# hence PRISM_PHASE0_SEED_HOOK, called with the seed as $1. Without a hook we
+# fall back to writing a compose override for the named container.
+SEED_HOOK="${PRISM_PHASE0_SEED_HOOK:-}"
+
 set_container_seed() {
   local seed="$1"
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "  dry-run: would set $CONTAINER PRISM_SEED_OVERRIDE=$seed"
+    if [[ -n "$SEED_HOOK" ]]; then
+      echo "  dry-run: would run seed hook '$SEED_HOOK $seed'"
+    else
+      echo "  dry-run: would set $CONTAINER PRISM_SEED_OVERRIDE=$seed"
+    fi
+    return 0
+  fi
+  if [[ -n "$SEED_HOOK" ]]; then
+    log "  applying seed $seed via hook: $SEED_HOOK"
+    # The hook must leave the control plane serving with the new seed, and
+    # must fail loudly: a hook that silently no-ops would make every run
+    # train on the same seed and report sigma_seed ~ 0.
+    if ! "$SEED_HOOK" "$seed"; then
+      log "  FAIL: seed hook rejected seed $seed"
+      return 1
+    fi
     return 0
   fi
   if ! docker exec "$CONTAINER" true 2>/dev/null; then

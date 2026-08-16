@@ -1333,6 +1333,62 @@ mod tests {
             .any(|(k, v)| *k == "PRISM_EVAL_ASSETS_DIR" && v == "/tmp/prism_eval/eval-assets"));
     }
 
+    /// The dual-cap currency must reach the pod, and the operator seed knob
+    /// must be forwardable. This is an ALLOWLIST, so a knob missing from it
+    /// is silently dropped over SSH: a seed-variance sweep would then set the
+    /// seed on the control plane, have it ignored on the pod, and train every
+    /// run on the same lattice seed — reporting sigma_seed ≈ 0, which is a
+    /// confident wrong answer rather than a visible failure.
+    #[test]
+    fn harness_env_pairs_carry_the_dual_cap_and_seed_override() {
+        let pairs = harness_env_pairs(5.0, "NVIDIA GeForce RTX 5090", false);
+        let get = |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+        };
+        // Currency and floor are always sent, not left to a pod-side default.
+        assert_eq!(
+            get("PRISM_TRAIN_FLOPS_CAP"),
+            Some(prism_recipe::TRAIN_FLOPS_CAP.to_string()),
+            "the FLOPs cap is the budget currency and must be attested from \
+             the master's constant"
+        );
+        assert_eq!(
+            get("PRISM_MIN_SPEND_FRACTION"),
+            Some(prism_recipe::MIN_SPEND_FRACTION.to_string())
+        );
+        assert_eq!(get("PRISM_TRAIN_HOURS_CAP"), Some("5".into()));
+        // Absent by default: measurement-only knobs must not leak into a
+        // scored round just because the crate knows about them.
+        assert_eq!(get("PRISM_SEED_OVERRIDE"), None);
+        assert_eq!(get("PRISM_TEST_TRAIN_FLOPS"), None);
+
+        std::env::set_var("PRISM_SEED_OVERRIDE", "1001");
+        std::env::set_var("PRISM_TEST_TRAIN_FLOPS", "5e17");
+        std::env::set_var("PRISM_FLOPS_PROBE_SAMPLES", "8");
+        let pairs = harness_env_pairs(5.0, "NVIDIA GeForce RTX 5090", false);
+        let get = |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("PRISM_SEED_OVERRIDE"), Some("1001".into()));
+        assert_eq!(get("PRISM_TEST_TRAIN_FLOPS"), Some("5e17".into()));
+        assert_eq!(get("PRISM_FLOPS_PROBE_SAMPLES"), Some("8".into()));
+        // Same numeric guard as the rest of the allowlist: a shell payload in
+        // a forwarded knob is dropped, not quoted and hoped for.
+        std::env::set_var("PRISM_SEED_OVERRIDE", "1001'; rm -rf /; '");
+        let pairs = harness_env_pairs(5.0, "NVIDIA GeForce RTX 5090", false);
+        assert!(!pairs.iter().any(|(_, v)| v.contains("rm -rf")));
+        assert!(!pairs.iter().any(|(k, _)| *k == "PRISM_SEED_OVERRIDE"));
+        std::env::remove_var("PRISM_SEED_OVERRIDE");
+        std::env::remove_var("PRISM_TEST_TRAIN_FLOPS");
+        std::env::remove_var("PRISM_FLOPS_PROBE_SAMPLES");
+    }
+
     #[test]
     fn train_done_marker_match_is_exact_line_only() {
         // Miner stdout is relayed with the `[harness] v3| ` prefix, so a
