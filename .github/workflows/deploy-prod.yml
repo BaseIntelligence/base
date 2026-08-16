@@ -103,7 +103,6 @@ jobs:
     name: promote staging → prod pins
     needs: preflight
     runs-on: ubuntu-latest
-    environment: production
     outputs:
       pins_artifact: prod-pins-${{ needs.preflight.outputs.commit_sha }}
     steps:
@@ -313,7 +312,6 @@ jobs:
     needs: [preflight, promote]
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: production
     strategy:
       fail-fast: false
       matrix:
