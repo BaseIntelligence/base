@@ -411,7 +411,9 @@ mod tests {
         assert_eq!(strict.status.as_deref(), Some("placeholder"));
         // Open-vocabulary exact match: chance floor is ~0.
         assert!(matches!(strict.norm, NormKind::Accuracy { chance } if chance == 0.0));
-        // Everything outside G2 is inherited unchanged from v1.
+        // Every group KEY set outside G2 is inherited unchanged from v1
+        // (G6 re-anchors values in place — no key rename; see
+        // `v2_fixes_inverted_g6_auc_direction`).
         for (name, group) in &v1.groups {
             if name == "g2" {
                 continue;
@@ -425,6 +427,63 @@ mod tests {
         assert_ne!(
             AnchorSet::prereg_hash_for(1).expect("v1 hash"),
             AnchorSet::prereg_hash_for(2).expect("v2 hash")
+        );
+    }
+
+    /// `org.g6.auc_log_tokens` was direction-inverted and inert in v0/v1:
+    /// the anchor declared `reference 0.5 / cap 0.95` ("higher-better"),
+    /// but the harness computes a MEAN CROSS-ENTROPY per decade of tokens
+    /// (`eval/g6_curve.py`, lower-better, plausibly 3-5 nats), so every
+    /// plausible submission clipped to 1.0 and half of G6's weight was a
+    /// constant. v2 re-anchors it to the quantity actually computed.
+    ///
+    /// v0 and v1 are hash-committed pre-registration artifacts, so the bug
+    /// stays byte-frozen there — this test pins both sides.
+    #[test]
+    fn v2_fixes_inverted_g6_auc_direction() {
+        let auc_of = |v: u16| {
+            let set = AnchorSet::load(v).expect("anchor set parses");
+            match set.groups["g6"].metrics["org.g6.auc_log_tokens"].norm {
+                NormKind::EfficiencyLogRatio { reference, cap } => (reference, cap),
+                ref other => panic!("unexpected norm kind for v{v}: {other:?}"),
+            }
+        };
+
+        // v0 / v1 keep the inverted anchor verbatim (pre-registration).
+        for frozen in [0u16, 1u16] {
+            let (reference, cap) = auc_of(frozen);
+            assert!(
+                (reference - 0.5).abs() < f64::EPSILON && (cap - 0.95).abs() < f64::EPSILON,
+                "v{frozen} must stay byte-frozen at the pre-registered values"
+            );
+            assert!(cap > reference, "v{frozen} encoded higher-better");
+        }
+
+        // v2: lower-better (cap < reference) over a real mean-CE range.
+        let (reference, cap) = auc_of(2);
+        assert!(cap < reference, "v2 must encode lower-better for a mean CE");
+        assert!(
+            reference > 1.0 && cap > 1.0,
+            "anchors must sit in the plausible nats/token range, not [0.5, 0.95]"
+        );
+
+        // The tokens-to-threshold sibling keeps its lower-better anchors;
+        // censoring is fail-closed harness-side (CENSORED_TOKENS -> 0.0).
+        let set = AnchorSet::load(2).expect("v2 parses");
+        match set.groups["g6"].metrics["org.g6.tokens_to_threshold"].norm {
+            NormKind::EfficiencyLogRatio { reference, cap } => {
+                assert!(cap < reference, "tokens-to-threshold is lower-better");
+            }
+            ref other => panic!("unexpected norm kind: {other:?}"),
+        }
+        let g6_py = crate::HARNESS_FILES
+            .iter()
+            .find(|(path, _)| *path == "eval/g6_curve.py")
+            .map(|(_, body)| *body)
+            .expect("g6_curve.py is embedded");
+        assert!(
+            g6_py.contains("CENSORED_TOKENS"),
+            "harness must fail-closed on right-censored curves"
         );
     }
 
