@@ -289,10 +289,35 @@ disagree with a 7.0 h pod cap.
 
 **Calibration status.** `TRAIN_FLOPS_CAP = 3.0e18` is sized so that any
 implementation at **≥ 20 % MFU is FLOPs-bound** inside the 5.0 h wall
-(4.97 h at 20 %, 3.98 h at 25 %). That is a **tight** margin — at 15 % MFU a
-full budget needs 6.63 h and the wall binds again. Real MFU on 4×RTX 5090 is
-**measured, not assumed**: see `deploy/scripts/prism-phase0-seed-variance.sh`
-and the Phase-0 evidence under `docs/evidence/`.
+(4.97 h at 20 %, 3.98 h at 25 %). Real MFU is **measured, not assumed**:
+Phase 0 measured **40.2 %** on 1×RTX 5090 with the reference Transformer++
+(`d=1024, L=24`), so the full budget needs ≈ 2.5 h on 4 GPUs — comfortably
+FLOPs-bound. See `deploy/scripts/prism-phase0-seed-variance.sh` and the
+evidence under [`docs/evidence/prism-v3-phase0/`](evidence/prism-v3-phase0/).
+
+> ### ⚠ Batch size is now load-bearing (measured, not theoretical)
+>
+> The **step cap and the FLOPs cap are only mutually reachable at a large
+> batch.** At the reference `batch 8 × seq 512 = 4096` tokens/step, the
+> `MAX_TRAIN_STEPS = 20 000` cap buys `8.2e7` tokens — and at the measured
+> `F_tok = 2.22e9` for `d=1024, L=24` that is **`1.8e17` FLOPs, only ~6 % of
+> `TRAIN_FLOPS_CAP`**. Phase 0 observed exactly this: the reference baseline
+> stopped at **20 006 steps** with `binding_cap = none` (its own step budget),
+> not at either cap.
+>
+> Reaching the cap inside 20 000 steps needs **batch ≈ 132 at seq 512**
+> (~68k tokens/step, 16× the reference). So:
+>
+> - `MIN_SPEND_FRACTION = 0.5` **must not be enforced** until miners are told
+>   this, or it marks the *reference baseline itself* `Ineligible` — a
+>   quality-neutral failure for a batch-size reason.
+> - The step cap is **cooperative** (`ctx["max_train_steps"]`; nothing
+>   harness-side enforces it), so it is a *convention* the reference honors,
+>   while the FLOPs cap is a hard stop inside the stream. Under the dual cap
+>   the step cap is the redundant one.
+>
+> Asserted in `prism_recipe::tests::step_cap_and_flops_cap_are_only_mutually_reachable_at_large_batch`,
+> so the interaction fails a test rather than being rediscovered on a pod.
 
 ### Recipe pin hex
 

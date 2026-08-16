@@ -1008,6 +1008,58 @@ mod tests {
         assert!(TRAIN_FLOPS_CAP > 0.0 && TRAIN_FLOPS_CAP.is_finite());
     }
 
+    /// The step cap and the FLOPs cap must be **mutually reachable**, and at
+    /// the reference batch they are not.
+    ///
+    /// Measured in Phase 0 (`docs/evidence/prism-v3-phase0/`): the reference
+    /// Transformer++ baseline stopped at 20 006 steps — its own
+    /// `ctx["max_train_steps"]` budget — having attested `1.82e17` FLOPs, i.e.
+    /// **6.1 %** of `TRAIN_FLOPS_CAP`. At `batch 8 x seq 512 = 4096`
+    /// tokens/step, 20 000 steps buys `8.2e7` tokens, and the cap needs
+    /// `1.35e9`. So a submission at the reference batch cannot reach
+    /// `MIN_SPEND_FRACTION` no matter how efficient it is: the underspend gate
+    /// would mark the *reference baseline* `Ineligible`.
+    ///
+    /// This is a real interaction between three constants, not a harness bug,
+    /// and it is why the gate must not be switched on before miners are told
+    /// the batch implication (~132 at seq 512, 16x the reference). Asserted
+    /// here so the arithmetic is checked rather than rediscovered on a pod.
+    #[test]
+    fn step_cap_and_flops_cap_are_only_mutually_reachable_at_large_batch() {
+        // Measured on 1xRTX 5090, d=1024 L=24 V=50257: dispatch-counted
+        // FLOPs/token, cross-checked analytically to 1.1 %.
+        const F_TOK_MEASURED: f64 = 2.221e9;
+        const REF_BATCH: f64 = 8.0;
+        const SEQ: f64 = 512.0;
+
+        let tokens_at_step_cap = f64::from(MAX_TRAIN_STEPS) * REF_BATCH * SEQ;
+        let spendable = tokens_at_step_cap * F_TOK_MEASURED;
+        let fraction = spendable / TRAIN_FLOPS_CAP;
+        assert!(
+            fraction < MIN_SPEND_FRACTION,
+            "the reference batch now reaches {pct:.1} % of the FLOPs cap, \
+             which is at/above MIN_SPEND_FRACTION — if a constant changed to \
+             make this true, update docs/PRISM_RECIPE.md and the miner docs, \
+             because the batch guidance is no longer required",
+            pct = fraction * 100.0
+        );
+
+        // The batch that DOES make the cap reachable inside the step cap.
+        let needed_tokens = TRAIN_FLOPS_CAP / F_TOK_MEASURED;
+        let needed_batch = needed_tokens / f64::from(MAX_TRAIN_STEPS) / SEQ;
+        assert!(
+            needed_batch > REF_BATCH,
+            "sanity: reaching the cap must need a LARGER batch than the reference"
+        );
+        assert!(
+            needed_batch < 4096.0,
+            "batch {needed_batch:.0} at seq {seq} is not physically trainable \
+             on the pod — the caps are irreconcilable, not merely demanding, \
+             and TRAIN_FLOPS_CAP or MAX_TRAIN_STEPS must move",
+            seq = SEQ
+        );
+    }
+
     /// Probe knobs must stay in the range the attestation reasons about.
     #[test]
     fn flops_probe_knobs_are_sane() {
