@@ -213,6 +213,49 @@ def eval_g2_cap(task):
     return max(base, max(1, int_env("PRISM_EVAL_G2_CAP_USABLE", 1000)))
 
 
+# Full G2 task order. Mirrors `g2_downstream.TASKS` (kept here rather than
+# imported to avoid a circular import; `tests/test_g2_task_selection.py`
+# asserts the two lists cannot drift). NOTE these are harness *task* names —
+# `openbookqa` maps to the org key `org.g2.obqa_acc`.
+G2_ALL_TASKS = (
+    "lambada",
+    "hellaswag",
+    "piqa",
+    "arc_easy",
+    "arc_challenge",
+    "winogrande",
+    "boolq",
+    "openbookqa",
+)
+
+
+def eval_g2_tasks():
+    """G2 tasks to score this run. `PRISM_EVAL_G2_TASKS` (comma-separated).
+
+    Default: **every** task, so v0/v1/v2 anchor sets keep scoring exactly
+    what they declare — an anchor set that declares a metric the harness
+    stopped emitting would fail its own completeness gate.
+
+    Why the knob exists: four of the eight G2 tasks normalize to a constant
+    0 for the entire field at this operating point (Winogrande and OpenBookQA
+    sit at chance; ARC-challenge and BoolQ at or below their floors), yet
+    G2's sub-metrics are equal-weighted, so those four carry HALF of G2's
+    composite weight while measuring nothing. Retiring them is an anchor-set
+    change (a governance decision, versioned and pre-registered); this knob
+    is the harness-side support that lets a run scored against such a set
+    skip them and spend the reclaimed budget on the tasks that separate
+    submissions. Unknown names are ignored rather than fatal, and an empty
+    or unparseable value falls back to the full set (fail-safe).
+    """
+    raw = os.environ.get("PRISM_EVAL_G2_TASKS")
+    if raw is None:
+        return G2_ALL_TASKS
+    picked = tuple(
+        t for t in (s.strip() for s in str(raw).split(",")) if t in G2_ALL_TASKS
+    )
+    return picked or G2_ALL_TASKS
+
+
 def eval_g5_n_items(default_full=2, default_tiny=1):
     """Per-(probe,length) draws for G5 protocols. `PRISM_EVAL_G5_N_ITEMS`."""
     if tiny_caps():
