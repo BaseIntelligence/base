@@ -3884,6 +3884,13 @@ name = "prism-challenge-task"
 version = "0.1.0"
 
 [[package]]
+name = "prism-competition"
+version = "0.1.0"
+dependencies = [
+ "prism-store",
+]
+
+[[package]]
 name = "prism-emit"
 version = "0.1.0"
 dependencies = [
@@ -4083,6 +4090,7 @@ dependencies = [
  "base64 0.22.1",
  "hex",
  "prism-artifacts",
+ "prism-competition",
  "prism-pipeline",
  "prism-store",
  "prism-tree",

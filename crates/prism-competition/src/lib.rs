@@ -1,5 +1,11 @@
 //! Prism emission competition math (epoch-local, lattice-preserving).
 //!
+//! Split out of `prism-registry` (which owns the top-model publishers) so the
+//! v2.1 emission additions — [`EmissionMode`] / [`apply_top3_decay`] /
+//! [`apply_owner_split`] / [`emission_leaves`] — fit under the repo LOC cap
+//! without losing functionality. `prism-registry` re-exports every item here,
+//! so downstream callers (`prism-emit`) are unchanged.
+//!
 //! Exact rule (mirrors `docs/PRISM.md` § competition / WTA):
 //!
 //! - Input: every scored submission row in the competition set (fresh outbox
@@ -19,6 +25,11 @@
 //!   (legacy 1.x) contribute `Score(0)` only — never win WTA. If every
 //!   positive score is ineligible, emission fail-closes to an all-zero /
 //!   burn projection (no 1.x winner).
+
+#![forbid(unsafe_code)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::module_name_repetitions)]
 
 use std::collections::BTreeMap;
 

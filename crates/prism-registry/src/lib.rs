@@ -20,19 +20,20 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::module_name_repetitions)]
 
-mod competition;
 mod hf;
 mod hooks;
 mod publish;
 mod weights;
 
-pub use competition::{
+// Emission competition math lives in the `prism-competition` sibling crate
+// (LOC cap); re-exported here so callers keep the historical import path.
+pub use hf::HfTopModelPublisher;
+pub use hooks::post_score_hooks;
+pub use prism_competition::{
     apply_emission, apply_owner_split, apply_top3_decay, apply_wta, competition_scores,
     emission_leaves, owner_split_bps_from_env, EmissionMode, OWNER_ARCH_CREDIT_ENABLED,
     TOP3_DECAY_BPS,
 };
-pub use hf::HfTopModelPublisher;
-pub use hooks::post_score_hooks;
 pub use publish::{
     require_topmodel_weights, TopModelPublisher, TopModelRequest, TOPMODEL_REPO_PATH,
 };
