@@ -29,14 +29,14 @@ pub const CHECKPOINT_OVERHEAD_NUM: u64 = 3;
 /// Denominator of the 1.5× overhead factor (with [`CHECKPOINT_OVERHEAD_NUM`] → 3/2).
 pub const CHECKPOINT_OVERHEAD_DEN: u64 = 2;
 
-/// Recipe parameter cap (`prism_recipe::MAX_PARAMS` = 350M). Used as the
+/// Recipe parameter cap (`prism_recipe::MAX_PARAMS` = 1B). Used as the
 /// absolute HTTP body ceiling and as the harvest fallback when measured
 /// `n_params` is missing (older harness). Prefer measured `n_params`.
-pub const RECIPE_MAX_PARAMS: u64 = 350_000_000;
+pub const RECIPE_MAX_PARAMS: u64 = 1_000_000_000;
 
 /// Absolute max packed/upload bytes = [`RECIPE_MAX_PARAMS`] × FP32 × 2 × 1.5.
 /// Per-receive budgets are tighter when measured `n_params` is known.
-pub const MAX_CHECKPOINT_BYTES: usize = 4_200_000_000; // 350_000_000 * 12
+pub const MAX_CHECKPOINT_BYTES: usize = 12_000_000_000; // 1_000_000_000 * 12
 
 const _: () = assert!(RECIPE_MAX_PARAMS * 12 == MAX_CHECKPOINT_BYTES as u64);
 

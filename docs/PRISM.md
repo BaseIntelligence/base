@@ -250,10 +250,11 @@ weights (embed ↔ lm_head) but the pickle can materialize each state_dict key,
 so the budget includes a 2× tying factor on top of 1.5× pickle/tar overhead.
 Harvest uses the harness-measured `n_params` from `METRICS_JSON`; when
 missing (older harness), it falls back to `prism_recipe::max_params()`
-(350M, or `PRISM_TEST_MAX_PARAMS` in staging). Admin
+(1B, or `PRISM_TEST_MAX_PARAMS` in staging). Admin
 `POST /v1/admin/artifacts/{id}/receive` resolves `n_params` from the
 submission store, else requires `X-Prism-N-Params` (fail-closed if
-unknown). HTTP body ceiling is recipe-max × 12 (~3.91 GiB); the per-receive
+unknown). HTTP body ceiling is recipe-max × 12 (~11.18 GiB at the 1B cap);
+the per-receive
 check is tighter when measured params are known. Oversized payloads are
 refused **before** writing.
 
@@ -378,7 +379,7 @@ knob unsupported / budget cuts it short (so the G8 composite always sees
 the key after a real sweep). Tiny-caps test skips omit the key. The sweep
 builds from a **fixed small width/depth probe** (`d_model=128`, `n_layer=4`,
 … — see harness `eval/g8_stability.py`), **not** the scored submission's
-full geometry: 4× of a near-cap 350M model is unbuildable on the eval GPU.
+full geometry: 4× of a near-cap 1B model is unbuildable on the eval GPU.
 `build_model` must honor top-level / `arch` width-depth overrides **and**
 `ctx["prism_width_multiplier"]` (reference baselines do).
 
@@ -407,7 +408,7 @@ normalized sub-metrics → `g_k` (G5 uses the unequal internal weights above;
 other groups default equal weight 1 — a single zero sub-metric lowers `g_k`
 proportionally, it does **not** zero the whole group); mirror-gap penalty
 `max(0, (x_public − x_mirror) − 0.05)` deducted from G2/G4/G5; lexicographic
-gates (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget caps `350M` params / `6h`, CI
+gates (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget caps `1B` params / `6h`, CI
 half-width ≤ `0.05`); **across groups**: weighted **geometric** mean
 `C = ∏ g_k^{w_k}` (a **group** score of exactly 0 collapses `C` to 0 — that
 is intentional no-compensation; individual G5 zeros such as
@@ -519,7 +520,8 @@ protocol (literature-strict GPT-2 Large is ~0.52–0.60). v2 anchors
 (`prism-recipe/anchors/v2.json`) replace `org.g2.lambada_acc` with
 `org.g2.lambada_strict_acc`: **unconstrained greedy last-word exact match**
 over the full vocabulary (`g2.lambada_strict.acc`, chance ≈ 0, expected
-~0.10–0.35 at the 350M/6h operating point — real headroom and spread).
+~0.10–0.35 at the reference 6h operating point — real headroom and spread;
+the placeholder must be re-measured at the 1B cap before an anchor flip).
 Same `lambada.jsonl` asset (the gold word is recovered from
 `choices[gold]`) — no eval-pack rebuild; the harness emits **both** keys so
 v0/v1 scoring is bit-identical. The MC key stays outside v2 (a saturated

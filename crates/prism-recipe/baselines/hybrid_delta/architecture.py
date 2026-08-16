@@ -391,7 +391,7 @@ def _config_from_ctx(ctx):
             if k in ctx:
                 cfg[k] = ctx[k]
         # G8 µP LR-transfer sweep: scale width dims so 4× exceeds 1.5× params.
-        # Default 1.0 leaves the anchor config unchanged (≤350M).
+        # Default 1.0 leaves the anchor config unchanged (~341M, ≤1B cap).
         mult = float(ctx.get("prism_width_multiplier", 1.0) or 1.0)
         if abs(mult - 1.0) > 1e-12:
             if mult <= 0:

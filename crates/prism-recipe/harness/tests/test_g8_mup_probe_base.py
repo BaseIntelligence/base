@@ -73,7 +73,7 @@ def main():
     m4 = tpp.build_model(b4)
     n4 = sum(p.numel() for p in m4.parameters())
     assert n4 > int(1.5 * n1), (n1, n4)
-    # Sanity: probe 4× stays far under the 350M submission cap.
+    # Sanity: probe 4× stays far under the 1B submission cap.
     assert n4 < 50_000_000, n4
 
     print(f"g8 mup probe base OK (1x={n1} 4x={n4})")

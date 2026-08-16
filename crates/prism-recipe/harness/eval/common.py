@@ -19,7 +19,7 @@ Item format (produced by generators, consumed by battery modules):
      "cluster": str, "meta": {...}}
 The universal scorer is likelihood-based (`acc_norm`: max sum-logprob of
 the continuation normalized per character), which keeps every metric
-smooth at 100M–350M scale (Schaeffer 2304.15004 design rule). The
+smooth at 100M–1B scale (Schaeffer 2304.15004 design rule). The
 per-item side channel (ItemRecorder) stores {cluster, value} records —
 cluster = template/variant id, the unit of randomization for the
 clustered bootstrap in the Rust composite — plus an additive

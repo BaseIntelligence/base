@@ -5,7 +5,7 @@ arithmetic (clause tiers, NoOp distractor, held-out operand range),
 ProofWriter-style deductive closure depth 0–3, boolean expressions,
 Dyck-k with length split, modular arithmetic ID/OOD, small-N Knights &
 Knaves. All procedural with Cantor-lattice seeds; difficulty knobs place
-the 100M–350M band in the discriminative 20–80% window. Every accuracy
+the 100M–1B band in the discriminative 20–80% window. Every accuracy
 has an answer-NLL companion.
 """
 

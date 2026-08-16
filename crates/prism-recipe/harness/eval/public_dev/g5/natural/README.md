@@ -86,7 +86,7 @@ existing G5 branch.
 | `g5.natural_mcq.L{4096,8192,16384}.acc` | `org.g5.natural_mcq_acc` | length-normalized logprob accuracy per token bucket |
 | `g5.helmet_rag.L{...}.acc` | `org.g5.helmet_rag_acc` | substring exact match per token bucket |
 | `g5.natural_mcq.acc`, `g5.helmet_rag.acc` | — | pooled means (debug) |
-| `g5.helmet_rag.rank_acc` | — | closed-set logprob ranking companion; smoother than EM at ≤350M |
+| `g5.helmet_rag.rank_acc` | — | closed-set logprob ranking companion; smoother than EM at ≤1B |
 | `g5.natural_mcq.mean_nll`, `g5.helmet_rag.gold_nll` | — | mean per-token NLL of the gold text |
 | `g5.natural_mcq.n`, `g5.helmet_rag.n`, `g5.helmet_rag.rank_n` | — | items actually scored |
 | `g5.natural.pool_rows.<slice>` | — | rows found in the resolved pool |

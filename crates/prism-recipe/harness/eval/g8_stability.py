@@ -10,7 +10,7 @@ handful of steps at 3 LRs each on the harness micro stream; the metric
 is |log2(best_lr_wide / best_lr_base)| — 0 means perfect LR transfer.
 
 **Probe base (not full submission size).** The sweep does **not** start from
-production `build_ctx` width/depth. Near the 350M cap, 4× width is
+production `build_ctx` width/depth. Near the 1B cap, 4× width is
 unbuildable on the eval GPU (~multi-billion params / ~100GB AdamW). Instead
 the harness overlays a fixed small width/depth probe (`_MUP_PROBE_ARCH`) so
 1× and 4× stay on-device for any submission size. Miners must honor
@@ -43,7 +43,7 @@ _SPIKE_MAD_K = 6.0
 
 # Fixed µP probe geometry — independent of the scored submission's size.
 # 4× width (~2× linear dims on d_model/mlp) must remain buildable on the
-# eval GPU for every submission under the 350M cap. Keep vocab/tokenizer/
+# eval GPU for every submission under the 1B cap. Keep vocab/tokenizer/
 # device/seed from production build_ctx; only width/depth are replaced.
 _MUP_PROBE_ARCH = {
     "d_model": 128,

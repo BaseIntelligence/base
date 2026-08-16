@@ -410,7 +410,7 @@ code inside an `unshare --net` subprocess) runs two fresh phases:
 
 | Phase | Env | What happens |
 |-------|-----|--------------|
-| `train` | `PRISM_PHASE=train` | contract checks → `build_model` (**350M param cap**: breach → terminal `CAP_EXCEEDED` payload, `Score(0)`) → seeded train stream (authoritative token counter) → G6 probe curve → checkpoint |
+| `train` | `PRISM_PHASE=train` | contract checks → `build_model` (**1B param cap**: breach → terminal `CAP_EXCEEDED` payload, `Score(0)`) → seeded train stream (authoritative token counter) → G6 probe curve → checkpoint |
 | (gate) | — | parent prints `PHASE_TRAIN_DONE`, then holds on `$PRISM_EVAL_ASSETS_DIR/.ready`; the operator stages the public HF held-out pack (default `eval_tier=public`) + generator seed **post-train only** (fail-closed: no `.ready` → error, never a silent downgrade to embedded `public_dev`) |
 | `eval` | `PRISM_PHASE=eval`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED` (env only, never on disk) | fresh subprocess → frozen-val bpb + the **G1–G8 battery** (`eval/` package: intrinsic, downstream, recall, reasoning, long-context, curve, inference, stability) → `METRICS_JSON` v2 |
 
@@ -460,7 +460,7 @@ sum/cite, chat, and judge protocols stay out of the ranked path.
 
 Two reference submissions ship in-repo (`crates/prism-recipe/baselines/`,
 embedded as `prism_recipe::baselines`): **Transformer++**
-(`transformer_pp`: modern GPT at the 350M cap) and **hybrid delta**
+(`transformer_pp`: modern GPT, ~341M params) and **hybrid delta**
 (`hybrid_delta`: 3:1 gated delta-net/attention hybrid). Each tree carries
 `architecture.py` + `training.py` (contract-satisfying), `count_params.py`
 (prints the static parameter count as a single integer), and `NOTES.md`.
@@ -520,9 +520,15 @@ currently echoes `TRAIN_ROWS` (2048) even when telemetry `layer_stats.tokens`
 shows billions. Changing that field would alter the recipe pin (harness bytes
 are hashed) — coordinate a version bump if/when fixing it.
 
-Caps are **unchanged** in v3 (350M params, 6h). The parameter-cap breach
-semantics changed in 1.3.0: it is a terminal `Score(0)` (`CAP_EXCEEDED`),
-not an infra retry.
+The **parameter cap is 1B** (raised from 350M alongside the 4×RTX 5090
+recipe-v10 pod); the **wall-clock cap is unchanged at 6h**. The raise buys
+architectural headroom, not a longer run, so the compute-budget story moves
+with it: placeholder anchors and the public GPT-2 Large reference row MUST be
+re-measured at the new cap before any `PRISM_ANCHOR_VERSION=2` / composite
+governance flip (v0/v1 anchors stay byte-frozen at 350M with their own
+pre-registration hashes, so the raise does not silently invalidate them).
+The parameter-cap breach semantics changed in 1.3.0: it is a terminal
+`Score(0)` (`CAP_EXCEEDED`), not an infra retry.
 
 ## Recipe pin (1.x descriptor)
 

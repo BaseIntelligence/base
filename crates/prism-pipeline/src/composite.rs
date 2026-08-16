@@ -839,7 +839,7 @@ mod tests {
             "g8": { "weight": 0.05,  "metrics": { "org.g8.loss_spike": { "kind": "accuracy", "chance": 0.0 } } }
         },
         "gates": { "g3_min": 0.25, "g8_min": 0.5, "ci_half_width_delta": 0.05,
-                   "max_params": 350000000, "max_wall_s": 21600.0 },
+                   "max_params": 1000000000, "max_wall_s": 21600.0 },
         "mirror": { "tau_m": 0.05, "groups": ["g2", "g4"] },
         "bootstrap": { "b": 1000, "lcb_z": 1.645 }
     }"#;
@@ -1090,7 +1090,8 @@ mod tests {
         // Fail g3 (recall floor) AND budgets: g3 reason must come first.
         sub.metrics
             .insert("org.g3.mqar_acc".to_string(), series(0.1, &[0.1]));
-        sub.budget.params = 500_000_000;
+        // Over the 1B `max_params` gate in TEST_ANCHORS_JSON.
+        sub.budget.params = 1_500_000_000;
         let out = evaluate(&sub, &anchors, 5);
         match out {
             CompositeOutcome::Ineligible(i) => {

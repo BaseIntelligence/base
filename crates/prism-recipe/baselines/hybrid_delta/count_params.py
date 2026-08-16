@@ -14,7 +14,7 @@ Usage: python3 count_params.py
 
 import sys
 
-MAX_PARAMS = 350_000_000
+MAX_PARAMS = 1_000_000_000
 
 # Keep in sync with architecture.DEFAULTS (asserted when torch is available).
 DEFAULTS = {

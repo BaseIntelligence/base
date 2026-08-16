@@ -34,7 +34,7 @@ prism.toml              # optional — entry / model-config knobs
 5. Write `automodel.base` as a single line equal to `automodel_pin_id`, pack
    the ZIP, and `POST /v1/submissions` with your hotkey + **`X-Lium-Api-Key`**.
 
-Models must stay **≤ 350M parameters**. Miner **model code** (build/train/
+Models must stay **≤ 1B parameters**. Miner **model code** (build/train/
 eval) runs with **no network** (`unshare --net`) beyond the operator-owned
 dataset pull — do not call Hub downloads from `build_model` / `train`.
 
@@ -154,7 +154,7 @@ Live recipe **2.0.0** advertises `version: "2.0.0"` and AutoModel pin fields
 (`automodel_pin_id` = `automodel@v0.5.0`, `automodel_repo_url`,
 `automodel_git_ref`, `automodel_git_commit`, `automodel_content_sha256`),
 plus caps such as `train_hours_cap: 6.0`, `max_train_steps: 20000`,
-`max_params: 350000000`, FineWeb dataset pin, and `pin_hex` (sha over the
+`max_params: 1000000000`, FineWeb dataset pin, and `pin_hex` (sha over the
 versioned descriptor). Trust `/v1/recipe`, not marketing chart labels.
 
 `POST /v1/submissions` is idempotent by `submission_id` (hash of **pin id ‖
@@ -338,7 +338,7 @@ registry and pre-registration commits at `GET /v1/anchors` and
 `GET /v1/submissions/{id}/metrics?zone=a|b`.
 
 **G8 µP probe.** The stability sweep builds 1× and 4× width from a **fixed
-small** width/depth base (not your full ≤350M scored model), then scales with
+small** width/depth base (not your full ≤1B scored model), then scales with
 `ctx["prism_width_multiplier"]`. Honor top-level / `arch` geometry overrides
 and that multiplier in `build_model` (reference baselines do) or the sweep
 fail-closes `org.g8.mup_lr_stability = 0.0`.

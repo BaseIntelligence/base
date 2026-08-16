@@ -115,7 +115,7 @@ services:
       PRISM_ARTIFACT_DIR: "/tmp/prism-artifacts"
       PRISM_TEST_EVAL_CAPS: "0"
       PRISM_TEST_TRAIN_MINUTES: "0"
-      PRISM_TEST_MAX_PARAMS: "350000000"
+      PRISM_TEST_MAX_PARAMS: "1000000000"
       PRISM_MAX_CONCURRENT_EVALS: "1"
       PRISM_TRAIN_HOURS_CAP: "6"
       PRISM_PLAYGROUND_INFER_SCRIPT: "/opt/prism/harness/playground_infer.py"

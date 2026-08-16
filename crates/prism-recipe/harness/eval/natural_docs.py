@@ -303,7 +303,7 @@ def _rag_series(model, ctx, rows, demo_pool, secret, budget, out, prefix):
     """Mean substring-EM + per-cluster values over RAG rows.
 
     Each item is first scored by closed-set logprob ranking (cheap, smooth
-    at 100–350M) and then, while the budget allows, by bounded greedy
+    at 100M–1B) and then, while the budget allows, by bounded greedy
     decode + substring EM — the upstream HELMET RAG metric.
     """
     tok, device = common.tokenizer_of(ctx), ctx["device"]

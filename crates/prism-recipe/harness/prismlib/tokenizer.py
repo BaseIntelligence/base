@@ -57,7 +57,11 @@ TOKENIZER_DIRNAME = "tokenizer"
 #: Miner hook name (must sit beside `build_model` in `architecture.py`).
 HOOK_NAME = "build_tokenizer"
 #: Vocab bounds. Floor: a byte-level tokenizer is the smallest sane vocab.
-#: Ceiling: the embedding/head dominates the 350M parameter cap past this.
+#: Ceiling: past this the embedding/head starts to dominate the parameter
+#: budget. With the cap at 1B (was 350M) a 2^18 vocab is a smaller share of
+#: the budget than before, but the ceiling stays: a vocab that large is
+#: already past the point where tied embed/head buys quality per parameter,
+#: and it keeps G1 bits-per-byte comparable across submissions.
 #: Intake cannot see a vocab (it never runs miner code), so this pair is
 #: harness-side only.
 MIN_VOCAB = 256

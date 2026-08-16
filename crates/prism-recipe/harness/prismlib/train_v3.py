@@ -174,7 +174,7 @@ def _run(cfg, st):
         raise TypeError("build_model must return nn.Module")
     n_params = sum(p.numel() for p in model.parameters())
     _log(f"model params: {n_params/1e6:.1f}M")
-    max_params = int(cfg.get("max_params", 350000000))
+    max_params = int(cfg.get("max_params", 1000000000))
     if n_params > max_params:
         # Product hard cap: fail before CUDA / train (machine-readable).
         raise _ParamCapExceeded(n_params, max_params)

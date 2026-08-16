@@ -286,8 +286,14 @@ pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 /// unless a later bump says otherwise. See `docs/PRISM_RECIPE.md`.
 pub const RECIPE_VERSION: &str = "2.0.0";
 
-/// Maximum model parameters allowed after `build_model` (350M).
-pub const MAX_PARAMS: u64 = 350_000_000;
+/// Maximum model parameters allowed after `build_model` (1B).
+///
+/// Raised 350M → 1B alongside the 4×RTX 5090 pod rental (recipe-v10): the
+/// wall-clock budget is unchanged (6h), so the cap buys architectural
+/// headroom rather than a longer run. Placeholder anchors and the public
+/// GPT-2 Large reference row MUST be re-measured at this cap before any
+/// `PRISM_ANCHOR_VERSION=2` / composite governance flip.
+pub const MAX_PARAMS: u64 = 1_000_000_000;
 
 /// Assets-dir–relative home of the G5 natural-document packs
 /// (LongBench-v2 MCQ + HELMET RAG pools, their disjoint `public_dev`
@@ -742,7 +748,7 @@ mod tests {
         ] {
             assert!(all.contains(marker), "harness package missing {marker}");
         }
-        assert!(all.contains("350000000") || all.contains("PRISM_MAX_PARAMS"));
+        assert!(all.contains("1000000000") || all.contains("PRISM_MAX_PARAMS"));
     }
 
     #[test]
@@ -771,9 +777,9 @@ mod tests {
         let a = POD_LIFETIME_HOURS_CAP;
         let b = TRAIN_HOURS_CAP;
         assert!(a > b);
-        assert_eq!(MAX_PARAMS, 350_000_000);
+        assert_eq!(MAX_PARAMS, 1_000_000_000);
         let all = harness_concat();
-        assert!(all.contains("350000000") || all.contains("PRISM_MAX_PARAMS"));
+        assert!(all.contains("1000000000") || all.contains("PRISM_MAX_PARAMS"));
         assert!(all.contains("parameter cap"));
     }
 
