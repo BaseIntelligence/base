@@ -552,9 +552,11 @@ mod tests {
             "scored g1..g8 weights must still sum to 1, got {scored_sum}"
         );
 
-        // Every other scored group's key set is inherited verbatim.
+        // Every other scored group's key set is inherited verbatim. `g2` is
+        // excluded here and asserted exactly in
+        // `v3_retires_the_four_pinned_g2_tasks`.
         for (name, group) in &v2.groups {
-            if name == "g6" || name == "g8" {
+            if name == "g2" || name == "g6" || name == "g8" {
                 continue;
             }
             assert_eq!(
@@ -573,6 +575,75 @@ mod tests {
                 assert!(i == j || a != b, "v{i} and v{j} share a prereg hash");
             }
         }
+    }
+
+    /// v3 retires the four G2 sub-metrics that normalize to a **constant 0
+    /// for the entire field** at this operating point, keeping the group
+    /// weight fixed at 0.15.
+    ///
+    /// Why this is a correctness fix and not a tuning preference: G2's
+    /// sub-metrics are equal-weighted, so four dead axes carried **half of
+    /// G2's weight — 7.5 % of the whole composite — while measuring nothing**.
+    /// And because the composite is a weighted **geometric** mean, an axis
+    /// pinned at 0 is actively harmful, not merely inert.
+    ///
+    /// It is not a cap problem either: separating two submissions on
+    /// Winogrande needs ~76 824 items and the set has 1 267, so the resolution
+    /// does not exist at *any* cap.
+    ///
+    /// Companion to `v2_swaps_saturated_mc_lambada_for_strict`: assert the
+    /// exact difference, so a silent key drift fails here.
+    #[test]
+    fn v3_retires_the_four_pinned_g2_tasks() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+
+        let survivors = [
+            "org.g2.arc_easy_acc",
+            "org.g2.hellaswag_acc",
+            "org.g2.lambada_strict_acc",
+            "org.g2.piqa_acc",
+        ];
+        let retired = [
+            "org.g2.arc_challenge_acc",
+            "org.g2.boolq_acc",
+            "org.g2.obqa_acc",
+            "org.g2.winogrande_acc",
+        ];
+
+        let v3_g2 = &v3.groups["g2"];
+        assert_eq!(
+            v3_g2.metrics.keys().collect::<Vec<_>>(),
+            survivors.iter().collect::<Vec<_>>(),
+            "v3 G2 must be exactly the four tasks with dynamic range"
+        );
+        for key in retired {
+            assert!(
+                v2.groups["g2"].metrics.contains_key(key),
+                "{key} must have been in v2 for this to be a retirement"
+            );
+            assert!(
+                !v3_g2.metrics.contains_key(key),
+                "{key} is pinned at 0 for the whole field and must not be scored"
+            );
+        }
+
+        // The group weight is deliberately UNCHANGED: this changes what G2
+        // measures, not how much G2 counts.
+        assert!(
+            (v3_g2.weight - 0.15).abs() < 1e-12,
+            "G2 group weight must stay 0.15, got {}",
+            v3_g2.weight
+        );
+        assert!(
+            (v3_g2.weight - v2.groups["g2"].weight).abs() < 1e-12,
+            "G2 weight must match v2"
+        );
+
+        // Retiring 8 → 4 equal-weighted metrics doubles each survivor's share
+        // of G2, which is the intended effect.
+        assert_eq!(v2.groups["g2"].metrics.len(), 8);
+        assert_eq!(v3_g2.metrics.len(), 4);
     }
 
     /// The confounded slope must be gone from the scored set — and still
