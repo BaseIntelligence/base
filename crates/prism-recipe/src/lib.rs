@@ -219,6 +219,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/prismlib/dataset.py"),
     ),
     (
+        "prismlib/deps.py",
+        include_str!("../harness/prismlib/deps.py"),
+    ),
+    (
         "prismlib/envutil.py",
         include_str!("../harness/prismlib/envutil.py"),
     ),
@@ -797,6 +801,7 @@ mod tests {
             "prismlib/train_v3.py",
             "prismlib/eval_v3.py",
             "prismlib/flops.py",
+            "prismlib/deps.py",
             "prismlib/v3flow.py",
         ] {
             assert!(paths.contains(&required), "missing harness file {required}");
@@ -835,6 +840,63 @@ mod tests {
             .find(|(p, _)| *p == "main.py")
             .map(|(_, c)| *c);
         assert_eq!(main, Some(HARNESS_PY), "HARNESS_PY must alias main.py");
+    }
+
+    /// Every `prismlib` module the harness imports must be UPLOADED.
+    ///
+    /// `HARNESS_FILES` is the upload manifest: a module absent from it does
+    /// not exist on the pod, however normal it looks on disk. This is a
+    /// regression guard for a live break in which `prismlib/deps.py` was
+    /// added and imported at module scope in `main.py` but never listed, so
+    /// every real pod run died at import with `cannot import name 'deps'`
+    /// while every local test passed — because local tests import from the
+    /// source tree, where the file is present.
+    ///
+    /// The hardcoded list above cannot catch this class of bug: a new import
+    /// with no matching entry is exactly what nobody remembers to add.
+    #[test]
+    fn every_imported_prismlib_module_is_uploaded() {
+        let uploaded: Vec<&str> = HARNESS_FILES.iter().map(|(p, _)| *p).collect();
+        let mut checked = 0_usize;
+        for (path, source) in HARNESS_FILES {
+            if !std::path::Path::new(path)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("py"))
+            {
+                continue;
+            }
+            for line in source.lines() {
+                let line = line.trim();
+                // `from prismlib import x [as y]` / `from prismlib.x import y`
+                let module = line
+                    .strip_prefix("from prismlib import ")
+                    .and_then(|rest| rest.split([',', ' ']).next())
+                    .or_else(|| {
+                        line.strip_prefix("from prismlib.")
+                            .and_then(|rest| rest.split([' ', '.']).next())
+                    });
+                let Some(module) = module else { continue };
+                let module = module.trim();
+                // Skip non-module names re-exported by the package __init__
+                // (constants like RECIPE_SEED, TRAIN_ROWS, VAL_ROWS).
+                if module.is_empty() || module.chars().next().is_some_and(char::is_uppercase) {
+                    continue;
+                }
+                let want = format!("prismlib/{module}.py");
+                assert!(
+                    uploaded.contains(&want.as_str()),
+                    "{path} imports `prismlib.{module}` but {want} is NOT in \
+                     HARNESS_FILES — the pod would die at import. Local tests \
+                     pass because they read the source tree, not the upload."
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 10,
+            "import scan found only {checked} imports — the parser probably \
+             stopped matching and this test is no longer guarding anything"
+        );
     }
 
     #[test]
