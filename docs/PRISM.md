@@ -556,7 +556,7 @@ governance action like the `composite` mode flip.
 
 | Knob | Values | Default | Effect |
 |------|--------|---------|--------|
-| `PRISM_EMISSION_MODE` | `wta` \| `top3` | `wta` | `top3`: the top three positive credits keep 100 % / 50 % / 25 % of their own lattice score (ranks by the WTA tie convention; a scaled positive never rounds below 1); everything else is zeroed. Funds exploration behind the champion. |
+| `PRISM_EMISSION_MODE` | `wta` \| `top3` (\| `sig`, see v3 below) | `wta` | `top3`: the top three positive credits keep 100 % / 50 % / 25 % of their own lattice score (ranks by the WTA tie convention; a scaled positive never rounds below 1); everything else is zeroed. Funds exploration behind the champion. |
 | `PRISM_OWNER_ARCH_CREDIT_BPS` | `0..=5000` | `0` | Post-collapse split of the **winner's own leaf**: the registry owner of the winning architecture receives `score × bps/10000`, the winner keeps the rest. No-op when the winner is the owner, the winning row has no published `arch_id`, or the cut rounds to 0. An off-metagraph owner's leaf is dropped by the D24 expected-set filter (cut burns — the legacy lex-tie theft vector stays closed). This — not flipping `OWNER_ARCH_CREDIT_ENABLED` (which stays `false`/dead) — is the sanctioned owner-credit path. |
 | `PRISM_ANCHOR_VERSION` | `0` \| `1` \| `2` | `0` | Selects the composite anchor set. v1 = v0 plus two battery keys (below); v2 = v1 with the saturated MC LAMBADA swapped for the canonical strict protocol (below). Identical group weights, gates, mirrors, bootstrap. Unknown values fall back to v0 with a warning. |
 
@@ -602,6 +602,152 @@ metric only dilutes G2 weight). Ops note: re-measure the GPT-2 Large
 public reference row under the strict protocol before selecting
 `PRISM_ANCHOR_VERSION=2` (the published HF top-model card's LAMBADA
 column reflects the old MC protocol until then).
+
+## v3 significance-gated emission (versioned, opt-in, default-off)
+
+**Status: implemented, default-off, and NOT to be enabled before `σ_seed` is
+measured** (see *Sequencing constraint* below — this is a hard prerequisite,
+not a recommendation).
+
+Motivation, stated as arithmetic rather than fairness: under WTA on point
+estimates a **functional clone of the champion has identical true quality**, so
+by symmetry of the measurement noise it wins the entire share with probability
+≈ 0.5 — expected value ≈ **50 % of Prism's emission for the price of one pod**.
+That makes the copy detector load-bearing, and semantics-preserving obfuscation
+is measured to defeat detectors of that class. Requiring a challenger to clear a
+one-sided significance test cuts a true-Δ-zero clone's expectation to **< 5 %**
+*mechanically*, with no detector involved. Significance gating protects the
+**champion share**; it does not protect the graded band, where a statistical tie
+lands high by construction, so the copy gate remains necessary (SN9 measured
+exactly this: epsilon bounded copying at the top slot while copies still
+populated the leaderboard).
+
+**The knob.**
+
+| Knob | Values | Default | Effect |
+|------|--------|---------|--------|
+| `PRISM_EMISSION_MODE` | `wta` \| `top3` \| `sig` | `wta` | `sig`: the significance-gated collapse below. Unknown values (including typos and case variants) are `wta`, fail-safe. |
+| `PRISM_EVAL_REQUIRE_PRIVATE` | `0` \| `1` | `0` | `1` refuses to score a run whose mirror defence produced no contamination evidence. **Implied by `PRISM_EMISSION_MODE=sig`.** |
+
+**The rule** (`crates/prism-competition`: `paired.rs`, `frontier.rs`, `sig.rs`,
+`rerun.rs`; wired through `prism_registry::emission_leaves_with` →
+`prism_emit::build_epoch_leaves_with`):
+
+*Displacement test — paired, per-example, on the identical slice.* For champion
+`A` and challenger `B` scored on the same private slice, per eval item
+`d_i = better(A_i) − better(B_i)` in **absolute metric units**:
+
+```text
+DECIDED(i)  iff |d_i| >= 0.01          # dead zone, absolute (bits/byte, accuracy)
+win_rate     = #{i : d_i > 0 and DECIDED(i)} / #DECIDED
+B displaces A iff  LCB_99%(win_rate) >= 0.55     # clustered bootstrap, 10 000 resamples, fixed seed
+               AND mean_gap           >= 0.01     # absolute, not relative
+               AND #DECIDED           >= 30
+```
+
+Margins are **absolute, never relative**: a difference of D nats is D nats of
+evidence whether the loss is 0.02 or 2.0, so a relative margin collapses exactly
+where the metric saturates — which is where a converging field spends most of its
+time. The win-rate bar is **0.55 and deliberately not higher**: a genuinely
+better architecture with wide per-example spread sits near 0.55, so a higher bar
+selects for **low-variance submissions rather than good ones**. The bootstrap
+seed is a pinned constant (`20260816`) because leaves are consensus-critical —
+identical inputs must always produce identical leaves, and anyone re-scoring a
+closed round must reach the same verdict.
+
+*Two distinct bars.* Clearing the test **transfers the crown**; a strictly larger
+mean gap (`PREMIUM_GAP = 0.02`) is required to earn *above* the champion floor.
+"Who is champion" and "how much the champion is paid" are separate questions, so
+a marginal-but-real win does not unlock the full share.
+
+*Allocation of Prism's share.*
+
+| Tier | Share | Recipient |
+|------|-------|-----------|
+| Champion | **60 %** (floor **50 %** when sub-premium; the difference burns) | Incumbent, or the challenger that displaced it |
+| Band | **15 / 10 / 5 %** | Ranks 2–4 among gate-passing credits |
+| Exploration | **10 %**, ≤5 slots, split equally | Gate-passing entries holding ≥1 per-axis frontier (the champion excluded; band members are eligible — the case this exists for is "3rd on the composite, 1st on G3") |
+| Remainder | **burns** | — |
+
+*Tenure decays the economic floor only.* The champion floor decays linearly
+(~0.15 %/day, bounded at 80 % of base) so a hoarder is progressively easier to
+displace. **The statistical term never decays** — the dead zone and win-rate bar
+are truth conditions, not policy preferences, and decaying them would knowingly
+crown champions on noise.
+
+*Weight EMA and tail floor.* The emitted share vector is smoothed
+(`α = 0.5`) so a single anomalous round cannot swing emission, and shares at or
+below 100 bps are zeroed rather than paid, so unresolvable rank differences are
+not paid at all. The EMA is a *temporal* smoother and the paired test a
+*statistical* one; they compose and neither substitutes for the other.
+
+*Burn is real, and requires a leaf.* Per [`BUNDLE_SPEC`](BUNDLE_SPEC.md) §6.4
+each challenge's positive leaves are **normalized to sum to 1** before scaling by
+the challenge's share — so a "60 % champion" leaf set with nothing else in it
+would still deliver 100 % of Prism's share to the champion, silently
+redistributing the remainder rather than burning it. `sig` mode therefore emits
+the unallocated remainder as a leaf for the expected participant at **uid 0**,
+which §6.5 drops *and burns*. Fail-safe: if uid 0 is absent from the expected set
+or already carries a positive competition credit, the burn leaf is skipped and
+the remainder dilutes instead — the one case where burn degrades, and it is
+logged rather than hidden.
+
+**Per-axis elite archive (why not a novelty score).** The exploration pool pays
+submissions holding the best measured value on any group `g1..g8`. Nobody has
+made "pay for measured difference" work — Numerai marketed *being different pays*
+and implemented *marginal contribution*, and the component that was exploited was
+the rank-shaped bonus. A novelty distance is faked by renaming variables; being
+best at associative recall is not. The descriptor cells are **operator-owned**:
+a miner cannot invent a ninth axis to farm. The archive is recomputed from stored
+per-group measurements and holds no state a miner can write.
+
+**Champion re-runs ("prove it again").** `prism-emit` carries a champion's
+positive score forward, and by the winner's curse that carried number is an
+optimistic draw — so an incumbent is defended by an inflated figure and any
+anchor-overfit is never re-tested after being paid. `rerun.rs` schedules an
+**eval-only** re-measurement on each fresh private slice at an **unannounced**
+time: the decision is a keyed hash of `(epoch, slice_id, champion)`, so a miner
+cannot predict it (the slice id is unpublished until the round closes) while
+anyone can recompute it afterwards and confirm the operator neither skipped nor
+fabricated an audit. A drop beyond `1.645·SE(Δ_paired)` costs tenure; a failed
+measurement never does. Operator-funded (~$3–8): a champion has no incentive to
+fund its own audit, and a trustworthy ranking is a public good for the subnet.
+
+**Mirror defence is now loud.** The contamination (mirror-gap) penalty is inert
+*by construction* in the `public_dev` tier — `rollup.build_mirrors` makes the run
+its own mirror, so the gap is identically 0. That was honestly labelled in a
+comment but nothing surfaced it, so a scored `public_dev` run looked
+contamination-checked when it was not. The harness now emits
+`battery.mirror_defence` with `contamination_checked`, `inert_pairs`,
+`live_pairs` and a reason string, and logs a warning when the defence is inert.
+**A zero mirror penalty in an inert run is the absence of a check, not a clean
+result.** With `PRISM_EVAL_REQUIRE_PRIVATE=1` (implied by `sig`) an unchecked run
+is refused outright (`FinalizeError::ContaminationUnchecked`) rather than scored;
+an absent flag counts as unchecked, so an older harness cannot pass by silence.
+
+**Sequencing constraint — why this ships off.** The clustered bootstrap measures
+**eval-item variance only**. Training-seed variance (`σ_seed`) is absent from the
+model because each submission is trained exactly once, and a seed change alone
+re-ranks NAS architectures at Kendall τ = 0.48. The lower bound is therefore
+**overconfident by construction**, and *a significance test computed on a
+provably wrong standard error is worse than honest WTA* — it lends false
+statistical authority to a biased ranking. Required order:
+
+1. Per-item bootstrap clusters on G1/G2 — **done** on this branch.
+2. **Measure `σ_seed` by baseline replication, and publish it.** ← not yet done;
+   this is the blocking prerequisite.
+3. Stage the private tier and make it mandatory for scored rounds.
+4. Then, as a governance action, select `PRISM_EMISSION_MODE=sig`.
+
+`OWNER_ARCH_CREDIT_ENABLED` stays `false` and is unaffected: rewards routed over
+a graph whose edges beneficiaries declare were farmed to >150 000 spam packages
+at tea.xyz, and Prism's token sits structurally on that side. The opt-in
+`PRISM_OWNER_ARCH_CREDIT_BPS` split above is a different mechanism and stays
+implemented, default-off.
+
+Evidence and full derivations:
+[`docs/spikes/prism-v3/research/15-incentives-and-landscape.md`](spikes/prism-v3/research/15-incentives-and-landscape.md)
+(non-normative).
 
 ## Modular pod image + miner-installable dependencies (recipe-v10)
 

@@ -2,7 +2,19 @@
 
 > Status: spike / proposal — NOT normative. Normative contract remains docs/PRISM.md.
 > Branch: prism-better. Date: 2026-08-06.
-> Research base: 13 appendices in research/ (12 external-research + 1 codebase state).
+> Research base: 16 appendices in research/ (15 external-research + 1 codebase state).
+
+> **Later appendices (2026-08-16), filed after this synthesis was written and
+> not reflected in the TL;DR below:**
+> [`14-scaling-laws-and-diagnostics.md`](research/14-scaling-laws-and-diagnostics.md)
+> (scaling-law fitting, G6/G8 diagnostics),
+> [`15-incentives-and-landscape.md`](research/15-incentives-and-landscape.md)
+> (emission collapse, copy economics, anti-Goodhart — the evidence behind the
+> significance-gated emission mode now implemented default-off), and
+> [`16-budget-and-measurement.md`](research/16-budget-and-measurement.md)
+> (compute currency, `σ_seed` measurement programme). Underlying evidence
+> reviews for #15 are in [`research/incentives-sources/`](research/incentives-sources/).
+> All three are non-normative; `docs/PRISM.md` remains the contract.
 
 > **Implementation status (2026-08-06, branch `prism-better`):** the proposal
 > is implemented behind `PRISM_SCORING_MODE` (default `shadow` — v2 leaf
