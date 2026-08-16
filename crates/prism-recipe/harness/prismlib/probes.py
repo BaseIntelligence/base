@@ -96,11 +96,24 @@ class ProbeRunner:
             self.log(f"probe skipped at step {step}: {exc}")
             return
         self.spent_s += time.time() - t0
-        state["probe_curve"].append(
-            {
-                "step": int(step),
-                "tokens_seen": int(self.stream.tokens_seen),
-                "wall_s": round(time.time() - state["t0"], 3),
-                "probe_loss": float(loss),
-            }
-        )
+        # Byte + FLOPs coordinates alongside the token coordinate. Per-token
+        # CE is NOT tokenizer-neutral — a tokenizer that compresses harder
+        # lowers CE/token without predicting better — so a curve scored in
+        # bits/byte needs the byte count of the text behind the tokens, and
+        # a curve scored per unit of compute needs the attested spend.
+        # `bytes_per_token` is recorded per point rather than assumed global.
+        bpt = self.stream.bytes_per_token()
+        point = {
+            "step": int(step),
+            "tokens_seen": int(self.stream.tokens_seen),
+            "bytes_seen": int(getattr(self.stream, "bytes_seen", 0)),
+            "bytes_per_token": float(bpt),
+            "flops_spent": float(getattr(self.stream, "flops_spent", 0.0)),
+            "wall_s": round(time.time() - state["t0"], 3),
+            "probe_loss": float(loss),
+        }
+        # bits/byte = (nats/token) / ln2 * (tokens/byte); emitted here so the
+        # G6 curve module can score a tokenizer-neutral quantity directly.
+        if bpt > 0:
+            point["probe_bits_per_byte"] = float(loss) / (0.6931471805599453 * bpt)
+        state["probe_curve"].append(point)

@@ -206,8 +206,23 @@ def main():
         assert len(m["harness_files_sha256"]) == 64
         curve = m["probe_curve"]
         assert len(curve) >= 3, f"probe_curve too short: {curve}"
+        # The dual cap widened the probe contract with byte and compute
+        # coordinates: `org.g6.auc_log_bytes` needs bytes on the curve (per-token
+        # CE is not tokenizer-neutral), and `org.g6.bpb_at_half_budget` needs the
+        # attested spend so the milestone is organizer-chosen rather than read off
+        # a miner-controlled report counter. Assert the required keys are present
+        # rather than an exact set, so adding a coordinate is not a breaking change.
+        required = {"step", "tokens_seen", "wall_s", "probe_loss"}
+        byte_coords = {"bytes_seen", "bytes_per_token", "flops_spent"}
         for pt in curve:
-            assert set(pt) == {"step", "tokens_seen", "wall_s", "probe_loss"}
+            missing = required - set(pt)
+            assert not missing, f"probe point missing {missing}: {pt}"
+            assert byte_coords <= set(pt), (
+                f"probe point missing byte/compute coordinates "
+                f"{byte_coords - set(pt)}: {pt}"
+            )
+            if pt["bytes_per_token"] > 0:
+                assert "probe_bits_per_byte" in pt, pt
             assert pt["probe_loss"] > 0
         assert curve[-1]["tokens_seen"] == STEPS * BATCH_SIZE * SEQ_LEN
         pm = m["pod_manifest"]
