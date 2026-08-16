@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+prism-challenge-task = { path = "../prism-challenge-task" }
 prism-store = { path = "../prism-store" }
 
 [lints]

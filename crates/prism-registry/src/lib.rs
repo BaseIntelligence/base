@@ -30,8 +30,12 @@ mod weights;
 pub use hf::HfTopModelPublisher;
 pub use hooks::post_score_hooks;
 pub use prism_competition::{
-    apply_emission, apply_owner_split, apply_top3_decay, apply_wta, competition_scores,
-    emission_leaves, owner_split_bps_from_env, EmissionMode, OWNER_ARCH_CREDIT_ENABLED,
+    apply_emission, apply_emission_with, apply_owner_split, apply_significance, apply_top3_decay,
+    apply_wta, competition_scores, emission_leaves, emission_leaves_with, frontier,
+    owner_split_bps_from_env, paired, paired_test, plan_emission, sig, AxisScore, Direction,
+    EliteArchive, EmissionMode, EmissionPlan, ExampleSeries, PairedInput, PairedOutcome,
+    PairedRefusal, SigContext, BAND_BPS, CHAMPION_BPS, CHAMPION_FLOOR_BPS, DEADZONE,
+    EXPLORE_POOL_BPS, MAX_EXPLORE_SLOTS, MIN_WIN_RATE_BPS, OWNER_ARCH_CREDIT_ENABLED,
     TOP3_DECAY_BPS,
 };
 pub use publish::{
