@@ -16,6 +16,7 @@ Env:
   PACK_TIER              written to tier.json (default public)
   G1_N                   docs per G1 domain / fresh (default 800)
   G2_N                   max items per G2 task (default 400)
+  G2_N_USABLE            max items for the discriminative G2 tasks (default 1200)
   G5_FILLER_DOCS         PG-19 docs for babilong filler (default 8)
   G5_QA_N                SQuAD rows for ruler_qa (default 200)
   SKIP_G5                if 1, skip G5 assets
@@ -37,6 +38,19 @@ from typing import Any, Iterable, Iterator
 OUT = Path(os.environ.get("PRISM_EVAL_ASSETS_DIR", "/tmp/prism-eval-assets"))
 G1_N = int(os.environ.get("G1_N", "800"))
 G2_N = int(os.environ.get("G2_N", "400"))
+# The battery's per-task caps (`eval.common.eval_g2_cap`) raise the
+# discriminative tasks to ~1000 rows, so the pack must actually SHIP that
+# many or the raised cap is inert. Kept above the battery cap so the
+# battery -- not the pack -- is what bounds the item count.
+G2_N_USABLE = int(os.environ.get("G2_N_USABLE", "1200"))
+G2_DISCRIMINATIVE = ("lambada", "hellaswag", "piqa", "arc_easy")
+
+
+def g2_cap(task: str) -> int:
+    """Rows to pack for one G2 task (mirrors `eval.common.eval_g2_cap`)."""
+    if task in G2_DISCRIMINATIVE:
+        return max(G2_N, G2_N_USABLE)
+    return G2_N
 G5_FILLER_DOCS = int(os.environ.get("G5_FILLER_DOCS", "8"))
 G5_QA_N = int(os.environ.get("G5_QA_N", "200"))
 SKIP_G5 = os.environ.get("SKIP_G5", "0") == "1"
@@ -354,7 +368,7 @@ def build_g2() -> None:
                 continue
             raw.append((prompt, gold))
             words.append(gold)
-            if len(raw) >= G2_N:
+            if len(raw) >= g2_cap("lambada"):
                 break
         rows = []
         for prompt, gold in raw:
@@ -398,7 +412,7 @@ def build_g2() -> None:
             except (TypeError, ValueError):
                 continue
             rows.append({"prompt": ctx, "choices": list(endings), "gold": gold})
-            if len(rows) >= G2_N:
+            if len(rows) >= g2_cap("hellaswag"):
                 break
         p = g2_dir / "hellaswag.jsonl"
         write_jsonl(p, rows)
@@ -426,7 +440,7 @@ def build_g2() -> None:
         rows = []
         with zf.open("physicaliqa-train-dev/dev.jsonl") as fh:
             for i, line in enumerate(fh):
-                if i >= G2_N:
+                if i >= g2_cap("piqa"):
                     break
                 o = json.loads(line)
                 rows.append(
@@ -473,7 +487,7 @@ def build_g2() -> None:
                         "gold": gold,
                     }
                 )
-                if len(rows) >= G2_N:
+                if len(rows) >= g2_cap(task):
                     break
             p = g2_dir / f"{task}.jsonl"
             write_jsonl(p, rows)
@@ -510,7 +524,7 @@ def build_g2() -> None:
             rows.append(
                 {"prompt": sent, "choices": [str(o1), str(o2)], "gold": gold}
             )
-            if len(rows) >= G2_N:
+            if len(rows) >= g2_cap("winogrande"):
                 break
         p = g2_dir / "winogrande.jsonl"
         write_jsonl(p, rows)
@@ -544,7 +558,7 @@ def build_g2() -> None:
                     "gold": gold,
                 }
             )
-            if len(rows) >= G2_N:
+            if len(rows) >= g2_cap("boolq"):
                 break
         p = g2_dir / "boolq.jsonl"
         write_jsonl(p, rows)
@@ -581,7 +595,7 @@ def build_g2() -> None:
                     "gold": gold,
                 }
             )
-            if len(rows) >= G2_N:
+            if len(rows) >= g2_cap("openbookqa"):
                 break
         p = g2_dir / "openbookqa.jsonl"
         write_jsonl(p, rows)
@@ -788,7 +802,7 @@ def write_manifest() -> None:
         f"- Out: `{OUT}`",
         f"- Pack seed: `{SEED}`",
         f"- Pack tier: `{PACK_TIER}` (default public — not secret)",
-        f"- G1_N={G1_N} G2_N={G2_N}",
+        f"- G1_N={G1_N} G2_N={G2_N} G2_N_USABLE={G2_N_USABLE}",
         "",
         "**Held-out note:** G1 fresh uses `HuggingFaceFW/fineweb` CC-MAIN-2025-* dumps, "
         "**not** `HuggingFaceFW/fineweb-edu@sample/10BT` (train pin). Benchmarks are public HF "
