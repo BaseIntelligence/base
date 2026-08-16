@@ -1072,7 +1072,17 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["version"], "2.0.0");
-        assert_eq!(v["train_hours_cap"], 6.0);
+        // Tracks the constant rather than hardcoding it: the wall cap is now
+        // the anti-DoS bound under the attested-FLOPs currency, so it moves
+        // with `prism_recipe::TRAIN_HOURS_CAP` and this assertion should not
+        // need editing when it does. The currency itself is asserted below.
+        assert_eq!(v["train_hours_cap"], prism_recipe::TRAIN_HOURS_CAP);
+        assert_eq!(v["train_flops_cap"], prism_recipe::TRAIN_FLOPS_CAP);
+        assert_eq!(
+            v["min_spend_fraction"],
+            prism_recipe::MIN_SPEND_FRACTION,
+            "the underspend floor is miner-facing: it must be advertised"
+        );
         assert_eq!(v["automodel_pin_id"], prism_automodel::AUTOMODEL_PIN_ID);
         let (s, v) = call(
             app,

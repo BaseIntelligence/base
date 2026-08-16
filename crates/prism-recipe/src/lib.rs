@@ -227,6 +227,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/prismlib/eval_v3.py"),
     ),
     (
+        "prismlib/flops.py",
+        include_str!("../harness/prismlib/flops.py"),
+    ),
+    (
         "prismlib/manifest.py",
         include_str!("../harness/prismlib/manifest.py"),
     ),
@@ -347,8 +351,75 @@ pub fn dataset_sha256() -> String {
         .unwrap_or_else(|| DATASET_SHA256.into())
 }
 
-/// Train wall clock cap per submission (seconds). **User goal: up to 6h.**
-pub const TRAIN_HOURS_CAP: f64 = 6.0;
+/// Train wall-clock cap per submission (**hours**) — a **safety bound**, not
+/// the budget currency.
+///
+/// Lowered 6.0 → 5.0 when [`TRAIN_FLOPS_CAP`] became the currency. The pair
+/// is chosen so FLOPs, not the clock, binds for essentially the whole field:
+/// at `C_MAX = 3.0e18` on 4×RTX 5090 (838 TFLOPS peak bf16) the wall needed
+/// is `C_MAX / (838e12 × MFU)` = 4.97 h at 20 % MFU, 3.98 h at 25 %, 3.31 h
+/// at 30 %. So any implementation at ≥ 20 % MFU is FLOPs-bound and the
+/// kernel lottery stops being a scored quantity. A slower implementation
+/// still terminates — that is the anti-DoS job this cap keeps.
+///
+/// Asserted against the FLOPs cap in `tests::wall_bound_is_slack_at_target_mfu`.
+pub const TRAIN_HOURS_CAP: f64 = 5.0;
+
+/// Attested-FLOPs cap per submission — **the budget currency**.
+///
+/// Counted by the harness (`prismlib/flops.py`) with
+/// `torch.utils.flop_counter.FlopCounterMode` over harness-driven
+/// forward+backward passes on batches at secret stream indices, times the
+/// harness-owned `stream.tokens_seen`. The miner never reports a number.
+///
+/// Because the meter is the *realized* dispatch graph, the budget is
+/// class-adaptive for free: a model looped `r` times pays ~`r`× per token
+/// (not exactly `r`× — `lm_head` and attention do not loop), a `MoE` pays only
+/// for the experts that actually ran, and a big vocabulary pays for its head
+/// (`6·d·V`). There is no size tier to declare and none to shop for.
+pub const TRAIN_FLOPS_CAP: f64 = 3.0e18;
+
+/// Eligibility floor: a run must attest at least this fraction of
+/// [`TRAIN_FLOPS_CAP`] to be scored.
+///
+/// The underspend guard. Without it, an architecture that saturates early
+/// profits by stopping early — it is then compared against a weaker
+/// truncation reference (the compute-optimal frontier's slope is only
+/// ≈ −0.05..−0.10 nats per e-fold, so buying less compute costs less score
+/// than it saves). Below this floor the run is ineligible, not merely scaled.
+pub const MIN_SPEND_FRACTION: f64 = 0.5;
+
+/// Global eval-battery wall budget (seconds) the harness battery declares
+/// (`eval.common.BATTERY_BUDGET_S`), mirrored here so the Rust pod
+/// arithmetic and the Python battery cannot drift apart.
+///
+/// One global budget with per-group ceilings as fractional shares; the old
+/// independent per-group ceilings summed to ≈ 3.92 h under a 3 h phase kill.
+pub const EVAL_GLOBAL_BUDGET_S: f64 = 3600.0;
+
+/// Number of `FlopCounterMode` probes at secret stream indices.
+pub const FLOPS_PROBE_SAMPLES: u32 = 8;
+
+/// Max coefficient of variation across the probe samples before the run is
+/// flagged `flops_probe_unstable` (and the **max**, not the median, is used).
+///
+/// A high CV is the signature of input-dependent cost — an `MoE` that routes
+/// to fewer experts on probe-shaped inputs, or an early-exit path. Probes
+/// are drawn from the real train stream at secret indices precisely so they
+/// are indistinguishable from training batches.
+pub const FLOPS_PROBE_CV_MAX: f64 = 0.15;
+
+/// Max relative disagreement between the dispatch counter and the analytic
+/// FLOPs/token estimate before the run is flagged.
+///
+/// `FlopCounterMode` only sees what the `PyTorch` dispatcher sees, so a fused
+/// Triton/CUDA kernel registered as one opaque op is invisible — and
+/// recipe-v10 lets miners install their own dependencies, which makes that
+/// reachable. The analytic model
+/// (`6·N_body·r_eff + 6·d·V + 12·L·d·S`, `MoE` **active** experts only) is the
+/// cross-check. This is the largest residual risk in the design, so the gap
+/// is a visible metric (`org.diag.flops_analytic_ratio`), never a silent pass.
+pub const FLOPS_ANALYTIC_GAP_MAX: f64 = 0.25;
 
 /// Harness build-phase ceiling (`PRISM_BUILD_TIMEOUT_S` default, seconds).
 pub const HARNESS_BUILD_TIMEOUT_S: f64 = 900.0;
@@ -364,21 +435,33 @@ pub const HARNESS_EVAL_TIMEOUT_S: f64 = 5400.0;
 /// Pod lifetime cap total (**hours**), sized to actually contain the
 /// harness it rents rather than a round guess.
 ///
-/// The old 7.0 was "train cap + 1 h margin", but the harness's own phase
-/// ceilings already exceeded it: the train child alone can run
-/// build (900) + train (6 h + 120) + checkpoint (1800) = 6.78 h, and the
-/// eval child then gets its whole timeout on top. At the previous
-/// `PRISM_EVAL_TIMEOUT_S = 3 h` the worst case was ~9.78 h against a 7 h
-/// pod — a full-budget submission could be terminated mid-eval, losing the
-/// entire rental. `prism_lium_payer::sealed` had already modelled 6 h train
-/// + 2 h eval = 8 h, so 7.0 disagreed with the payer too.
+/// Derivation — the pod must strictly contain both children:
 ///
-/// Raising the ceiling does not raise the bill for a submission that
-/// finishes early (pods are billed for time used); it only stops the
-/// orchestrator from killing a run the recipe itself permits. Asserted
-/// against the phase ceilings in
-/// `tests::pod_lifetime_covers_train_plus_eval`.
-pub const POD_LIFETIME_HOURS_CAP: f64 = 8.5;
+/// ```text
+/// train child : build 900 + train (5 h = 18000) + grace 120 + checkpoint 1800 = 20820 s
+/// eval child  : PRISM_EVAL_TIMEOUT_S 5400 (battery 3600 + load/rollup/score reserve)
+/// worst case  : 26220 s = 7.28 h        ⇒ 7.5 h cap leaves 780 s of margin
+/// ```
+///
+/// **History of the 7.0-vs-8.5 disagreement.** 7.0 was "6 h train + 1 h",
+/// which the harness's own phase ceilings already broke (the train child
+/// alone is 6.78 h at a 6 h train cap, and the eval child gets its whole
+/// timeout on top) — a full-budget submission could be killed mid-eval and
+/// lose the entire miner-funded rental, so a previous pass raised it to 8.5.
+/// Both were right about their own arithmetic and wrong about each other's:
+/// 8.5 is the correct ceiling **for a 6 h train cap**, and the design's 7.0
+/// does not fit **any** train cap once the real phase ceilings are added
+/// (7.0 h would need `PRISM_EVAL_TIMEOUT_S ≤ 4380 s`, i.e. 60 s of reserve
+/// above the 3600 s battery — not workable). With [`TRAIN_HOURS_CAP`] now
+/// 5.0 h the arithmetic closes at **7.5 h**, which is both below the old 8.5
+/// and above the design's 7.0.
+///
+/// A higher ceiling never raises the bill for a run that finishes early
+/// (pods are billed for time used); it only stops the orchestrator from
+/// killing a run the recipe itself permits. `prism_lium_payer::sealed`
+/// derives its TTL from these same constants, so the payer cannot drift.
+/// Asserted in `tests::pod_lifetime_covers_train_plus_eval`.
+pub const POD_LIFETIME_HOURS_CAP: f64 = 7.5;
 
 /// Effective train wall-clock cap (hours). Production is always
 /// [`TRAIN_HOURS_CAP`]; `PRISM_TEST_TRAIN_MINUTES` (staging/e2e only, works
@@ -390,6 +473,21 @@ pub fn train_hours_cap() -> f64 {
         .and_then(|v| v.trim().parse::<f64>().ok())
         .filter(|m| *m > 0.0)
         .map_or(TRAIN_HOURS_CAP, |m| m / 60.0)
+}
+
+/// Effective attested-FLOPs cap. Production is always [`TRAIN_FLOPS_CAP`];
+/// `PRISM_TEST_TRAIN_FLOPS` (staging/e2e only) shrinks it so a dual-cap run
+/// completes in minutes, mirroring [`train_hours_cap`].
+///
+/// Non-finite / non-positive overrides are ignored rather than trusted, so a
+/// malformed env var cannot silently disable the budget.
+#[must_use]
+pub fn train_flops_cap() -> f64 {
+    std::env::var("PRISM_TEST_TRAIN_FLOPS")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|c| c.is_finite() && *c > 0.0)
+        .unwrap_or(TRAIN_FLOPS_CAP)
 }
 
 /// Effective parameter cap. Production is always [`MAX_PARAMS`];
@@ -507,8 +605,20 @@ pub struct RecipeDescriptor {
     pub dataset_sha256: String,
     /// Expected size hint (bytes).
     pub dataset_len_bytes: u64,
-    /// Train wall seconds cap.
+    /// Train wall-clock cap (hours) — safety bound, not the currency.
     pub train_hours_cap: f64,
+    /// Attested-FLOPs cap (the budget currency).
+    pub train_flops_cap: f64,
+    /// Eligibility floor as a fraction of `train_flops_cap`.
+    pub min_spend_fraction: f64,
+    /// Global eval-battery wall budget (seconds).
+    pub eval_global_budget_s: f64,
+    /// `FlopCounterMode` probe count at secret stream indices.
+    pub flops_probe_samples: u32,
+    /// Max probe coefficient of variation before `flops_probe_unstable`.
+    pub flops_probe_cv_max: f64,
+    /// Max counter-vs-analytic relative gap before the run is flagged.
+    pub flops_analytic_gap_max: f64,
     /// Pod lifetime cap hours.
     pub pod_lifetime_hours_cap: f64,
     /// Hard step stop.
@@ -559,6 +669,12 @@ pub fn descriptor() -> RecipeDescriptor {
         dataset_sha256: dataset_sha256(),
         dataset_len_bytes: dataset_len_bytes(),
         train_hours_cap: TRAIN_HOURS_CAP,
+        train_flops_cap: TRAIN_FLOPS_CAP,
+        min_spend_fraction: MIN_SPEND_FRACTION,
+        eval_global_budget_s: EVAL_GLOBAL_BUDGET_S,
+        flops_probe_samples: FLOPS_PROBE_SAMPLES,
+        flops_probe_cv_max: FLOPS_PROBE_CV_MAX,
+        flops_analytic_gap_max: FLOPS_ANALYTIC_GAP_MAX,
         pod_lifetime_hours_cap: POD_LIFETIME_HOURS_CAP,
         max_train_steps: MAX_TRAIN_STEPS,
         seed: RECIPE_SEED,
@@ -680,6 +796,7 @@ mod tests {
             "prismlib/envutil.py",
             "prismlib/train_v3.py",
             "prismlib/eval_v3.py",
+            "prismlib/flops.py",
             "prismlib/v3flow.py",
         ] {
             assert!(paths.contains(&required), "missing harness file {required}");
@@ -798,6 +915,83 @@ mod tests {
         assert!(matches!(err, ContractError::MissingTrain));
     }
 
+    /// The dual cap must be *dual*: FLOPs has to bind before the wall for a
+    /// competent implementation, or the currency reverts to wall-clock and
+    /// the kernel lottery is scored again. 4×RTX 5090 = 838 TFLOPS peak bf16.
+    #[test]
+    fn wall_bound_is_slack_at_target_mfu() {
+        const PEAK_FLOPS: f64 = 838e12;
+        let wall_needed_h = |mfu: f64| TRAIN_FLOPS_CAP / (PEAK_FLOPS * mfu) / 3600.0;
+        // At 20% MFU the FLOPs cap is still reachable inside the wall bound.
+        let at_20 = wall_needed_h(0.20);
+        assert!(
+            at_20 <= TRAIN_HOURS_CAP,
+            "at 20% MFU a full-budget run needs {at_20:.2}h > {TRAIN_HOURS_CAP}h wall: \
+             the wall would bind and FLOPs would stop being the currency"
+        );
+        // ...and it is not so slack that the anti-DoS bound is vacuous: a
+        // very slow implementation must still be stopped by the clock.
+        assert!(
+            wall_needed_h(0.10) > TRAIN_HOURS_CAP,
+            "wall bound must still bite for a pathologically slow run"
+        );
+        // The underspend floor has to be reachable well inside the wall.
+        let floor_h = wall_needed_h(0.20) * MIN_SPEND_FRACTION;
+        assert!(
+            floor_h < TRAIN_HOURS_CAP,
+            "MIN_SPEND_FRACTION floor ({floor_h:.2}h at 20% MFU) must be \
+             reachable inside the wall bound, else honest runs fail the floor"
+        );
+        assert!((MIN_SPEND_FRACTION - 0.5).abs() < f64::EPSILON);
+        assert!(TRAIN_FLOPS_CAP > 0.0 && TRAIN_FLOPS_CAP.is_finite());
+    }
+
+    /// Probe knobs must stay in the range the attestation reasons about.
+    #[test]
+    fn flops_probe_knobs_are_sane() {
+        assert_eq!(FLOPS_PROBE_SAMPLES, 8);
+        assert!((FLOPS_PROBE_CV_MAX - 0.15).abs() < f64::EPSILON);
+        assert!((FLOPS_ANALYTIC_GAP_MAX - 0.25).abs() < f64::EPSILON);
+        const {
+            assert!(FLOPS_PROBE_SAMPLES >= 3, "median/CV need >= 3 samples");
+            assert!(FLOPS_PROBE_CV_MAX > 0.0 && FLOPS_PROBE_CV_MAX < 1.0);
+            assert!(FLOPS_ANALYTIC_GAP_MAX > 0.0 && FLOPS_ANALYTIC_GAP_MAX < 1.0);
+        }
+        // The harness must actually carry the attestation the caps describe.
+        let all = harness_concat();
+        for marker in [
+            "FlopCounterMode",
+            "flops_per_token",
+            "BudgetExhausted",
+            "analytic",
+            "org.diag.flops_attested",
+            "org.diag.binding_cap",
+            "org.diag.spend_fraction",
+        ] {
+            assert!(
+                all.contains(marker),
+                "harness missing FLOPs marker {marker}"
+            );
+        }
+    }
+
+    /// `PRISM_TEST_TRAIN_FLOPS` must shrink the cap the same way
+    /// `PRISM_TEST_TRAIN_MINUTES` shrinks the wall, and must ignore garbage.
+    #[test]
+    fn test_mode_env_overrides_flops_cap() {
+        assert!((train_flops_cap() - TRAIN_FLOPS_CAP).abs() < f64::EPSILON);
+        std::env::set_var("PRISM_TEST_TRAIN_FLOPS", "1e14");
+        assert!((train_flops_cap() - 1e14).abs() < 1.0);
+        for bad in ["0", "-1e14", "nan", "not-a-number", ""] {
+            std::env::set_var("PRISM_TEST_TRAIN_FLOPS", bad);
+            assert!(
+                (train_flops_cap() - TRAIN_FLOPS_CAP).abs() < f64::EPSILON,
+                "override {bad:?} must be ignored, not trusted"
+            );
+        }
+        std::env::remove_var("PRISM_TEST_TRAIN_FLOPS");
+    }
+
     /// The pod the orchestrator rents must outlast the harness it runs.
     /// Regression guard for the budget over-subscription: the train child's
     /// phase ceilings plus the eval child's ceiling must fit the pod cap.
@@ -827,15 +1021,29 @@ mod tests {
         );
         const {
             assert!(
-                HARNESS_EVAL_TIMEOUT_S > 3600.0,
+                HARNESS_EVAL_TIMEOUT_S > EVAL_GLOBAL_BUDGET_S,
                 "eval ceiling must leave reserve above the battery budget"
             );
         }
+        // The Rust mirror of the battery budget must match the Python that
+        // declares it, or the pod arithmetic above is computed on a fiction.
+        assert!(
+            harness.contains(&format!("BATTERY_BUDGET_S = {EVAL_GLOBAL_BUDGET_S:.1}")),
+            "EVAL_GLOBAL_BUDGET_S must equal eval.common.BATTERY_BUDGET_S"
+        );
+        // Pod cap must be tight, not merely sufficient: an over-wide cap
+        // hides a future over-subscription instead of failing this test.
+        assert!(
+            pod_s - worst_case_s < 3600.0,
+            "pod cap {pod_s}s is more than 1h above the worst case \
+             {worst_case_s}s — re-derive it rather than padding"
+        );
     }
 
     #[test]
     fn caps_match_user_goal() {
-        assert!((TRAIN_HOURS_CAP - 6.0).abs() < f64::EPSILON);
+        // 5.0h wall is the anti-DoS bound; TRAIN_FLOPS_CAP is the currency.
+        assert!((TRAIN_HOURS_CAP - 5.0).abs() < f64::EPSILON);
         let a = POD_LIFETIME_HOURS_CAP;
         let b = TRAIN_HOURS_CAP;
         assert!(a > b);

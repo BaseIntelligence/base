@@ -3796,6 +3796,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-budget"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "prism-challenge"
 version = "0.1.0"
 dependencies = [
@@ -3998,6 +4006,7 @@ version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
  "prism-lium",
+ "prism-recipe",
  "rand 0.8.7",
  "sha2 0.10.9",
  "tempfile",
@@ -4042,6 +4051,7 @@ dependencies = [
  "challenge-agentic",
  "hex",
  "prism-automodel",
+ "prism-budget",
  "prism-challenge-task",
  "prism-lium",
  "prism-recipe",
@@ -4075,6 +4085,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "prism-automodel",
+ "prism-budget",
  "prism-tree",
  "serde",
  "serde_json",
