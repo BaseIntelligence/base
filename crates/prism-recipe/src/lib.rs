@@ -1053,10 +1053,9 @@ mod tests {
         );
         assert!(
             needed_batch < 4096.0,
-            "batch {needed_batch:.0} at seq {seq} is not physically trainable \
+            "batch {needed_batch:.0} at seq {SEQ} is not physically trainable \
              on the pod — the caps are irreconcilable, not merely demanding, \
              and TRAIN_FLOPS_CAP or MAX_TRAIN_STEPS must move",
-            seq = SEQ
         );
     }
 
