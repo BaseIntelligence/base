@@ -413,7 +413,14 @@ def item_caps():
 
 
 def _budget():
-    return common.Budget(common.float_env("PRISM_EVAL_G5_NATURAL_BUDGET_S", 900.0))
+    # Direct-call fallback (g5_longctx passes its own share); derived from
+    # the global battery budget so it cannot over-subscribe.
+    return common.Budget(
+        common.float_env(
+            "PRISM_EVAL_G5_NATURAL_BUDGET_S",
+            common.group_budget_s("g5") * common.G5_NATURAL_SHARE,
+        )
+    )
 
 
 def run(model, ctx, budget=None):
@@ -465,7 +472,9 @@ def mirror_pairs(model, ctx, budget=None, cap=None):
     honestly labelled, exactly as `build_mirrors` does for G2. Budget and
     per-side cap default to that function's own knobs.
     """
-    budget = budget or common.Budget(common.float_env("PRISM_EVAL_MIRROR_BUDGET_S", 600.0))
+    budget = budget or common.Budget(
+        common.float_env("PRISM_EVAL_MIRROR_BUDGET_S", common.group_budget_s("mirror"))
+    )
     secret = common.resolve_secret_seed(ctx)
     cap = cap or (2 if common.tiny_caps() else 4)
     sink = {}

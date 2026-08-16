@@ -38,7 +38,7 @@ def _score_items(model, ctx, items, budget, out):
 
 
 def run(model, ctx):
-    budget = common.Budget(common.group_budget_s("g3", 1800.0))
+    budget = common.Budget(common.group_budget_s("g3"))
     out = {}
     secret = common.resolve_secret_seed(ctx)
     tiny = common.tiny_caps()

@@ -350,8 +350,35 @@ pub fn dataset_sha256() -> String {
 /// Train wall clock cap per submission (seconds). **User goal: up to 6h.**
 pub const TRAIN_HOURS_CAP: f64 = 6.0;
 
-/// Pod lifetime cap total (seconds): train cap + bootstrap margin (1h).
-pub const POD_LIFETIME_HOURS_CAP: f64 = 7.0;
+/// Harness build-phase ceiling (`PRISM_BUILD_TIMEOUT_S` default, seconds).
+pub const HARNESS_BUILD_TIMEOUT_S: f64 = 900.0;
+
+/// Harness checkpoint/score-phase ceiling (`PRISM_SCORE_TIMEOUT_S`, seconds).
+pub const HARNESS_SCORE_TIMEOUT_S: f64 = 1800.0;
+
+/// Harness eval-phase ceiling (`PRISM_EVAL_TIMEOUT_S` default, seconds):
+/// model load + G1-G8 battery (`eval.common.BATTERY_BUDGET_S` = 3600) +
+/// rollup + scoring.
+pub const HARNESS_EVAL_TIMEOUT_S: f64 = 5400.0;
+
+/// Pod lifetime cap total (**hours**), sized to actually contain the
+/// harness it rents rather than a round guess.
+///
+/// The old 7.0 was "train cap + 1 h margin", but the harness's own phase
+/// ceilings already exceeded it: the train child alone can run
+/// build (900) + train (6 h + 120) + checkpoint (1800) = 6.78 h, and the
+/// eval child then gets its whole timeout on top. At the previous
+/// `PRISM_EVAL_TIMEOUT_S = 3 h` the worst case was ~9.78 h against a 7 h
+/// pod — a full-budget submission could be terminated mid-eval, losing the
+/// entire rental. `prism_lium_payer::sealed` had already modelled 6 h train
+/// + 2 h eval = 8 h, so 7.0 disagreed with the payer too.
+///
+/// Raising the ceiling does not raise the bill for a submission that
+/// finishes early (pods are billed for time used); it only stops the
+/// orchestrator from killing a run the recipe itself permits. Asserted
+/// against the phase ceilings in
+/// `tests::pod_lifetime_covers_train_plus_eval`.
+pub const POD_LIFETIME_HOURS_CAP: f64 = 8.5;
 
 /// Effective train wall-clock cap (hours). Production is always
 /// [`TRAIN_HOURS_CAP`]; `PRISM_TEST_TRAIN_MINUTES` (staging/e2e only, works
@@ -769,6 +796,41 @@ mod tests {
     fn contract_rejects_missing_train() {
         let err = check_contract(BASELINE_ARCHITECTURE_PY, "x = 1").unwrap_err();
         assert!(matches!(err, ContractError::MissingTrain));
+    }
+
+    /// The pod the orchestrator rents must outlast the harness it runs.
+    /// Regression guard for the budget over-subscription: the train child's
+    /// phase ceilings plus the eval child's ceiling must fit the pod cap.
+    #[test]
+    fn pod_lifetime_covers_train_plus_eval() {
+        // Train child: build -> train (cap + 120 s grace) -> checkpoint.
+        let train_child =
+            HARNESS_BUILD_TIMEOUT_S + TRAIN_HOURS_CAP * 3600.0 + 120.0 + HARNESS_SCORE_TIMEOUT_S;
+        // Eval child announces one phase, so its whole timeout applies.
+        let worst_case_s = train_child + HARNESS_EVAL_TIMEOUT_S;
+        let pod_s = POD_LIFETIME_HOURS_CAP * 3600.0;
+        assert!(
+            worst_case_s <= pod_s,
+            "harness worst case {worst_case_s}s exceeds pod cap {pod_s}s \
+             (train_child={train_child}s, eval={HARNESS_EVAL_TIMEOUT_S}s)"
+        );
+        // The eval ceiling must in turn contain the battery ceilings the
+        // python side declares, with reserve for load/rollup/score.
+        let harness = harness_concat();
+        assert!(
+            harness.contains("BATTERY_BUDGET_S = 3600.0"),
+            "eval.common battery budget moved — re-check the pod arithmetic"
+        );
+        assert!(
+            harness.contains("PRISM_EVAL_TIMEOUT_S\", 5400.0"),
+            "harness eval timeout moved — re-check the pod arithmetic"
+        );
+        const {
+            assert!(
+                HARNESS_EVAL_TIMEOUT_S > 3600.0,
+                "eval ceiling must leave reserve above the battery budget"
+            );
+        }
     }
 
     #[test]

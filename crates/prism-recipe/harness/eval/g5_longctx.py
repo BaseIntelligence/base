@@ -31,11 +31,12 @@ from . import common, g5_babilong, g5_ruler, natural_docs
 _FLOOR = 0.25
 _REL = 0.9
 
-# Internal shares of the G5 wall-clock budget (sum = 1).
+# Internal shares of the G5 wall-clock budget (sum = 1). Defined in
+# `common` so the adapters' direct-call fallbacks use the same numbers.
 _BUDGET_SHARE = {
-    "ruler": 0.45,
-    "babilong": 0.30,
-    "natural": 0.25,
+    "ruler": common.G5_RULER_SHARE,
+    "babilong": common.G5_BABILONG_SHARE,
+    "natural": common.G5_NATURAL_SHARE,
 }
 
 
@@ -94,7 +95,7 @@ def compute_lstar(len_means):
 
 def run(model, ctx):
     """Orchestrate RULER + BABILong + natural; emit flat `g5.*` metrics."""
-    budget = common.Budget(common.group_budget_s("g5", 3600.0))
+    budget = common.Budget(common.group_budget_s("g5"))
     out = {}
     tiny = common.tiny_caps()
 

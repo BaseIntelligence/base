@@ -235,7 +235,11 @@ def run(model, ctx):
     common.emit(out, "g8.divergence.series_nan_frac", _nan_frac(series, "loss"))
     common.emit(out, "g8.divergence.probe_nan_frac", _nan_frac(probes, "probe_loss"))
 
-    budget = common.Budget(common.float_env("PRISM_EVAL_G8_SWEEP_S", 300.0))
+    # Share of the global battery budget (`PRISM_EVAL_G8_SWEEP_S` still
+    # overrides for operator debugging).
+    budget = common.Budget(
+        common.float_env("PRISM_EVAL_G8_SWEEP_S", common.group_budget_s("g8"))
+    )
     # The sweep needs real GPU-minutes: stubbed under tiny test caps
     # unless explicitly forced with PRISM_EVAL_G8_SWEEP=1.
     sweep_forced = common.float_env("PRISM_EVAL_G8_SWEEP", 0.0) == 1.0

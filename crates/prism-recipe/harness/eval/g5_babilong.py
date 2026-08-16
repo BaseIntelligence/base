@@ -149,7 +149,10 @@ def run(
         else common.eval_g5_n_items(default_full=2, default_tiny=1)
     )
     budget = common.Budget(
-        budget_s if budget_s is not None else common.group_budget_s("g5_babilong", 900.0)
+        # See the note in g5_ruler.run: direct-call fallback only.
+        budget_s
+        if budget_s is not None
+        else common.group_budget_s("g5") * common.G5_BABILONG_SHARE
     )
     probe_cap = common.float_env(
         "PRISM_EVAL_G5_BABILONG_PROBE_BUDGET_S", budget.seconds / max(1, len(tasks))

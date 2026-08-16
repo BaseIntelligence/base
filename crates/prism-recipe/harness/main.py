@@ -96,7 +96,15 @@ PROBE_EVERY = int_env("PRISM_PROBE_EVERY", 25)
 PROBE_TIME_BUDGET_S = float_env("PRISM_PROBE_TIME_BUDGET_S", 600.0)
 BUILD_TIMEOUT_S = float_env("PRISM_BUILD_TIMEOUT_S", 900.0)
 SCORE_TIMEOUT_S = float_env("PRISM_SCORE_TIMEOUT_S", 1800.0)
-EVAL_TIMEOUT_S = float_env("PRISM_EVAL_TIMEOUT_S", 3 * 3600.0)
+# Eval-phase ceiling. The eval child announces ONE phase ("eval"), so this
+# single number must cover model load + the whole G1-G8 battery + rollup +
+# scoring. It is sized as `eval.common.BATTERY_BUDGET_S` (3600 s of group
+# ceilings, which now sum to exactly that by construction) plus 1800 s of
+# reserve for load/rollup/score. Train child (build 900 + train cap+120 +
+# checkpoint 1800) plus this must fit `prism_recipe::POD_LIFETIME_HOURS_CAP`
+# — asserted in `prism_recipe::tests::pod_lifetime_covers_train_plus_eval`.
+# Was 3 h, which over-subscribed the 7 h pod by ~2.8 h in the worst case.
+EVAL_TIMEOUT_S = float_env("PRISM_EVAL_TIMEOUT_S", 5400.0)
 WORKDIR = os.environ.get("PRISM_WORKDIR", "/tmp/prism_eval")
 # Sidecar for Lium harvest: v3 METRICS_JSON lines can exceed the historical
 # 32 KiB log-tail window; master greps this file (or the full log line).

@@ -114,7 +114,7 @@ def run(model, ctx):
 
     tok, device = ctx["tokenizer"], ctx["device"]
     cuda = device == "cuda" and torch.cuda.is_available()
-    budget = common.Budget(common.group_budget_s("g7", 2400.0))
+    budget = common.Budget(common.group_budget_s("g7"))
     out = {}
     tiny = common.tiny_caps()
     grid = _GRID_TINY if tiny else _GRID_FULL
