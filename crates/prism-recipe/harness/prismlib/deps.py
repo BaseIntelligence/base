@@ -18,6 +18,7 @@ actual subprocess runs only on the pod.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -51,22 +52,76 @@ def find_manifest(workdir):
 
 def build_install_cmd(kind, path):
     """pip argv for a manifest kind. `--break-system-packages` (PEP 668) and
-    `--root-user-action=ignore` match the harness eval-deps installer; no
-    build isolation disable — the image ships the toolchain."""
+    `--root-user-action=ignore` match the harness eval-deps installer.
+    `--no-build-isolation` lets a miner pin Transformer Engine (NVFP4
+    recipe) against the image torch instead of a stale preinstalled wheel
+    that imports but lacks `NVFP4BlockScaling`. A pinned `==` version in
+    the manifest is enough to replace the preinstall; do not put pip
+    option lines in requirements.txt (some image pips reject them)."""
     base = [
         sys.executable,
         "-m",
         "pip",
         "install",
+        "--no-build-isolation",
         "--break-system-packages",
         "--root-user-action=ignore",
     ]
     if kind == "requirements":
-        return base + ["-r", path]
+        cmd = base + ["-r", path]
+        try:
+            body = open(path, encoding="utf-8").read()
+        except OSError:
+            body = ""
+        # Lium daturaai cu13 image has no nvcc. TE's pytorch extra is an
+        # sdist on PyPI; Astral publishes CUDA-13 / torch-2.12 wheels.
+        if "transformer-engine" in body or "transformer_engine" in body:
+            cmd = base + [
+                "--prefer-binary",
+                "--extra-index-url",
+                "https://wheels.astral.sh/simple/cu130/",
+                "-r",
+                path,
+            ]
+        return cmd
     if kind == "pyproject":
         # Install the project rooted at the manifest's directory.
         return base + [os.path.dirname(path) or "."]
     raise ValueError(f"unknown manifest kind: {kind}")
+
+
+def _cuda_build_env(base=None):
+    """Point TE / CUDA extension builds at the image toolkit.
+
+    The daturaai cu13 devel image ships nvcc, but the harness PATH does not
+    always include `/usr/local/cuda/bin`. TE 2.18's pytorch sdist then fails
+    with "Could neither find NVCC executable nor CUDA runtime Python package."
+    """
+    env = dict(base or os.environ)
+    candidates = [
+        env.get("CUDA_HOME"),
+        env.get("CUDA_PATH"),
+        "/usr/local/cuda",
+        "/usr/local/cuda-13.0",
+        "/usr/local/cuda-13",
+        "/usr/lib/cuda",
+    ]
+    for cand in candidates:
+        if not cand or not os.path.isdir(cand):
+            continue
+        env["CUDA_HOME"] = cand
+        env["CUDA_PATH"] = cand
+        bindir = os.path.join(cand, "bin")
+        if os.path.isdir(bindir):
+            env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
+        for lib in ("lib64", "lib"):
+            libdir = os.path.join(cand, lib)
+            if os.path.isdir(libdir):
+                env["LD_LIBRARY_PATH"] = libdir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+                break
+        break
+    env.setdefault("NVTE_FRAMEWORK", "pytorch")
+    return env
 
 
 def install_miner_deps(workdir, timeout_s=None, logfn=print):
@@ -82,7 +137,12 @@ def install_miner_deps(workdir, timeout_s=None, logfn=print):
     kind, path = found
     timeout_s = int(timeout_s or DEFAULT_INSTALL_TIMEOUT_S)
     cmd = build_install_cmd(kind, path)
-    logfn(f"[deps] installing miner {kind} manifest ({path}) timeout={timeout_s}s")
+    env = _cuda_build_env()
+    nvcc = shutil.which("nvcc", path=env.get("PATH"))
+    logfn(
+        f"[deps] installing miner {kind} manifest ({path}) timeout={timeout_s}s "
+        f"cuda_home={env.get('CUDA_HOME')} nvcc={nvcc or 'missing'}"
+    )
     try:
         proc = subprocess.run(
             cmd,
@@ -90,6 +150,7 @@ def install_miner_deps(workdir, timeout_s=None, logfn=print):
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"miner {kind} install timed out after {timeout_s}s") from exc

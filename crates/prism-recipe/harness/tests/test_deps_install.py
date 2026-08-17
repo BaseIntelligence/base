@@ -25,7 +25,20 @@ def main():
         cmd = deps.build_install_cmd(kind, path)
         assert cmd[:4] == [sys.executable, "-m", "pip", "install"], cmd
         assert "--break-system-packages" in cmd
+        assert "--no-build-isolation" in cmd
         assert cmd[-2:] == ["-r", req], cmd
+        assert "--extra-index-url" not in cmd
+
+    # Transformer Engine pin gets the CUDA-13 wheel index (no nvcc on Lium).
+    with tempfile.TemporaryDirectory() as d:
+        req = os.path.join(d, "requirements.txt")
+        open(req, "w").write("transformer-engine[pytorch,core_cu13]==2.16.0\n")
+        kind, path = deps.find_manifest(d)
+        cmd = deps.build_install_cmd(kind, path)
+        assert "--prefer-binary" in cmd
+        assert "--extra-index-url" in cmd
+        assert "https://wheels.astral.sh/simple/cu130/" in cmd
+        assert cmd[-2:] == ["-r", req]
 
     # pyproject-only → pip install <dir>.
     with tempfile.TemporaryDirectory() as d:

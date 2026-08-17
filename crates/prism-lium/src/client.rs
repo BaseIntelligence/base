@@ -824,7 +824,7 @@ impl EvalJobBackend for LiumClient {
                 }
                 matched
             }
-            None => offers.into_iter().take(10).collect(),
+            None => offers.into_iter().take(3).collect(),
         };
         if candidates.is_empty() {
             return Err(CostGuardrailError::NoCapacity.into());
@@ -832,18 +832,6 @@ impl EvalJobBackend for LiumClient {
 
         let lifetime = spec.max_lifetime_hours.ceil() as u64;
         let template_id = self.resolve_template_id(spec).await?;
-        // Never rent more GPUs than requested — even if the marketplace
-        // offer advertises a larger host (those are filtered above).
-        let rent_gpu_count = spec.gpu_count.max(1);
-        let make_body = || {
-            serde_json::json!({
-                "pod_name": spec.name,
-                "user_public_key": spec.ssh_public_keys,
-                "termination_hours": lifetime.max(1),
-                "gpu_count": rent_gpu_count,
-                "template_id": template_id,
-            })
-        };
 
         let mut last_err = String::from("no offer tried");
         for selected in &candidates {
@@ -852,6 +840,15 @@ impl EvalJobBackend for LiumClient {
             }
             let effective =
                 prism_lium_types::effective_gpu_count(selected.gpu_count, &selected.gpu_type);
+            // Live 1-GPU pin still rents exactly 1. Multi-GPU hosts reject
+            // splitting (`Provider doesn't allow GPU splitting`), so a 4-GPU
+            // request on an 8×5090 machine must rent the whole host; the
+            // harness then DDP-trains on `torch.cuda.device_count()`.
+            let rent_gpu_count = if spec.gpu_count <= 1 {
+                spec.gpu_count.max(1)
+            } else {
+                effective.max(spec.gpu_count)
+            };
             info!(
                 offer_id = %selected.id,
                 gpu = %selected.gpu_type,
@@ -861,7 +858,13 @@ impl EvalJobBackend for LiumClient {
                 %template_id,
                 "lium rent"
             );
-            let body = make_body();
+            let body = serde_json::json!({
+                "pod_name": spec.name,
+                "user_public_key": spec.ssh_public_keys,
+                "termination_hours": lifetime.max(1),
+                "gpu_count": rent_gpu_count,
+                "template_id": template_id,
+            });
             // Fire rent immediately — BYOK keys must not share a process-wide
             // queue with each other or with an operator fallback key.
             let rented = self

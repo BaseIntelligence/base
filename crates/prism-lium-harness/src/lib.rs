@@ -123,6 +123,12 @@ pub fn harness_env_pairs(
     ];
     for key in [
         "PRISM_TEST_TRAIN_MINUTES",
+        // Miner-visible train geometry. Default harness stream is 8×512,
+        // which DataParallel then shards (2 samples/GPU on 4×5090). Passing
+        // these through lets an isolated 4-GPU proof raise per-rank batch
+        // and seq without a harness rebuild on the pod.
+        "PRISM_SEQ_LEN",
+        "PRISM_TRAIN_BATCH_SIZE",
         // Operator seed-variance sweep. This list is an ALLOWLIST, so a knob
         // absent from it never reaches the pod: without this entry the
         // Phase-0 sweep would set the seed on the control-plane container,

@@ -18,22 +18,64 @@ def dataset_dst():
     return os.environ.get("PRISM_DATASET_PATH", "/tmp/prism_dataset.parquet")
 
 
-def materialize_dataset(url, sha256_hex):
+def _download_url(url, dst):
+    import urllib.error
     import urllib.request
 
+    last_err = None
+    for attempt in range(1, 6):
+        try:
+            log(f"downloading {url} (attempt {attempt}/5)")
+            t0 = time.time()
+            tmp = dst + ".part"
+            with urllib.request.urlopen(url, timeout=600) as r, open(tmp, "wb") as f:
+                while True:
+                    chunk = r.read(1 << 22)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            os.replace(tmp, dst)
+            log(f"downloaded in {time.time()-t0:.0f}s")
+            return
+        except urllib.error.HTTPError as exc:
+            last_err = exc
+            if os.path.isfile(dst + ".part"):
+                try:
+                    os.remove(dst + ".part")
+                except OSError:
+                    pass
+            if exc.code in (408, 429, 500, 502, 503, 504) and attempt < 5:
+                wait = min(90, 8 * (2 ** (attempt - 1)))
+                log(f"download {exc.code}; retry in {wait}s")
+                time.sleep(wait)
+                continue
+            raise
+        except (TimeoutError, OSError) as exc:
+            last_err = exc
+            if attempt < 5:
+                wait = min(90, 8 * (2 ** (attempt - 1)))
+                log(f"download error ({exc}); retry in {wait}s")
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError(f"dataset download failed: {last_err}")
+
+
+def materialize_dataset(url, sha256_hex):
     dst = dataset_dst()
     if os.path.isfile(dst):
         log("dataset already materialized")
     else:
-        log(f"downloading {url}")
-        t0 = time.time()
-        with urllib.request.urlopen(url, timeout=600) as r, open(dst, "wb") as f:
-            while True:
-                chunk = r.read(1 << 22)
-                if not chunk:
-                    break
-                f.write(chunk)
-        log(f"downloaded in {time.time()-t0:.0f}s")
+        try:
+            _download_url(url, dst)
+        except Exception as first:  # noqa: BLE001
+            # HuggingFace CDN 429s from Lium egress; official mirror keeps the pin.
+            mirror = url.replace("https://huggingface.co/", "https://hf-mirror.com/", 1)
+            if mirror != url:
+                log(f"primary download failed ({first}); trying mirror")
+                _download_url(mirror, dst)
+            else:
+                raise
     h = hashlib.sha256()
     with open(dst, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 22), b""):

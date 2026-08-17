@@ -115,14 +115,19 @@ impl Offer {
     }
 
     /// Whether this offer may be rented for `requested` GPUs.
-    /// Prism requests exactly one GPU; multi-GPU hosts are hard-rejected.
+    ///
+    /// A 1-GPU request still hard-rejects multi-GPU hosts (live SKU pin).
+    /// A multi-GPU request accepts a larger host (`effective >= requested`)
+    /// when no exact 4× offer is listed. Lium rejects GPU splitting, so the
+    /// client rents `gpu_count = effective` (the whole host); the miner caps
+    /// DDP at the requested width.
     #[must_use]
     pub fn matches_gpu_count(&self, requested: u32) -> bool {
         let effective = effective_gpu_count(self.gpu_count, &self.gpu_type);
         if requested <= 1 {
             return effective == 1;
         }
-        effective == requested
+        effective >= requested
     }
 }
 
@@ -451,15 +456,21 @@ mod tests {
         assert!(!one.matches_gpu_count(4));
         assert!(four.matches_gpu_count(4));
         assert!(four_label.matches_gpu_count(4), "label multiplier wins");
-        assert!(!eight.matches_gpu_count(4), "8x is not an exact 4 match");
+        assert!(
+            eight.matches_gpu_count(4),
+            "8x host can rent 4 cards when no exact 4× offer exists"
+        );
 
-        // End-to-end through the pinned filter: only the 4×5090 offers survive,
-        // cheapest first — so the default pod_gpu_count of 4 still rents.
+        // Prefer exact 4× (smaller count first, then cheaper). 8× is fallback.
         let pref = GpuPreference::default_prism();
         let mut offers = vec![one.clone(), four.clone(), four_label.clone(), eight.clone()];
         pref.filter_sort_offers(&mut offers, 4);
         let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
-        assert_eq!(ids, ["4x-label", "4x"], "4-GPU offers only, cheapest first");
+        assert_eq!(
+            ids,
+            ["4x-label", "4x", "8x"],
+            "exact 4× first, then larger 5090 hosts"
+        );
 
         // Sanity: the historical single-GPU path is unchanged.
         let mut single_req = vec![one, four, four_label, eight];

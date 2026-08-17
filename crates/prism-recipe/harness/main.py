@@ -190,6 +190,39 @@ def _eval_battery_status():
         return {"error": str(exc)[:200]}
 
 
+def _log_te_stack(logfn):
+    """Log the installed Transformer Engine + NVFP4 recipe class after deps."""
+    spec = importlib.util.find_spec("transformer_engine")
+    if spec is None:
+        logfn("te_stack: transformer_engine not importable")
+        return
+    ver = "unknown"
+    recipes = []
+    try:
+        import transformer_engine as te  # type: ignore
+
+        ver = getattr(te, "__version__", "unknown")
+    except Exception as exc:  # noqa: BLE001
+        logfn(f"te_stack: import failed ({exc})")
+        return
+    try:
+        from transformer_engine.common import recipe as te_recipe  # type: ignore
+
+        for name in (
+            "NVFP4BlockScaling",
+            "Float4BlockScaling",
+            "MXFP4BlockScaling",
+            "DelayedScaling",
+            "Float8CurrentScaling",
+            "MXFP8BlockScaling",
+        ):
+            if getattr(te_recipe, name, None) is not None:
+                recipes.append(name)
+    except Exception as exc:  # noqa: BLE001
+        logfn(f"te_stack: recipe probe failed ({exc})")
+    logfn(f"te_stack: version={ver} recipes={recipes or ['none']}")
+
+
 def _detect_flow():
     """v1 (legacy single invocation) vs v3 (two-phase train/eval + G1–G8).
 
@@ -677,6 +710,13 @@ def main():
         )
         if installed:
             log(f"miner deps installed ({installed}); continuing to train/eval")
+        _log_te_stack(log)
+        # Re-probe after the miner pin: a preinstall wheel can import TE
+        # without NVFP4BlockScaling. The child honors ctx['te_available']
+        # plus its own recipe probe.
+        ctx["te_available"] = importlib.util.find_spec("transformer_engine") is not None
+        with open(ctx_path, "w", encoding="utf-8") as f:
+            json.dump(ctx, f)
     except Exception as exc:  # noqa: BLE001 — miner-attributable, routed to install_deps
         print("DEPS_INSTALL_FAIL")
         fail("install_deps", exc)

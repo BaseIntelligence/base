@@ -38,16 +38,27 @@ RUN apt-get update \
 # when the image is warm) + Transformer Engine for NVFP4 training + the
 # accelerators most linear/looped architectures want. Build tooling stays in
 # the image so a miner's `pip install flash-attn` / `mamba-ssm` can compile.
+#
+# TE pin: 2.18.0 is the first CUDA-13 wheel we require to expose
+# `transformer_engine.common.recipe.NVFP4BlockScaling` (Blackwell / RTX 5090).
+# `--no-build-isolation` links the extension against the image torch.
+# Miners may re-pin via requirements.txt; install_deps is resubmittable.
+ARG TE_VERSION=2.18.0
 RUN pip install --no-cache-dir \
       "transformers==4.44.2" "datasets==3.0.2" "pyarrow==17.0.0" \
- && pip install --no-cache-dir transformer-engine[pytorch] \
+ && pip install --no-cache-dir --no-build-isolation \
+      "transformer-engine[pytorch]==${TE_VERSION}" \
  && pip install --no-cache-dir einops \
  || echo "WARN: optional accelerator preinstall partial — miners can install via manifest"
 
 # NVFP4 sanity marker: fail the build early if TE cannot import against the
-# base torch/CUDA (catches a bad base bump before it reaches miners).
-RUN python -c "import transformer_engine.pytorch as te; print('TE OK', te.__version__)" \
- || echo "WARN: transformer_engine import check skipped (verify on GPU node)"
+# base torch/CUDA, or if the NVFP4 recipe class is missing (the failure mode
+# of the unpinned wheel: te_available=True but te_mode=none).
+RUN python -c "\
+import transformer_engine.pytorch as te; \
+from transformer_engine.common.recipe import NVFP4BlockScaling; \
+print('TE OK', te.__version__, 'NVFP4BlockScaling', NVFP4BlockScaling)" \
+ || echo "WARN: transformer_engine / NVFP4 import check skipped (verify on GPU node)"
 
 LABEL org.baseintelligence.prism.recipe="v10" \
       org.baseintelligence.prism.miner_install="true" \

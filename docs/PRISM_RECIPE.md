@@ -79,7 +79,23 @@ Descriptor keys: `pod_image_ref`, `miner_install_supported` (bool),
 `PRISM_POD_IMAGE` + `PRISM_POD_IMAGE_TAG` (the Lium template name flips to
 `prism-recipe-v10` automatically — template identity is name-based, so a new
 image must ship under a new name). Ops: build + push the image and validate
-`transformer_engine` import on a GPU node **before** repinning live.
+`transformer_engine` import **and** `NVFP4BlockScaling` on a GPU node
+**before** repinning live.
+
+**Pinned TE stack (recipe-v10 image + miner manifest):**
+
+| Image | Pin | Why |
+|-------|-----|-----|
+| NGC `pytorch:25.06-py3` (v10 Dockerfile) | `transformer-engine[pytorch]==2.18.0` | image has nvcc; 2.18 is current |
+| Lium daturaai cu13.0.2 fallback | `transformer-engine[pytorch,core_cu13]==2.16.0` | no nvcc; use prebuilt `transformer_engine_torch` 2.16.0+cu.13.0.torch.2.12 from `https://wheels.astral.sh/simple/cu130/` |
+
+Both expose `transformer_engine.common.recipe.NVFP4BlockScaling`. An older
+wheel can still `import transformer_engine` (`te_available=True`) while
+leaving `te_mode=none`. Harness `deps.py` adds `--no-build-isolation` and
+the Astral CUDA-13 index when the miner manifest names Transformer Engine.
+On consumer Blackwell (SM120 / RTX 5090) construct the recipe as
+`NVFP4BlockScaling(disable_rht=True, disable_stochastic_rounding=True)`
+when those kwargs exist. BF16 remains the fallback if the class is absent.
 
 **Miner-fixable retry classes.** A failed custom-deps install (`install_deps`)
 or a `training.py` build/train crash (`train_script`) fails **without
