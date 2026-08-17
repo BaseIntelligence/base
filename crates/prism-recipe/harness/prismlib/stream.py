@@ -17,8 +17,9 @@ ctx["train_stream"]:` plus their own stop condition (steps / guard).
 
 The budget is enforced where the tokens are handed out, not where the miner
 is asked to be polite. `next_batch` refuses to yield once the attested
-spend reaches `flops_cap`, or the wall-clock safety bound is hit, and
-raises [`prismlib.flops.BudgetExhausted`] carrying which cap bound. That is
+spend reaches `flops_cap`, the wall-clock safety bound is hit, or
+`steps_cap` batches have been yielded, and raises
+[`prismlib.flops.BudgetExhausted`] carrying which cap bound. That is
 a hard stop the miner cannot decline, unlike the cooperative
 `ctx["guard"]` closure it replaces — and reaching it is the *expected*
 outcome, routed to the same graceful checkpoint path as
@@ -54,6 +55,7 @@ class SeededTrainStream:
         seed=0x00505249534D,
         flops_cap=None,
         wall_cap_s=None,
+        steps_cap=None,
         t0=None,
     ):
         self._texts = list(texts)
@@ -78,6 +80,7 @@ class SeededTrainStream:
         self.flops_cap = float(flops_cap) if flops_cap else 0.0
         self.flops_spent = 0.0
         self.wall_cap_s = float(wall_cap_s) if wall_cap_s else 0.0
+        self.steps_cap = int(steps_cap) if steps_cap else 0
         self.binding_cap = "none"
         self._t0 = t0
         # Probe index space: peek_batch draws from the same permutation, so a
@@ -105,6 +108,9 @@ class SeededTrainStream:
 
     def _check_budget(self):
         """Hard stop on whichever cap binds first; records which one."""
+        if self.steps_cap > 0 and self.batches_yielded >= self.steps_cap:
+            self.binding_cap = "steps"
+            raise BudgetExhausted("steps", self.batches_yielded, self.steps_cap)
         if self.flops_cap > 0.0 and self.flops_spent >= self.flops_cap:
             self.binding_cap = "flops"
             raise BudgetExhausted("flops", self.flops_spent, self.flops_cap)
@@ -124,6 +130,8 @@ class SeededTrainStream:
             "binding_cap": self.binding_cap,
             "wall_cap_s": float(self.wall_cap_s),
             "wall_s": float(self.wall_s()),
+            "steps_cap": int(self.steps_cap),
+            "steps": int(self.batches_yielded),
             "tokens_seen": int(self.tokens_seen),
             "bytes_seen": int(self.bytes_seen),
             "bytes_per_token": self.bytes_per_token(),

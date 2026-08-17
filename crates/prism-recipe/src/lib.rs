@@ -383,14 +383,20 @@ pub const TRAIN_HOURS_CAP: f64 = 5.0;
 /// (`6·d·V`). There is no size tier to declare and none to shop for.
 pub const TRAIN_FLOPS_CAP: f64 = 3.0e18;
 
-/// Eligibility floor: a run must attest at least this fraction of
-/// [`TRAIN_FLOPS_CAP`] to be scored.
+/// Eligibility floor: a *voluntary* early stop must attest at least this
+/// fraction of [`TRAIN_FLOPS_CAP`] to be scored.
 ///
 /// The underspend guard. Without it, an architecture that saturates early
 /// profits by stopping early — it is then compared against a weaker
 /// truncation reference (the compute-optimal frontier's slope is only
 /// ≈ −0.05..−0.10 nats per e-fold, so buying less compute costs less score
-/// than it saves). Below this floor the run is ineligible, not merely scaled.
+/// than it saves). Below this floor a **voluntary** stop is ineligible, not
+/// merely scaled.
+///
+/// Protocol-bound runs (`binding_cap` ∈ steps/wall/flops) are exempt:
+/// Phase 0 measured the reference Transformer++ at batch 8 × seq 512
+/// hitting the 20 000-step cap with only 6.1 % of [`TRAIN_FLOPS_CAP`].
+/// Applying 0.5 to that run would mark the honest baseline ineligible.
 pub const MIN_SPEND_FRACTION: f64 = 0.5;
 
 /// Global eval-battery wall budget (seconds) the harness battery declares
@@ -1008,24 +1014,12 @@ mod tests {
         assert!(TRAIN_FLOPS_CAP > 0.0 && TRAIN_FLOPS_CAP.is_finite());
     }
 
-    /// The step cap and the FLOPs cap must be **mutually reachable**, and at
-    /// the reference batch they are not.
-    ///
-    /// Measured in Phase 0 (`docs/evidence/prism-v3-phase0/`): the reference
-    /// Transformer++ baseline stopped at 20 006 steps — its own
-    /// `ctx["max_train_steps"]` budget — having attested `1.82e17` FLOPs, i.e.
-    /// **6.1 %** of `TRAIN_FLOPS_CAP`. At `batch 8 x seq 512 = 4096`
-    /// tokens/step, 20 000 steps buys `8.2e7` tokens, and the cap needs
-    /// `1.35e9`. So a submission at the reference batch cannot reach
-    /// `MIN_SPEND_FRACTION` no matter how efficient it is: the underspend gate
-    /// would mark the *reference baseline* `Ineligible`.
-    ///
-    /// This is a real interaction between three constants, not a harness bug,
-    /// and it is why the gate must not be switched on before miners are told
-    /// the batch implication (~132 at seq 512, 16x the reference). Asserted
-    /// here so the arithmetic is checked rather than rediscovered on a pod.
+    /// Phase 0: at the reference batch the step cap binds first, at ~6 % of
+    /// `TRAIN_FLOPS_CAP`. That is why underspend is skipped when
+    /// `binding_cap = steps` — the fraction is still 0.5 for *voluntary*
+    /// stops, but the honest baseline must stay eligible.
     #[test]
-    fn step_cap_and_flops_cap_are_only_mutually_reachable_at_large_batch() {
+    fn reference_batch_is_step_bound_below_the_spend_floor() {
         // Measured on 1xRTX 5090, d=1024 L=24 V=50257: dispatch-counted
         // FLOPs/token, cross-checked analytically to 1.1 %.
         const F_TOK_MEASURED: f64 = 2.221e9;
@@ -1036,26 +1030,24 @@ mod tests {
         let spendable = tokens_at_step_cap * F_TOK_MEASURED;
         let fraction = spendable / TRAIN_FLOPS_CAP;
         assert!(
-            fraction < MIN_SPEND_FRACTION,
-            "the reference batch now reaches {pct:.1} % of the FLOPs cap, \
-             which is at/above MIN_SPEND_FRACTION — if a constant changed to \
-             make this true, update docs/PRISM_RECIPE.md and the miner docs, \
-             because the batch guidance is no longer required",
+            (fraction - 0.061).abs() < 0.005,
+            "Phase 0 reference spend was ~6.1 %; got {pct:.1} %",
             pct = fraction * 100.0
         );
+        assert!(
+            fraction < MIN_SPEND_FRACTION,
+            "if the reference batch now clears MIN_SPEND_FRACTION, the \
+             protocol-bound exemption is no longer load-bearing — update \
+             docs/PRISM_RECIPE.md"
+        );
 
-        // The batch that DOES make the cap reachable inside the step cap.
         let needed_tokens = TRAIN_FLOPS_CAP / F_TOK_MEASURED;
         let needed_batch = needed_tokens / f64::from(MAX_TRAIN_STEPS) / SEQ;
-        assert!(
-            needed_batch > REF_BATCH,
-            "sanity: reaching the cap must need a LARGER batch than the reference"
-        );
+        assert!(needed_batch > REF_BATCH);
         assert!(
             needed_batch < 4096.0,
             "batch {needed_batch:.0} at seq {SEQ} is not physically trainable \
-             on the pod — the caps are irreconcilable, not merely demanding, \
-             and TRAIN_FLOPS_CAP or MAX_TRAIN_STEPS must move",
+             on the pod — TRAIN_FLOPS_CAP or MAX_TRAIN_STEPS must move",
         );
     }
 

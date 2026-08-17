@@ -163,9 +163,12 @@ curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe"
 Live recipe **2.0.0** advertises `version: "2.0.0"` and AutoModel pin fields
 (`automodel_pin_id` = `automodel@v0.5.0`, `automodel_repo_url`,
 `automodel_git_ref`, `automodel_git_commit`, `automodel_content_sha256`),
-plus caps such as `train_hours_cap: 6.0`, `max_train_steps: 20000`,
-`max_params: 1000000000`, FineWeb dataset pin, and `pin_hex` (sha over the
-versioned descriptor). Trust `/v1/recipe`, not marketing chart labels.
+plus caps such as `train_flops_cap: 3.0e18` (the budget currency),
+`train_hours_cap: 5.0` (anti-DoS wall), `min_spend_fraction: 0.5`
+(voluntary-stop floor; a step/wall/FLOPs-bound run stays eligible),
+`max_train_steps: 20000`, `max_params: 1000000000`, FineWeb dataset pin,
+and `pin_hex` (sha over the versioned descriptor). Trust `/v1/recipe`,
+not marketing chart labels.
 
 `POST /v1/submissions` is idempotent by `submission_id` (hash of **pin id ‖
 `0x00` ‖ patch bytes**).
@@ -446,7 +449,8 @@ bpb (v2). After the reference baselines (**Transformer++** and
 are measured and the anchor set is pre-registered, governance may flip to
 `composite`: group scores are anchor-normalized (**arithmetic** mean within
 each group; a single zero sub-metric does not zero the group), gate-filtered
-(`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget + CI gates), combined as a weighted
+(`g3 ≥ 0.25` currently **disarmed** until G3 item counts stabilize;
+`g8 ≥ 0.5`, budget + CI gates), combined as a weighted
 **geometric** mean across groups (`C = ∏ g_k^{w_k}` — a full group score of 0
 collapses C), and ranked by the bootstrap lower-confidence bound
 (`lattice = round(SCORE_MAX × max(0, C − 1.645·SE))`). Inspect the anchor

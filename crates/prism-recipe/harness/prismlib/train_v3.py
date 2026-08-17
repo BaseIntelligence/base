@@ -266,6 +266,7 @@ def _run(cfg, st):
         seed=int(cfg.get("seed", RECIPE_SEED)),
         flops_cap=flops_cap,
         wall_cap_s=train_hours_cap * 3600.0,
+        steps_cap=int(cfg.get("max_train_steps", 20000)),
     )
 
     ctx = {k: v for k, v in cfg.items() if k not in _HARNESS_CTX_KEYS}

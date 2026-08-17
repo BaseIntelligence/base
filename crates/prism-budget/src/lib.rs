@@ -78,6 +78,15 @@ impl BindingCap {
             Self::None => "none",
         }
     }
+
+    /// The recipe, not the miner, stopped the run.
+    ///
+    /// Underspend is only a cheat when the miner *chose* to stop
+    /// (`None`). Hitting steps/wall/flops is spending the protocol budget.
+    #[must_use]
+    pub const fn protocol_bound(self) -> bool {
+        matches!(self, Self::Flops | Self::Wall | Self::Steps)
+    }
 }
 
 /// Lexicographic gate thresholds (research/12 §7 step 3).
@@ -282,10 +291,14 @@ pub fn check(facts: &BudgetFacts, gates: &GateThresholds, out: &mut Vec<GateFail
             max: max_flops,
         });
     }
-    // Underspend floor. Checked even when the run also overspent: both facts
-    // cannot be true, so reporting the pair would signal a broken meter.
+    // Underspend floor. A *voluntary* early stop must not be a free win
+    // (see module docs). A run that hit a protocol cap (steps / wall /
+    // flops) spent as much as the recipe allowed at its batch size — Phase
+    // 0 measured the reference Transformer++ at batch 8 × seq 512 stopping
+    // at 20 006 steps with only 6.1 % of TRAIN_FLOPS_CAP. Rejecting that
+    // is a quality-neutral batch-size failure, not an underspend attack.
     if let Some(fraction) = gates.min_spend_fraction {
-        if fraction.is_finite() && fraction > 0.0 {
+        if fraction.is_finite() && fraction > 0.0 && !facts.binding_cap.protocol_bound() {
             let floor = max_flops * fraction;
             if spent < floor {
                 out.push(GateFailure::SpendBelowFloor {
@@ -362,8 +375,12 @@ mod tests {
     /// The underspend guard: stopping early must not be a free win.
     #[test]
     fn underspending_below_the_floor_fails() {
-        // 1.4e18 is 47% of the cap — under the 50% floor.
-        let out = check_vec(&facts(Some(1.4e18)), &v3_gates());
+        // 1.4e18 is 47% of the cap — under the 50% floor. Voluntary
+        // (binding_cap = none); a protocol-bound run at this spend is
+        // eligible (see step_bound_reference_baseline_is_eligible).
+        let mut f = facts(Some(1.4e18));
+        f.binding_cap = BindingCap::None;
+        let out = check_vec(&f, &v3_gates());
         match out.as_slice() {
             [GateFailure::SpendBelowFloor {
                 flops,
@@ -377,7 +394,9 @@ mod tests {
             other => panic!("expected exactly one spend-floor failure: {other:?}"),
         }
         // Exactly at the floor is allowed (the floor is inclusive).
-        assert!(check_vec(&facts(Some(1.5e18)), &v3_gates()).is_empty());
+        let mut at_floor = facts(Some(1.5e18));
+        at_floor.binding_cap = BindingCap::None;
+        assert!(check_vec(&at_floor, &v3_gates()).is_empty());
     }
 
     /// A wall-bound run that still cleared the floor stays eligible — that
@@ -388,6 +407,25 @@ mod tests {
         f.binding_cap = BindingCap::Wall;
         f.wall_s = 18_000.0;
         assert!(check_vec(&f, &v3_gates()).is_empty());
+    }
+
+    /// Phase 0 reference: batch 8 × seq 512, 20 006 steps, 1.82e17 FLOPs
+    /// (6.1 % of the cap), `binding_cap = steps`. Must stay eligible —
+    /// dual cap must not reject small-batch honest runs.
+    #[test]
+    fn step_bound_reference_baseline_is_eligible() {
+        let mut f = facts(Some(1.82e17));
+        f.binding_cap = BindingCap::Steps;
+        f.tokens = 81_920_000;
+        assert!(
+            check_vec(&f, &v3_gates()).is_empty(),
+            "step-capped reference spend must not trip SpendBelowFloor"
+        );
+        // The same spend with no protocol cap *is* voluntary underspend.
+        f.binding_cap = BindingCap::None;
+        assert!(check_vec(&f, &v3_gates())
+            .iter()
+            .any(|g| matches!(g, GateFailure::SpendBelowFloor { .. })));
     }
 
     /// Emit-then-declare: a pre-attestation run must not be failed for a

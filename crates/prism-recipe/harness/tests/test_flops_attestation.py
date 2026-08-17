@@ -92,7 +92,7 @@ def texts(n=64):
     return [f"document {i} " + ("abcdefgh " * 12) for i in range(n)]
 
 
-def make_stream(flops_cap=0.0, wall_cap_s=0.0, t0=None):
+def make_stream(flops_cap=0.0, wall_cap_s=0.0, steps_cap=0, t0=None):
     return SeededTrainStream(
         texts(),
         TinyTok(),
@@ -102,6 +102,7 @@ def make_stream(flops_cap=0.0, wall_cap_s=0.0, t0=None):
         seed=1234,
         flops_cap=flops_cap,
         wall_cap_s=wall_cap_s,
+        steps_cap=steps_cap,
         t0=t0,
     )
 
@@ -363,6 +364,22 @@ def test_whichever_cap_binds_first_wins():
     except F.BudgetExhausted:
         pass
     assert b.binding_cap == "wall"
+
+
+def test_step_cap_binds_and_is_recorded():
+    """The step cap is a hard stream stop, not a cooperative miner loop."""
+    stream = make_stream(steps_cap=3)
+    try:
+        for _ in range(10):
+            stream.next_batch()
+    except F.BudgetExhausted as exc:
+        assert exc.cap == "steps", exc.cap
+        assert exc.limit == 3
+    else:
+        raise AssertionError("step cap never bound")
+    assert stream.binding_cap == "steps"
+    assert stream.batches_yielded == 3
+    assert stream.budget_report()["binding_cap"] == "steps"
 
 
 def test_uncapped_stream_never_raises():

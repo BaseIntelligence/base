@@ -204,7 +204,7 @@ Master applies `automodel.patch` onto a clean pin checkout. Reject when:
 |-----|-------|
 | **Train budget (currency)** | **`3.0e18` attested FLOPs** (`TRAIN_FLOPS_CAP`) |
 | Train wall clock | **5.0 h** per submission — **safety bound, not the currency** |
-| Underspend floor | **0.5 ×** the FLOPs cap (`MIN_SPEND_FRACTION`); below it the run is ineligible |
+| Underspend floor | **0.5 ×** the FLOPs cap (`MIN_SPEND_FRACTION`) for a **voluntary** stop; protocol-bound runs (`binding_cap` ∈ `steps`/`wall`/`flops`) stay eligible |
 | Pod lifetime | **7.5 h** (derived; see *Budget currency* below) |
 | Eval battery | **3600 s** global, per-group ceilings are fractional shares |
 | Hard step cap | 20 000 (config may only lower) |
@@ -308,13 +308,14 @@ evidence under [`docs/evidence/prism-v3-phase0/`](evidence/prism-v3-phase0/).
 > Reaching the cap inside 20 000 steps needs **batch ≈ 132 at seq 512**
 > (~68k tokens/step, 16× the reference). So:
 >
-> - `MIN_SPEND_FRACTION = 0.5` **must not be enforced** until miners are told
->   this, or it marks the *reference baseline itself* `Ineligible` — a
->   quality-neutral failure for a batch-size reason.
-> - The step cap is **cooperative** (`ctx["max_train_steps"]`; nothing
->   harness-side enforces it), so it is a *convention* the reference honors,
->   while the FLOPs cap is a hard stop inside the stream. Under the dual cap
->   the step cap is the redundant one.
+> - `MIN_SPEND_FRACTION = 0.5` applies only to a **voluntary** early stop
+>   (`binding_cap = none`). A run that hits the step, wall, or FLOPs cap
+>   is protocol-bound and stays eligible — otherwise the reference
+>   baseline itself (Phase 0: 20 006 steps, `1.82e17` FLOPs, 6.1 % of
+>   cap) would be `Ineligible` for a batch-size reason.
+> - The step cap is now a **hard stream stop** (`steps_cap` on
+>   `SeededTrainStream`), same as FLOPs/wall, and records
+>   `binding_cap = steps`.
 >
 > Asserted in `prism_recipe::tests::step_cap_and_flops_cap_are_only_mutually_reachable_at_large_batch`,
 > so the interaction fails a test rather than being rediscovered on a pod.

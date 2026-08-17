@@ -481,7 +481,10 @@ normalized sub-metrics → `g_k` (G5 uses the unequal internal weights above;
 other groups default equal weight 1 — a single zero sub-metric lowers `g_k`
 proportionally, it does **not** zero the whole group); mirror-gap penalty
 `max(0, (x_public − x_mirror) − 0.05)` deducted from G2/G4/G5; lexicographic
-gates (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget caps `1B` params / `6h`, CI
+gates (`g3 ≥ 0.25` **disarmed** — Phase 0 showed the placeholder floor
+flipping on training seed alone via 1–2-cluster G3 probes; re-arm only
+after item counts stabilize, see `G3_HARD_FLOOR_ARMED`; `g8 ≥ 0.5`,
+budget caps `1B` params / `5h` wall + `3.0e18` attested FLOPs, CI
 half-width ≤ `0.05`); **across groups**: weighted **geometric** mean
 `C = ∏ g_k^{w_k}` (a **group** score of exactly 0 collapses `C` to 0 — that
 is intentional no-compensation; individual G5 zeros such as
