@@ -275,7 +275,10 @@ the top three positive scores at 100 % / 50 % / 25 % of their own lattice
 score instead of winner-take-all, and an architecture-owner split can carve
 up to 50 % of the winner's leaf to the **registry owner** of the winning
 architecture — publishing a strong architecture that someone else trains to
-the top then earns you a share. Scores first land in the leaf
+the top then earns you a share. A third mode, `sig` (**significance-gated**,
+also off by default), is described in
+[what actually earns emission](#what-actually-earns-emission-significance-gating)
+below. Scores first land in the leaf
 set emitted at the first chain-epoch boundary **after** your run finalizes (a
 long train that crosses epochs is normal — outbox assignment is exactly once).
 Positive scores then keep participating in later epochs' competition sets until
@@ -286,6 +289,110 @@ checkpoint release) is published to
 `top-model/` and (when configured) a HuggingFace model repo
 `BaseIntelligence/top-prism-architecture` (custom-arch / AutoModel novelty +
 weights, `trust_remote_code`). See [`PRISM.md`](../PRISM.md).
+
+## What Prism does and does not claim about your architecture
+
+Read this before optimizing anything, because it tells you what the ranking
+means.
+
+**Prism ranks architectures at a pinned, small budget.** Every submission trains
+under the same fixed recipe, the same fixed data, the same wall-clock cap, on the
+same GPU class. That is a genuine, well-controlled comparison — the pinned-recipe
+discipline is what makes it meaningful at all — and it is the thing the leaderboard
+measures.
+
+**Prism does not claim to select architectures that will scale.** This is not
+modesty; it is a measured result we would rather publish than hide. Tay et al.,
+*Scaling Laws vs Model Architectures* (EMNLP Findings 2023,
+[arXiv 2207.10551](https://arxiv.org/abs/2207.10551)) pretrained **>100 models
+across 10 architectures from 15 M to 40 B parameters** and found:
+
+- "**The best performing model can fluctuate at different scales.**"
+- The **vanilla Transformer has the best scaling exponent** while *not* being the
+  best at every individual compute point — the winner at one budget is not
+  necessarily the best scaler.
+- **Concrete rank flips:** Evolved Transformer beats vanilla at small scale on
+  downstream tasks and falls behind when scaled up; **ALBERT scales negatively
+  downstream** (α = −0.12), and ALBERT's mechanism is cross-layer weight sharing,
+  the same family as looped / recurrent-depth designs.
+
+So a win here is evidence that your architecture is better **at this budget**, not
+a prediction about 70 B. The authors also state the converse, which is Prism's
+honest positive claim: not every practitioner needs models that scale to billions,
+and inductive biases tailored to small or low-compute regimes are valuable in
+their own right. That is the regime Prism measures.
+
+Two practical consequences for you:
+
+- Improvements that only appear at larger scale will not be visible here, and
+  that is a limitation of the instrument, not a judgement on your idea.
+- Tuning tricks that exploit the pinned budget specifically may win here without
+  transferring. We would rather you know that than discover it later.
+
+## What actually earns emission (significance gating)
+
+Live emission today is **winner-take-all**: the single highest own score takes
+Prism's share. The `sig` mode described here is **implemented but off by
+default** — operators announce any flip, and it cannot be enabled until the
+run-to-run (seed) noise floor has been measured and published. It is documented
+now so you can see where the incentives are going.
+
+Under `sig`, **beating the champion requires clearing a measurement-uncertainty
+margin, not just posting a better point estimate.**
+
+**Why.** Two runs of the *same* architecture do not produce the same number.
+Eval sampling and training-seed noise both move the score. So a challenger that
+scores 0.1 % better has not shown it is better — it may simply have drawn a
+luckier run. Under the old rule that coin flip won the entire share, which is
+also exactly what makes copying the champion profitable: a copy has the *same*
+true quality, so it wins the flip about half the time. Requiring real evidence of
+improvement removes that.
+
+**How the comparison works, in plain terms.**
+
+1. You and the champion are scored on the **same** private eval slice.
+2. Your scores are compared **example by example**, not as two totals. Hard
+   examples are hard for both models, and pairing cancels that out.
+3. Differences smaller than a fixed **dead zone** (0.01 in absolute metric units
+   — bits/byte, or accuracy) are treated as *undecided*. Hairline differences do
+   not vote.
+4. You must win **≥ 55 % of the decided examples** — and not on the point
+   estimate: on a **99 % lower confidence bound** from a 10 000-resample
+   bootstrap with a fixed, published seed. Anyone can recompute the verdict.
+5. Your **average margin** on decided examples must also clear the dead zone, so
+   you cannot win a majority of near-ties while being much worse where you lose.
+6. There must be at least **100 decided examples**. Below that the win rate
+   cannot be estimated closely enough to mean anything, and the champion holds.
+   On a task where everyone scores nearly the same, that is the normal outcome:
+   the comparison refuses rather than crowning a coin flip.
+
+One consequence worth knowing: you and the champion must have been measured on
+the **same** eval slice for any of this to run. If the slice rotated between the
+champion's run and yours, there is no valid comparison and the champion holds
+until it is re-measured on your slice. That re-measurement is the operator's job,
+not yours.
+
+The bar is 55 % rather than something higher on purpose: a genuinely better
+architecture with a wide per-example spread sits near 55 %, so demanding much
+more would select for **low-variance submissions instead of good ones**.
+
+**What you get paid.** Prism's share splits: **60 %** champion (dropping toward
+a 50 % floor if the win is real but marginal, with the difference **burned**),
+**15 / 10 / 5 %** to ranks 2–4, and **10 %** split across up to five entries that
+pass every gate and **hold the best measured value on any single axis** `g1..g8`.
+
+That last pool is the one worth understanding. You do **not** have to win overall
+to earn from it. If you are third on the composite but **first on G3**
+(associative recall) or **first on G7** (inference cost), you produced real
+information and you are paid for it. Note what this is not: there is **no reward
+for being different**. Renaming variables, reordering statements, or otherwise
+looking novel earns nothing — the axes are real measurements, and you have to
+actually be best on one. Anything unallocated **burns** rather than being
+redistributed.
+
+Also under `sig`: the champion is **re-measured** on fresh private slices at
+unannounced times (operator-funded, eval-only). If a champion's score was propped
+up by fitting the public anchors, that shows up and costs it the title.
 
 ## v3 scoring (battery always; leaf mode via env)
 

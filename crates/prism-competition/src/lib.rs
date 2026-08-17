@@ -6,6 +6,27 @@
 //! without losing functionality. `prism-registry` re-exports every item here,
 //! so downstream callers (`prism-emit`) are unchanged.
 //!
+//! ## v3 additions (all default-off)
+//!
+//! - [`paired`] — the paired per-example displacement test: absolute dead
+//!   zone, win-rate bar at a 99 % bootstrap lower bound with a fixed seed
+//!   (deterministic, consensus-critical).
+//! - [`frontier`] — the per-axis elite archive that makes the exploration
+//!   allocation computable from stored measurements.
+//! - [`sig`] — the significance-gated collapse: champion hold, graded band,
+//!   exploration pool, weight EMA, tail floor, burn remainder.
+//! - [`rerun`] — unannounced champion re-runs: an unpredictable-but-
+//!   verifiable audit schedule plus the regression verdict.
+//! - [`evidence`] — the bridge that builds all of the above from what the
+//!   eval store actually persists (per-cluster metric series), including the
+//!   same-slice refusal that stops a positional pairing across two
+//!   different private slices.
+//! - [`contamination`] — the policy half of the mirror-defence fix: is this
+//!   round's contamination check live, and may an unchecked round be paid.
+//!
+//! `PRISM_EMISSION_MODE=sig` selects it. The default path is unchanged and
+//! a test asserts bit-identity with the historical WTA behavior.
+//!
 //! Exact rule (mirrors `docs/PRISM.md` § competition / WTA):
 //!
 //! - Input: every scored submission row in the competition set (fresh outbox
@@ -31,9 +52,28 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod contamination;
+pub mod evidence;
+pub mod frontier;
+pub mod paired;
+pub mod rerun;
+pub mod sig;
+
 use std::collections::BTreeMap;
 
 use prism_store::{EpochScoreRow, FinalScore};
+
+pub use evidence::{paired_evidence, sig_context, RunEvidence, DISPLACEMENT_METRICS};
+pub use frontier::{AxisScore, EliteArchive, MAX_EXPLORE_SLOTS};
+pub use paired::{
+    paired_test, Direction, ExampleSeries, PairedInput, PairedOutcome, PairedRefusal, DEADZONE,
+    MIN_DECIDED, MIN_WIN_RATE_BPS,
+};
+pub use rerun::{audit_due, judge_rerun, RerunVerdict, AUDIT_PROBABILITY_BPS};
+pub use sig::{
+    apply_significance, plan_emission, EmissionPlan, SigContext, BAND_BPS, CHAMPION_BPS,
+    CHAMPION_FLOOR_BPS, EXPLORE_POOL_BPS,
+};
 
 /// Architecture-owner emission credit — **must stay `false`**.
 ///
@@ -151,13 +191,19 @@ fn top_positive(scores: &BTreeMap<String, FinalScore>) -> Option<(&str, u64)> {
         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
 }
 
-/// Prism **v2.1** emission mode (`PRISM_EMISSION_MODE`).
+/// Prism emission mode (`PRISM_EMISSION_MODE`).
 ///
 /// `wta` (default, bit-identical to the historical behavior) keeps a single
-/// positive leaf; `top3` keeps the top three positive credits at a decaying
-/// 100 % / 50 % / 25 % scale so exploration behind the champion still earns
-/// — a product lever against WTA's exploit-only miner meta. Anything else
-/// (unknown values included) is `wta`, fail-safe.
+/// positive leaf; `top3` (v2.1) keeps the top three positive credits at a
+/// decaying 100 % / 50 % / 25 % scale so exploration behind the champion
+/// still earns; `sig` (v3) is the significance-gated collapse in
+/// [`sig`] — champion hold + graded band + exploration pool + burn.
+/// Anything else (unknown values included) is `wta`, fail-safe.
+///
+/// **`sig` must not be enabled before `σ_seed` is measured.** The paired
+/// test's bootstrap sees eval-item variance only, so its lower bound is
+/// overconfident until training-seed variance is characterized by
+/// replication — see [`sig`] and `docs/PRISM.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EmissionMode {
     /// Winner-take-all ([`apply_wta`]) — the live default.
@@ -165,6 +211,9 @@ pub enum EmissionMode {
     Wta,
     /// Top-3 decaying split ([`apply_top3_decay`]) — opt-in via env.
     Top3Decay,
+    /// Significance-gated collapse ([`sig::apply_significance`]) — opt-in
+    /// via env, and gated on the σ_seed prerequisite.
+    Significance,
 }
 
 /// Decay (bps of the rank's own score) for ranks 1..=3 under
@@ -172,11 +221,14 @@ pub enum EmissionMode {
 pub const TOP3_DECAY_BPS: [u64; 3] = [10_000, 5_000, 2_500];
 
 impl EmissionMode {
-    /// Parse the raw env value: exactly `top3` selects the decaying split.
+    /// Parse the raw env value: exactly `top3` selects the decaying split,
+    /// exactly `sig` the significance-gated collapse. Case-sensitive and
+    /// fail-safe — every other value, including typos, is `wta`.
     #[must_use]
     pub fn parse(raw: Option<&str>) -> Self {
         match raw {
             Some("top3") => Self::Top3Decay,
+            Some("sig") => Self::Significance,
             _ => Self::Wta,
         }
     }
@@ -227,14 +279,33 @@ pub fn apply_top3_decay(scores: BTreeMap<String, FinalScore>) -> BTreeMap<String
 }
 
 /// Dispatch the configured emission collapse.
+///
+/// [`EmissionMode::Significance`] with no context behaves as a cold start
+/// (no incumbent, no paired evidence, empty archive), which pays the
+/// champion floor and burns the rest — fail-closed rather than inventing a
+/// displacement. Use [`apply_emission_with`] to supply real evidence.
 #[must_use]
 pub fn apply_emission(
     mode: EmissionMode,
     scores: BTreeMap<String, FinalScore>,
 ) -> BTreeMap<String, FinalScore> {
+    apply_emission_with(mode, scores, None)
+}
+
+/// [`apply_emission`] with optional significance evidence.
+#[must_use]
+pub fn apply_emission_with(
+    mode: EmissionMode,
+    scores: BTreeMap<String, FinalScore>,
+    ctx: Option<&SigContext>,
+) -> BTreeMap<String, FinalScore> {
     match mode {
         EmissionMode::Wta => apply_wta(scores),
         EmissionMode::Top3Decay => apply_top3_decay(scores),
+        EmissionMode::Significance => {
+            let fallback = SigContext::default();
+            apply_significance(scores, ctx.unwrap_or(&fallback))
+        }
     }
 }
 
@@ -303,8 +374,8 @@ pub fn apply_owner_split(
     scores.insert(owner.clone(), FinalScore::Score(cut));
 }
 
-/// Full v2.1 emission projection: competition credits → configured collapse
-/// → optional owner split. With `EmissionMode::Wta` and `bps == 0` (the
+/// Full emission projection: competition credits → configured collapse →
+/// optional owner split. With `EmissionMode::Wta` and `bps == 0` (the
 /// defaults) this is bit-identical to
 /// `apply_wta(competition_scores(batch, arch_owners))`.
 #[must_use]
@@ -314,7 +385,20 @@ pub fn emission_leaves(
     mode: EmissionMode,
     owner_split_bps: u64,
 ) -> BTreeMap<String, FinalScore> {
-    let mut scores = apply_emission(mode, competition_scores(batch, arch_owners));
+    emission_leaves_with(batch, arch_owners, mode, owner_split_bps, None)
+}
+
+/// [`emission_leaves`] with optional significance evidence for
+/// [`EmissionMode::Significance`]. Ignored by the other modes.
+#[must_use]
+pub fn emission_leaves_with(
+    batch: &[EpochScoreRow],
+    arch_owners: &BTreeMap<String, String>,
+    mode: EmissionMode,
+    owner_split_bps: u64,
+    ctx: Option<&SigContext>,
+) -> BTreeMap<String, FinalScore> {
+    let mut scores = apply_emission_with(mode, competition_scores(batch, arch_owners), ctx);
     apply_owner_split(&mut scores, arch_owners, batch, owner_split_bps);
     scores
 }

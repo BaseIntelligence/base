@@ -3895,7 +3895,9 @@ version = "0.1.0"
 name = "prism-competition"
 version = "0.1.0"
 dependencies = [
+ "prism-challenge-task",
  "prism-store",
+ "serde_json",
 ]
 
 [[package]]
