@@ -895,9 +895,9 @@ Unset uses the same immutable recipe-v10 pin advertised by `/v1/recipe`. A
 new private-registry template requires the non-secret
 `PRISM_POD_DOCKER_CREDENTIAL_ID` reference; registry credentials themselves
 remain stored in Lium. Lium's startup bootstrap substitutes
-`USER_PUBLIC_KEY`, writes `authorized_keys`, and touches
-`/root/container_ready`; the image uses overridable Docker `CMD` so the
-provider bootstrap can run.
+`USER_PUBLIC_KEY` into a metacharacter-free command; the image script writes
+`authorized_keys` and touches `/root/container_ready`. The image uses
+overridable Docker `CMD` so the provider bootstrap can run.
 
 **4-GPU + netns contract.** `PRISM_POD_GPU_COUNT` defaults to `4`; selection
 accepts an exact 4× RTX 5090 host or rents an unsplittable larger 5090 host

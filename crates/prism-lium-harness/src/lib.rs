@@ -32,7 +32,7 @@ pub const RECIPES_TEMPLATE_NAME_V10: &str = "prism-recipe-v10";
 /// Lium replaces `USER_PUBLIC_KEY` before launching this command. The image
 /// deliberately uses `CMD` so this bootstrap can install the rental key,
 /// signal readiness, and keep sshd as the container's foreground process.
-pub const RECIPES_TEMPLATE_STARTUP: &str = "bash -c 'set -e; mkdir -p /root/.ssh /run/sshd; chmod 700 /root/.ssh; echo USER_PUBLIC_KEY > /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; ssh-keygen -A; touch /root/container_ready; exec /usr/sbin/sshd -D -e'";
+pub const RECIPES_TEMPLATE_STARTUP: &str = "/usr/local/bin/prism-pod-entrypoint USER_PUBLIC_KEY";
 
 /// Resolved pod `(image, tag, default_template_name)`.
 ///
@@ -313,7 +313,10 @@ pub fn random_seed_hex() -> Result<String, LiumError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{credential_scoped_template_name, is_digest_image_ref, template_name_for_image};
+    use super::{
+        credential_scoped_template_name, is_digest_image_ref, template_name_for_image,
+        RECIPES_TEMPLATE_STARTUP,
+    };
 
     #[test]
     fn pod_image_override_requires_digest() {
@@ -348,5 +351,13 @@ mod tests {
             ),
             "prism-recipe-v10-digest-abc-cred-4ca23da3"
         );
+    }
+
+    #[test]
+    fn provider_startup_command_has_no_shell_metacharacters() {
+        assert!(RECIPES_TEMPLATE_STARTUP.contains("USER_PUBLIC_KEY"));
+        assert!(RECIPES_TEMPLATE_STARTUP.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b' ')
+        }));
     }
 }

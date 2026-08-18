@@ -88,9 +88,10 @@ separately as its integrity pin; the tag is never the runtime authority.
 Creating the private DigitalOcean template also requires
 `PRISM_POD_DOCKER_CREDENTIAL_ID`, which is a non-secret reference to a
 registry credential already stored by Lium. The provider bootstrap substitutes
-`USER_PUBLIC_KEY`, writes `authorized_keys`, and touches
-`/root/container_ready`; the image uses `CMD` so that bootstrap is not
-shadowed by a Docker `ENTRYPOINT`. Ops: build + mirror the image and validate
+`USER_PUBLIC_KEY` into a metacharacter-free command; the image script writes
+`authorized_keys` and touches `/root/container_ready`. The image uses `CMD`
+so that bootstrap is not shadowed by a Docker `ENTRYPOINT`. Ops: build +
+mirror the image and validate
 `transformer_engine` import **and** `NVFP4BlockScaling` on a GPU node
 **before** repinning live.
 

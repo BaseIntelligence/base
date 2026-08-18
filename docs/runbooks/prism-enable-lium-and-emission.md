@@ -89,9 +89,9 @@ remain stored in Lium. It is needed to create a new provider template, whose
 name is digest- and credential-scoped. Lium needs the tag as a pull locator,
 but records and checks the digest separately; malformed or missing digest
 refs fail closed. The image must use overridable Docker `CMD`; the Lium
-bootstrap injects `USER_PUBLIC_KEY`, writes `authorized_keys`, and touches
-`/root/container_ready` before keeping sshd in the foreground. Before
-promotion, run the billable test with
+bootstrap injects `USER_PUBLIC_KEY` through a metacharacter-free command, then
+the image script writes `authorized_keys`, touches `/root/container_ready`,
+and keeps sshd in the foreground. Before promotion, run the billable test with
 `PRISM_LIVE_RUNNING_TIMEOUT_SECS=1800`; bound retries during diagnosis with
 `PRISM_LIVE_MAX_ATTEMPTS=1` (accepted range 1–8). One 4-GPU rent must prove:
 
