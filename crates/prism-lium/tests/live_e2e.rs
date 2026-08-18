@@ -67,9 +67,13 @@ async fn live_rent_ssh_eval_terminate() {
     ssh.private_key_path = Some(PathBuf::from(
         "/root/.config/prism-mission/lium_ssh_ed25519",
     ));
-    ssh.running_timeout_secs = 900;
+    ssh.running_timeout_secs = std::env::var("PRISM_LIVE_RUNNING_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(900);
     ssh.ssh_attempts = 10;
     ssh.ssh_retry_secs = 5;
+    let running_timeout_secs = ssh.running_timeout_secs;
 
     let client =
         LiumClient::with_config(api_key, prism_lium::LIUM_API_BASE_URL, ssh).expect("client");
@@ -134,8 +138,15 @@ async fn live_rent_ssh_eval_terminate() {
     let mut last_err = String::new();
     let mut rented = None;
     let mut attempts = Vec::new();
+    let max_attempts = std::env::var("PRISM_LIVE_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8)
+        .clamp(1, 8);
+    trace["max_rent_attempts"] = serde_json::json!(max_attempts);
+    trace["running_timeout_secs"] = serde_json::json!(running_timeout_secs);
 
-    for offer in sorted.into_iter().take(8) {
+    for offer in sorted.into_iter().take(max_attempts) {
         let attempt_name = format!("{name}-{}", &offer.id[..8.min(offer.id.len())]);
         let spec = InstanceSpec {
             name: attempt_name,

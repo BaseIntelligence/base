@@ -1174,7 +1174,7 @@ mod tests {
                 "internal_ports": [22],
                 "is_private": true,
                 "container_start_immediately": true,
-                "startup_commands": "",
+                "startup_commands": RECIPES_TEMPLATE_STARTUP,
                 "docker_credential_id": "credential-id"
             })))
             .respond_with(
@@ -1189,7 +1189,7 @@ mod tests {
                 "prism-recipe-v10-private",
                 "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 None,
-                Some(""),
+                Some(RECIPES_TEMPLATE_STARTUP),
                 Some("credential-id"),
             )
             .await

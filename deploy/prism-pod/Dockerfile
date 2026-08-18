@@ -21,8 +21,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_ROOT_USER_ACTION=ignore \
     PIP_BREAK_SYSTEM_PACKAGES=1
 
-# sshd is required by the Lium exec path (harness streamed over SSH); the
-# recipe template keeps startup_commands EMPTY and relies on the image init.
+# sshd is required by the Lium exec path (harness streamed over SSH). The
+# image uses CMD, not ENTRYPOINT, so Lium can replace it with the template
+# bootstrap that installs USER_PUBLIC_KEY and signals container readiness.
 # iproute2 provides `ip`, which the harness uses to bring `lo` UP inside the
 # `unshare --net` train/eval namespace — required for single-node multi-GPU
 # rendezvous (torch.distributed env:// on 127.0.0.1). A fresh netns still has
@@ -67,7 +68,7 @@ COPY entrypoint.sh /usr/local/bin/prism-pod-entrypoint
 RUN chmod 0555 /usr/local/bin/prism-pod-entrypoint
 
 EXPOSE 22
-ENTRYPOINT ["/usr/local/bin/prism-pod-entrypoint"]
+CMD ["/usr/local/bin/prism-pod-entrypoint"]
 
 LABEL org.baseintelligence.prism.recipe="v10" \
       org.baseintelligence.prism.miner_install="true" \

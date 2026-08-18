@@ -29,8 +29,10 @@ pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v10-digest-5d2508aea5f3-ta
 /// (template identity is name-based / reuse-if-exists on Lium: a new image
 /// must ship under a new name or pods would keep the old template).
 pub const RECIPES_TEMPLATE_NAME_V10: &str = "prism-recipe-v10";
-/// Startup commands (empty: sshd comes from image init).
-pub const RECIPES_TEMPLATE_STARTUP: &str = "";
+/// Lium replaces `USER_PUBLIC_KEY` before launching this command. The image
+/// deliberately uses `CMD` so this bootstrap can install the rental key,
+/// signal readiness, and keep sshd as the container's foreground process.
+pub const RECIPES_TEMPLATE_STARTUP: &str = "bash -c 'set -e; mkdir -p /root/.ssh /run/sshd; chmod 700 /root/.ssh; echo USER_PUBLIC_KEY > /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; ssh-keygen -A; touch /root/container_ready; exec /usr/sbin/sshd -D -e'";
 
 /// Resolved pod `(image, tag, default_template_name)`.
 ///
