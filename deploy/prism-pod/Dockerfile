@@ -49,14 +49,18 @@ RUN pip install --no-cache-dir \
       "transformer-engine[pytorch]==${TE_VERSION}" \
  && pip install --no-cache-dir einops
 
-# NVFP4 sanity marker: fail the build early if TE cannot import against the
-# base torch/CUDA, or if the NVFP4 recipe class is missing (the failure mode
-# of the unpinned wheel: te_available=True but te_mode=none).
+# NVFP4 sanity marker. Docker's CPU-only builder has no driver-mounted
+# `libcuda.so.1`, so importing TE's core extension here would reject a valid
+# image. Verify the compiled CUDA major, exact wheel, and recipe source
+# statically; the billable GPU smoke performs the real extension import.
 RUN python -c "\
-import torch; import transformer_engine.pytorch as te; \
-from transformer_engine.common.recipe import NVFP4BlockScaling; \
+import importlib.metadata as md, pathlib, torch; \
 assert torch.version.cuda and torch.version.cuda.split('.')[0] == '13', torch.version.cuda; \
-print('CUDA', torch.version.cuda, 'TE OK', te.__version__, 'NVFP4BlockScaling', NVFP4BlockScaling)"
+d = md.distribution('transformer-engine'); \
+assert d.version == '${TE_VERSION}', d.version; \
+r = pathlib.Path(d.locate_file('transformer_engine/common/recipe')); \
+assert any('NVFP4BlockScaling' in p.read_text(errors='ignore') for p in r.rglob('*.py')); \
+print('CUDA', torch.version.cuda, 'TE wheel', d.version, 'NVFP4 source OK')"
 
 COPY entrypoint.sh /usr/local/bin/prism-pod-entrypoint
 RUN chmod 0555 /usr/local/bin/prism-pod-entrypoint
