@@ -382,8 +382,8 @@ impl LiumSshConfig {
         Self {
             private_key_path: None, // resolve via LIUM_SSH_PRIVATE_KEY / default path
             // The digest-pinned CUDA/TE image is large and a cold provider
-            // cache can spend several minutes pulling layers before RUNNING.
-            running_timeout_secs: 900,
+            // cache can spend over 15 minutes pulling layers before RUNNING.
+            running_timeout_secs: 1_800,
             ssh_attempts: 8,
             ssh_retry_secs: 5,
             train_hours_cap: prism_recipe::train_hours_cap(),

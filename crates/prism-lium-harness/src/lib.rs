@@ -24,7 +24,7 @@ pub const EVAL_ASSETS_POD_DIR: &str = "/tmp/prism_eval/eval-assets";
 const RECIPES_TEMPLATE_IMAGE: &str = prism_recipe::POD_IMAGE_REF;
 const RECIPES_TEMPLATE_TAG: &str = "v10-cuda13-te";
 /// Default Lium template name for the pinned recipe-v10 image.
-pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v10-digest-5d2508aea5f3-tagged";
+pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v10-digest-fe1197b26e30-tagged";
 /// Template name used automatically when the image is env-overridden
 /// (template identity is name-based / reuse-if-exists on Lium: a new image
 /// must ship under a new name or pods would keep the old template).
@@ -333,9 +333,9 @@ mod tests {
         assert_eq!(
             template_name_for_image(
                 "registry.digitalocean.com/basecrawl/prism-pod@sha256:\
-                 5d2508aea5f3eca9e57f1d27d11354249c7bde315feb35c1308f4e2175dfa3aa"
+                 fe1197b26e30ebd88f200963cc8528533326666873880b62e676adb51663ff88"
             ),
-            "prism-recipe-v10-digest-5d2508aea5f3-tagged"
+            "prism-recipe-v10-digest-fe1197b26e30-tagged"
         );
     }
 

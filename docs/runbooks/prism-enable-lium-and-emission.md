@@ -79,7 +79,7 @@ gh workflow run images.yml \
 Set the staged service with:
 
 ```bash
-PRISM_POD_IMAGE_REF=registry.digitalocean.com/basecrawl/prism-pod@sha256:5d2508aea5f3eca9e57f1d27d11354249c7bde315feb35c1308f4e2175dfa3aa
+PRISM_POD_IMAGE_REF=registry.digitalocean.com/basecrawl/prism-pod@sha256:fe1197b26e30ebd88f200963cc8528533326666873880b62e676adb51663ff88
 PRISM_POD_IMAGE_TAG=v10-cuda13-te
 PRISM_POD_DOCKER_CREDENTIAL_ID=<lium-docker-credential-id>
 ```
@@ -88,7 +88,12 @@ The credential ID is a non-secret reference; the registry username/password
 remain stored in Lium. It is needed to create a new provider template, whose
 name is digest- and credential-scoped. Lium needs the tag as a pull locator,
 but records and checks the digest separately; malformed or missing digest
-refs fail closed. Before promotion, one 4-GPU rent must prove:
+refs fail closed. The image must use overridable Docker `CMD`; the Lium
+bootstrap injects `USER_PUBLIC_KEY`, writes `authorized_keys`, and touches
+`/root/container_ready` before keeping sshd in the foreground. Before
+promotion, run the billable test with
+`PRISM_LIVE_RUNNING_TIMEOUT_SECS=1800`; bound retries during diagnosis with
+`PRISM_LIVE_MAX_ATTEMPTS=1` (accepted range 1–8). One 4-GPU rent must prove:
 
 1. `torch.cuda.device_count() == 4`;
 2. `transformer_engine.pytorch` and

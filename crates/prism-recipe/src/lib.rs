@@ -725,7 +725,7 @@ pub fn descriptor() -> RecipeDescriptor {
 /// and Transformer Engine so miners can NVFP4-train and `pip install`
 /// extras (`FlashAttention`, `mamba-ssm`, …) from their own manifests. Lium
 /// receives its provider-stored registry credential separately.
-pub const POD_IMAGE_REF: &str = "registry.digitalocean.com/basecrawl/prism-pod@sha256:5d2508aea5f3eca9e57f1d27d11354249c7bde315feb35c1308f4e2175dfa3aa";
+pub const POD_IMAGE_REF: &str = "registry.digitalocean.com/basecrawl/prism-pod@sha256:fe1197b26e30ebd88f200963cc8528533326666873880b62e676adb51663ff88";
 
 /// The pod runs a network-on install phase for miner dependency manifests
 /// before the netns-isolated train/eval (recipe-v10).

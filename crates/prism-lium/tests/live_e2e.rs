@@ -67,10 +67,11 @@ async fn live_rent_ssh_eval_terminate() {
     ssh.private_key_path = Some(PathBuf::from(
         "/root/.config/prism-mission/lium_ssh_ed25519",
     ));
+    let default_running_timeout_secs = ssh.running_timeout_secs;
     ssh.running_timeout_secs = std::env::var("PRISM_LIVE_RUNNING_TIMEOUT_SECS")
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(900);
+        .unwrap_or(default_running_timeout_secs);
     ssh.ssh_attempts = 10;
     ssh.ssh_retry_secs = 5;
     let running_timeout_secs = ssh.running_timeout_secs;

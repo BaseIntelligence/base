@@ -62,7 +62,7 @@ miner unified diff ───────┘         │
 ### Modular pod image + miner dependencies (recipe-v10)
 
 The pod image (`/v1/recipe` `pod_image_ref` is an immutable
-`registry.digitalocean.com/basecrawl/prism-pod@sha256:5d2508…dfa3aa`
+`registry.digitalocean.com/basecrawl/prism-pod@sha256:fe1197…3ff88`
 reference built from
 [`../deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) is a
 complete CUDA 13 base: PyTorch, `nvcc`/`ninja`/`build-essential`,
@@ -87,8 +87,10 @@ also needs the mutable pull locator
 separately as its integrity pin; the tag is never the runtime authority.
 Creating the private DigitalOcean template also requires
 `PRISM_POD_DOCKER_CREDENTIAL_ID`, which is a non-secret reference to a
-registry credential already stored by Lium. Ops: build + mirror the image and
-validate
+registry credential already stored by Lium. The provider bootstrap substitutes
+`USER_PUBLIC_KEY`, writes `authorized_keys`, and touches
+`/root/container_ready`; the image uses `CMD` so that bootstrap is not
+shadowed by a Docker `ENTRYPOINT`. Ops: build + mirror the image and validate
 `transformer_engine` import **and** `NVFP4BlockScaling` on a GPU node
 **before** repinning live.
 
