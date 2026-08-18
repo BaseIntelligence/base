@@ -80,8 +80,9 @@ Descriptor keys: `pod_image_ref`, `miner_install_supported` (bool),
 `miner_deps_members` (`["requirements.txt","pyproject.toml"]`),
 `install_timeout_secs` (1800). Image is env-overridable for staged rollout:
 `PRISM_POD_IMAGE_REF=repository@sha256:<64 lowercase hex>` (tags fail closed;
-the Lium template name is digest-scoped automatically, so a new image cannot
-reuse a stale provider template). Lium also needs the mutable pull locator
+the Lium template name is digest- and credential-scoped automatically, so a
+new image or rotated credential cannot reuse a stale provider template). Lium
+also needs the mutable pull locator
 `PRISM_POD_IMAGE_TAG` (default `v10-cuda13-te`), but stores the digest
 separately as its integrity pin; the tag is never the runtime authority.
 Creating the private DigitalOcean template also requires

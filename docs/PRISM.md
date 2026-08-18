@@ -890,10 +890,11 @@ Wiring: the harness emits `EVAL_FAIL` + `{"stage": "install_deps"|"train"|"build
 unbounded resubmit. Later phases (eval/battery/score) keep the windowed
 `install` class. The pod image is env-overridable for staged rollout with
 `PRISM_POD_IMAGE_REF`; tags are rejected and the Lium template name includes
-the digest, preventing stale-template reuse. Unset uses the same immutable
-recipe-v10 pin advertised by `/v1/recipe`. A new private-registry template
-requires the non-secret `PRISM_POD_DOCKER_CREDENTIAL_ID` reference; registry
-credentials themselves remain stored in Lium.
+the digest and credential ID, preventing stale image or credential reuse.
+Unset uses the same immutable recipe-v10 pin advertised by `/v1/recipe`. A
+new private-registry template requires the non-secret
+`PRISM_POD_DOCKER_CREDENTIAL_ID` reference; registry credentials themselves
+remain stored in Lium.
 
 **4-GPU + netns contract.** `PRISM_POD_GPU_COUNT` defaults to `4`; selection
 accepts an exact 4× RTX 5090 host or rents an unsplittable larger 5090 host

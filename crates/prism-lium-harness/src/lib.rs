@@ -44,17 +44,13 @@ pub const RECIPES_TEMPLATE_STARTUP: &str = "";
 pub fn resolved_pod_image() -> Result<(String, Option<String>, String), prism_lium_types::LiumError>
 {
     let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
-    let credentialed = env("PRISM_POD_DOCKER_CREDENTIAL_ID").is_some();
-    let name = |base: String| {
-        if credentialed {
-            format!("{base}-credentialed")
-        } else {
-            base
-        }
-    };
+    let credential = env("PRISM_POD_DOCKER_CREDENTIAL_ID");
     match env("PRISM_POD_IMAGE_REF") {
         Some(image) if is_digest_image_ref(&image) => {
-            let template_name = name(template_name_for_image(&image));
+            let template_name = credential_scoped_template_name(
+                template_name_for_image(&image),
+                credential.as_deref(),
+            );
             let tag = env("PRISM_POD_IMAGE_TAG").unwrap_or_else(|| RECIPES_TEMPLATE_TAG.into());
             Ok((image, Some(tag), template_name))
         }
@@ -64,9 +60,18 @@ pub fn resolved_pod_image() -> Result<(String, Option<String>, String), prism_li
         None => Ok((
             RECIPES_TEMPLATE_IMAGE.to_owned(),
             Some(RECIPES_TEMPLATE_TAG.to_owned()),
-            name(RECIPES_TEMPLATE_NAME.to_owned()),
+            credential_scoped_template_name(
+                RECIPES_TEMPLATE_NAME.to_owned(),
+                credential.as_deref(),
+            ),
         )),
     }
+}
+
+fn credential_scoped_template_name(base: String, credential: Option<&str>) -> String {
+    credential.map_or(base.clone(), |id| {
+        format!("{base}-cred-{}", id.get(..8).unwrap_or(id))
+    })
 }
 
 /// Build the Lium template payload without conflating a digest with an image
@@ -308,7 +313,7 @@ pub fn random_seed_hex() -> Result<String, LiumError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_digest_image_ref, template_name_for_image};
+    use super::{credential_scoped_template_name, is_digest_image_ref, template_name_for_image};
 
     #[test]
     fn pod_image_override_requires_digest() {
@@ -331,6 +336,17 @@ mod tests {
                  5d2508aea5f3eca9e57f1d27d11354249c7bde315feb35c1308f4e2175dfa3aa"
             ),
             "prism-recipe-v10-digest-5d2508aea5f3-tagged"
+        );
+    }
+
+    #[test]
+    fn pod_image_template_name_is_credential_scoped() {
+        assert_eq!(
+            credential_scoped_template_name(
+                "prism-recipe-v10-digest-abc".into(),
+                Some("4ca23da3-8f5c-4b41-b742-636d2d8c6be7")
+            ),
+            "prism-recipe-v10-digest-abc-cred-4ca23da3"
         );
     }
 }
