@@ -125,11 +125,11 @@ def _accounted_train_tokens(stream):
 def _attest_flops(model, stream, cfg, seq_len, flops_cap):
     """Probe FLOPs/token, cross-check it analytically, arm the stream cap.
 
-    Never fatal. A probe that cannot run (no `FlopCounterMode`, an
-    architecture the harness-driven fwd/bwd cannot drive) leaves the FLOPs
-    cap disarmed and records `flops_probe_error` — the wall-clock bound
-    still contains the run, and the failure is visible rather than silently
-    treated as a zero-cost model.
+    Never fatal. A dispatch probe that cannot run (OOM even at one row,
+    missing `FlopCounterMode`, an architecture the harness-driven fwd/bwd
+    cannot drive) falls back to the analytic graph estimate and **keeps
+    the FLOPs cap armed**. Only a non-positive analytic estimate leaves
+    the cap disarmed — that failure is recorded as `flops_probe_error`.
     """
     out = {"flops_per_token": 0.0, "cv": 0.0, "unstable": False}
     try:
@@ -144,9 +144,19 @@ def _attest_flops(model, stream, cfg, seq_len, flops_cap):
             log=_log,
         )
     except Exception as exc:  # noqa: BLE001
-        _log(f"flops probe unavailable ({exc}); FLOPs cap disarmed, wall cap stands")
+        fallback = flops_mod.analytic_fallback_attestation(
+            model, seq_len, reason=str(exc), log=_log
+        )
+        if fallback is None:
+            _log(
+                f"flops probe unavailable ({exc}); analytic fallback empty; "
+                "FLOPs cap disarmed, wall cap stands"
+            )
+            out["error"] = str(exc)[:200]
+            return out
+        probe = fallback
         out["error"] = str(exc)[:200]
-        return out
+        out["analytic_fallback"] = True
     out.update(probe)
     # The secret never leaves the train child: it is unpredictable-in-advance
     # rather than cryptographically hidden, and echoing it into the emitted
@@ -207,6 +217,8 @@ def _diag_metrics(stream, attest, wall_s):
     }
     if attest.get("error"):
         out["org.diag.flops_probe_error"] = 1.0
+    if attest.get("analytic_fallback") or attest.get("estimator") == "analytic_fallback":
+        out["org.diag.flops_probe_analytic_fallback"] = 1.0
     cc = attest.get("cross_check")
     if cc:
         out["org.diag.flops_analytic_ratio"] = cc["analytic_ratio"]

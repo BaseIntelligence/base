@@ -22,7 +22,7 @@ import torch  # noqa: E402
 
 from prismlib import flops as F  # noqa: E402
 from prismlib.stream import SeededTrainStream  # noqa: E402
-from prismlib.train_v3 import _accounted_train_tokens  # noqa: E402
+from prismlib.train_v3 import _accounted_train_tokens, _attest_flops  # noqa: E402
 
 VOCAB = 128
 D_MODEL = 32
@@ -647,6 +647,37 @@ def test_probe_oom_degrades_to_fewer_rows_instead_of_disarming():
         f"full-batch {full['flops_per_token']:.4g} by {rel:.1%} — FLOPs/token "
         "must be invariant to batch rows at fixed seq_len"
     )
+
+
+def test_probe_oom_at_one_row_falls_back_analytically_and_keeps_cap():
+    """LoopMoE-shaped hole: FlopCounterMode OOMs even on a single sequence.
+    The smaller-row retry is exhausted; the analytic graph must still arm
+    the FLOPs cap. Silently falling back to wall-only is a miner escape.
+    """
+
+    class AlwaysOom(TinyModel):
+        def forward(self, input_ids):
+            raise RuntimeError("CUDA out of memory. Tried to allocate 8.00 GiB")
+
+    stream = make_stream()
+    attest = _attest_flops(AlwaysOom(), stream, {"flops_probe_samples": 2}, SEQ, 3.0e18)
+    assert attest["estimator"] == "analytic_fallback", attest
+    assert attest["analytic_fallback"] is True
+    assert attest["flops_per_token"] > 0.0
+    assert stream.flops_per_token == attest["flops_per_token"], (
+        "dual cap must stay armed from the analytic fallback"
+    )
+    graph = F.analytic_flops_per_token(AlwaysOom(), SEQ)["flops_per_token"]
+    assert abs(attest["flops_per_token"] - graph) < 1e-6
+
+
+def test_analytic_fallback_helper_rejects_empty_graph():
+    class Empty(torch.nn.Module):
+        def forward(self, input_ids):
+            return input_ids
+
+    out = F.analytic_fallback_attestation(Empty(), SEQ)
+    assert out is None
 
 
 def test_non_oom_errors_still_propagate():

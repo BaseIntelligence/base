@@ -634,6 +634,7 @@ def check_v3_flow(arch_src=STUB_ARCH, tokenizer_source="default", vocab_size=Non
         assert all(k.startswith("org.") for k in flat), sorted(flat)
         # Every anchored metric available on CPU/tiny caps is present.
         for key in (
+            "org.g1.bits_per_byte_code",
             "org.g1.bits_per_byte_prose",
             "org.g1.bits_per_byte_math",
             "org.g1.bits_per_byte_fresh_crawl",
