@@ -13,7 +13,7 @@
 # CUDA-matched torch already present). We add Transformer Engine + common
 # accelerators so a submission needs zero installs for the default path, yet
 # can still `pip install` extras with build isolation (nvcc is present).
-ARG CUDA_TORCH_BASE=nvcr.io/nvidia/pytorch:25.06-py3@sha256:3cb18e2c438db8af2d3a659ca27fac5da328640261c38c48a34edcd223c38af9
+ARG CUDA_TORCH_BASE=nvcr.io/nvidia/pytorch:26.07-py3@sha256:957c0efe3102b45e5b430625b64b3fe131c49013729af0c34f5c71e906d3cf77
 FROM ${CUDA_TORCH_BASE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -53,9 +53,10 @@ RUN pip install --no-cache-dir \
 # base torch/CUDA, or if the NVFP4 recipe class is missing (the failure mode
 # of the unpinned wheel: te_available=True but te_mode=none).
 RUN python -c "\
-import transformer_engine.pytorch as te; \
+import torch; import transformer_engine.pytorch as te; \
 from transformer_engine.common.recipe import NVFP4BlockScaling; \
-print('TE OK', te.__version__, 'NVFP4BlockScaling', NVFP4BlockScaling)"
+assert torch.version.cuda and torch.version.cuda.split('.')[0] == '13', torch.version.cuda; \
+print('CUDA', torch.version.cuda, 'TE OK', te.__version__, 'NVFP4BlockScaling', NVFP4BlockScaling)"
 
 COPY entrypoint.sh /usr/local/bin/prism-pod-entrypoint
 RUN chmod 0555 /usr/local/bin/prism-pod-entrypoint
