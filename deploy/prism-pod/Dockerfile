@@ -6,16 +6,14 @@
 # extras from a shipped requirements.txt / pyproject.toml during the pod's
 # network-on install phase (see crates/prism-recipe/harness/prismlib/deps.py).
 #
-# Published as ghcr.io/baseintelligence/prism-pod:v10-cuda13-te (matches
-# prism_recipe::POD_IMAGE_REF). Build + push is an OPS step (CI images lane);
-# the Lium recipe template (RECIPES_TEMPLATE_* in crates/prism-lium) is
-# repinned to this image once it is on the registry.
+# Published under ghcr.io/baseintelligence/base/prism-pod. Runtime references
+# are digest-only; the human tag is discovery metadata, never a deploy pin.
 #
 # Base: NVIDIA PyTorch NGC (CUDA 13, cuDNN, NCCL, build toolchain, and a
 # CUDA-matched torch already present). We add Transformer Engine + common
 # accelerators so a submission needs zero installs for the default path, yet
 # can still `pip install` extras with build isolation (nvcc is present).
-ARG CUDA_TORCH_BASE=nvcr.io/nvidia/pytorch:25.06-py3
+ARG CUDA_TORCH_BASE=nvcr.io/nvidia/pytorch:25.06-py3@sha256:3cb18e2c438db8af2d3a659ca27fac5da328640261c38c48a34edcd223c38af9
 FROM ${CUDA_TORCH_BASE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -32,7 +30,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       openssh-server git build-essential ninja-build ca-certificates iproute2 \
  && rm -rf /var/lib/apt/lists/* \
- && mkdir -p /run/sshd
+ && mkdir -p /run/sshd \
+ && ssh-keygen -A
 
 # Harness eval deps (kept identical to the SSH installer so behavior matches
 # when the image is warm) + Transformer Engine for NVFP4 training + the
@@ -48,8 +47,7 @@ RUN pip install --no-cache-dir \
       "transformers==4.44.2" "datasets==3.0.2" "pyarrow==17.0.0" \
  && pip install --no-cache-dir --no-build-isolation \
       "transformer-engine[pytorch]==${TE_VERSION}" \
- && pip install --no-cache-dir einops \
- || echo "WARN: optional accelerator preinstall partial — miners can install via manifest"
+ && pip install --no-cache-dir einops
 
 # NVFP4 sanity marker: fail the build early if TE cannot import against the
 # base torch/CUDA, or if the NVFP4 recipe class is missing (the failure mode
@@ -57,8 +55,13 @@ RUN pip install --no-cache-dir \
 RUN python -c "\
 import transformer_engine.pytorch as te; \
 from transformer_engine.common.recipe import NVFP4BlockScaling; \
-print('TE OK', te.__version__, 'NVFP4BlockScaling', NVFP4BlockScaling)" \
- || echo "WARN: transformer_engine / NVFP4 import check skipped (verify on GPU node)"
+print('TE OK', te.__version__, 'NVFP4BlockScaling', NVFP4BlockScaling)"
+
+COPY entrypoint.sh /usr/local/bin/prism-pod-entrypoint
+RUN chmod 0555 /usr/local/bin/prism-pod-entrypoint
+
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/prism-pod-entrypoint"]
 
 LABEL org.baseintelligence.prism.recipe="v10" \
       org.baseintelligence.prism.miner_install="true" \

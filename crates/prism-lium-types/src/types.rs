@@ -162,7 +162,7 @@ impl Default for InstanceSpec {
             name: "prism-eval".into(),
             max_lifetime_hours: 1.0,
             max_price_per_hour: 2.5,
-            gpu_count: 1,
+            gpu_count: DEFAULT_POD_GPU_COUNT,
             image_digest: None,
             ssh_public_keys: vec![],
             ssh_key_name: Some("prism-mission-worker".into()),
@@ -198,11 +198,11 @@ pub struct GpuPreference {
 }
 
 impl GpuPreference {
-    /// Default PRISM pin: **1× RTX 5090 only** (fail-closed).
+    /// Default PRISM SKU pin: **RTX 5090 only** (fail-closed).
     ///
     /// Ranking fairness requires a single SKU: wall-capped trains on a slower
-    /// card (e.g. 4090) see fewer tokens → worse bpb. Non-5090 / multi-GPU
-    /// offers are rejected at rent time, not normalized after the fact.
+    /// card (e.g. 4090) see fewer tokens → worse bpb. GPU width is enforced
+    /// separately by [`Offer::matches_gpu_count`].
     #[must_use]
     pub fn default_prism() -> Self {
         Self {

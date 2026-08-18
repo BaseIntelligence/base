@@ -22,6 +22,7 @@ import torch  # noqa: E402
 
 from prismlib import flops as F  # noqa: E402
 from prismlib.stream import SeededTrainStream  # noqa: E402
+from prismlib.train_v3 import _accounted_train_tokens  # noqa: E402
 
 VOCAB = 128
 D_MODEL = 32
@@ -454,6 +455,61 @@ def test_probe_curve_carries_bytes_and_bits_per_byte():
     # bits/byte = nats/token / (ln2 * bytes/token)
     expected = pt["probe_loss"] / (0.6931471805599453 * pt["bytes_per_token"])
     assert abs(pt["probe_bits_per_byte"] - expected) < 1e-9
+
+
+def test_external_ddp_tokens_get_harness_byte_and_flops_accounting():
+    stream = make_stream(flops_cap=1e9)
+    stream.set_flops_per_token(123.0)
+    # Parent receives the worker's token count after DDP; no parent batches.
+    stream.tokens_seen = 4096
+    stream.batches_yielded = 128
+    rep = stream.budget_report()
+    assert rep["bytes_seen"] > 0, "bytes derive from harness corpus/tokenizer"
+    assert rep["flops_attested"] == 123.0 * 4096
+    assert 0.2 < rep["bytes_per_token"] < 8.0
+
+
+def test_v3_rejects_trainer_that_bypasses_harness_stream():
+    stream = make_stream()
+    try:
+        _accounted_train_tokens(stream)
+    except RuntimeError as exc:
+        assert "without consuming ctx['train_stream']" in str(exc)
+    else:
+        raise AssertionError("zero-accounting v3 train must fail closed")
+    stream.next_batch()
+    assert _accounted_train_tokens(stream) == BATCH * SEQ
+
+
+def test_stream_progress_hook_is_batch_owned():
+    stream = make_stream()
+    seen = []
+    stream.set_progress_hook(seen.append)
+    for _ in range(3):
+        stream.next_batch()
+    assert seen == [1, 2, 3]
+
+
+def test_force_probe_records_pretrain_boundary():
+    from prismlib.probes import ProbeRunner
+
+    stream = make_stream()
+    runner = ProbeRunner(
+        model=TinyModel(),
+        stream=stream,
+        tok=TinyTok(),
+        texts=texts(4),
+        device="cpu",
+        seq_len=SEQ,
+        every=25,
+        time_budget_s=60.0,
+        log=lambda m: None,
+    )
+    state = {"reports": 0, "t0": 0.0, "probe_curve": []}
+    runner.force_probe(state, step=0)
+    pt = state["probe_curve"][0]
+    assert pt["tokens_seen"] == 0 and pt["bytes_seen"] == 1
+    assert pt["flops_spent"] == 0.0 and pt["probe_bits_per_byte"] > 0.0
 
 
 # --------------------------------------------------------------- physical

@@ -110,6 +110,18 @@ def _save_checkpoint(model, workdir, meta):
     return {"path": os.path.join(workdir, "checkpoint.index.json"), "bytes": total, "shards": names}
 
 
+def _accounted_train_tokens(stream):
+    """Require v3 training to use the harness-owned data/budget stream."""
+    tokens_seen = int(stream.tokens_seen)
+    if tokens_seen <= 0:
+        raise RuntimeError(
+            "v3 trainer returned without consuming ctx['train_stream']; "
+            "external DDP must keep rank 0 as the harness-stream owner and "
+            "scatter each accounted global batch to workers"
+        )
+    return tokens_seen
+
+
 def _attest_flops(model, stream, cfg, seq_len, flops_cap):
     """Probe FLOPs/token, cross-check it analytically, arm the stream cap.
 
@@ -322,6 +334,11 @@ def _run(cfg, st):
         log=_log,
     )
     state["probe_hook"] = probes.maybe_probe
+    stream.set_progress_hook(lambda step: probes.maybe_probe(state, step))
+    # Boundary points are mandatory. They keep G6/G8 measured when a valid
+    # multi-process trainer consumes the harness corpus in worker processes
+    # and therefore cannot call the in-parent telemetry shim while training.
+    probes.force_probe(state, 0)
 
     st["stage"] = "train"
     _phase("train")
@@ -345,6 +362,20 @@ def _run(cfg, st):
     train_s = time.time() - t0
     _log(f"train done in {train_s:.0f}s ({finish_reason})")
 
+    probes.force_probe(state, stream.batches_yielded)
+    tokens_seen = _accounted_train_tokens(stream)
+    tokens_seen_source = "train_stream"
+
+    # Snapshot the train budget before checkpoint I/O: the wall cap bounds
+    # build+train, not serialization of a large state dict.
+    budget = stream.budget_report()
+    diag = _diag_metrics(stream, attest, train_s)
+    _log(
+        f"budget: attested={budget['flops_attested']:.4g} FLOPs "
+        f"({budget['spend_fraction']*100:.1f}% of cap) bound_by={budget['binding_cap']} "
+        f"mfu={diag['org.diag.mfu_achieved']*100:.1f}%"
+    )
+
     st["stage"] = "checkpoint"
     _phase("checkpoint")
     meta = {
@@ -359,20 +390,6 @@ def _run(cfg, st):
     }
     ckpt = _save_checkpoint(model, cfg["workdir"], meta)
     _log(f"checkpoint saved: {ckpt['path']} ({ckpt['bytes']/1e6:.0f} MB)")
-
-    tokens_seen = int(stream.tokens_seen)
-    tokens_seen_source = "train_stream"
-    if tokens_seen <= 0:
-        tokens_seen = int(cfg.get("train_rows", TRAIN_ROWS))
-        tokens_seen_source = "legacy"
-
-    budget = stream.budget_report()
-    diag = _diag_metrics(stream, attest, train_s)
-    _log(
-        f"budget: attested={budget['flops_attested']:.4g} FLOPs "
-        f"({budget['spend_fraction']*100:.1f}% of cap) bound_by={budget['binding_cap']} "
-        f"mfu={diag['org.diag.mfu_achieved']*100:.1f}%"
-    )
 
     _emit(
         {

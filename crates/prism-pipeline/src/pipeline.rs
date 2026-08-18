@@ -65,7 +65,7 @@ pub async fn run_eval_pipeline(
         name: name.clone(),
         max_lifetime_hours: cfg.max_lifetime_hours,
         max_price_per_hour: cfg.max_price_per_hour,
-        gpu_count: 1,
+        gpu_count: prism_lium::pod_gpu_count_from_env(),
         image_digest: cfg.default_image_digest.clone(),
         ssh_public_keys: cfg.ssh_public_keys.clone(),
         ssh_key_name: Some("prism-mission-worker".into()),

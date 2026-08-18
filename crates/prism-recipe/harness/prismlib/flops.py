@@ -1,10 +1,7 @@
 """FLOPs attestation — the budget currency (dual cap).
 
-RECIPE_VERSION is still `2.0.0`: this change moves `recipe_pin_hex()` (the
-harness bytes are pinned) but the semver bump to 2.1.0 is a release action
-with miner-facing docs, the public `BaseIntelligence/prism` repo and the
-`external-docs-check` pin attached. Same precedent as the MAX_PARAMS raise,
-which moved the pin without moving the version.
+Recipe 2.1.0 makes this attestation part of the miner-facing pinned contract;
+the harness bytes also move `recipe_pin_hex()`.
 
 The budget a Prism submission spends is **attested FLOPs**, and it is
 measured here. Wall-clock survives only as an anti-DoS bound. Nothing in

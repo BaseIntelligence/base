@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PRISM pod harness parent (recipe 2.0.0) — uploaded by prism-lium over SSH.
+"""PRISM pod harness parent (recipe 2.1.0) — uploaded by prism-lium over SSH.
 
 Multi-file harness package:
   main.py            — this parent orchestrator (network + SSH channel)
@@ -87,7 +87,7 @@ MAX_TRAIN_STEPS = int_env("PRISM_MAX_TRAIN_STEPS", 20000)
 # would make two submissions incomparable.
 TRAIN_SEED = int_env("PRISM_SEED_OVERRIDE", RECIPE_SEED)
 # Wall-clock is the ANTI-DOS BOUND, not the budget currency (dual cap;
-# ships for RECIPE_VERSION 2.1.0, which is NOT yet cut — see prismlib.flops).
+# shipped in RECIPE_VERSION 2.1.0).
 # Must match prism_recipe::TRAIN_HOURS_CAP.
 TRAIN_HOURS_CAP = float_env("PRISM_TRAIN_HOURS_CAP", 5.0)
 # The budget currency: attested FLOPs. Must match
@@ -658,7 +658,7 @@ def main():
         "seed": TRAIN_SEED,
         "train_hours_cap": TRAIN_HOURS_CAP,
         # Dual cap: FLOPs is the currency, the wall above is the safety
-        # bound. The miner picks N and D freely underneath both.
+# bound. The miner picks N and D freely underneath both.
         "train_flops_cap": TRAIN_FLOPS_CAP,
         "min_spend_fraction": MIN_SPEND_FRACTION,
         "flops_probe_samples": FLOPS_PROBE_SAMPLES,

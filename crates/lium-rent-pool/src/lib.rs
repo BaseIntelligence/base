@@ -16,8 +16,7 @@ pub fn should_recover(error_detail: &str, updated_at_ms: u64, now_ms: u64) -> bo
     let l = error_detail.to_ascii_lowercase();
     // HuggingFace / FineWeb 429s are not Lium rent 429s — re-renting an
     // 8×5090 pod does not fix a dataset CDN throttle.
-    if l.contains("huggingface") || l.contains("fineweb") || l.contains("\"stage\": \"dataset\"")
-    {
+    if l.contains("huggingface") || l.contains("fineweb") || l.contains("\"stage\": \"dataset\"") {
         return false;
     }
     is_rate_limited(error_detail) && now_ms.saturating_sub(updated_at_ms) <= RECOVERY_WINDOW_MS

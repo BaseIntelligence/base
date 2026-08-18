@@ -67,6 +67,24 @@ def _curve(points):
     ]}
 
 
+def _byte_curve(points, flops_cap=100.0):
+    """(bytes_seen, bits_per_byte, flops_spent) points."""
+    return {
+        "train_flops_cap": flops_cap,
+        "probe_curve": [
+            {
+                "step": i,
+                "tokens_seen": max(0, int(n_bytes // 2)),
+                "bytes_seen": n_bytes,
+                "probe_loss": bpb,
+                "probe_bits_per_byte": bpb,
+                "flops_spent": flops,
+            }
+            for i, (n_bytes, bpb, flops) in enumerate(points)
+        ],
+    }
+
+
 # ------------------------------------------------------------ claim 1
 
 
@@ -134,6 +152,27 @@ def test_auc_is_a_mean_ce_per_decade():
     """The quantity the anchor must match: mean loss over log10 tokens."""
     out = g6_curve.run(None, _curve([(1e8, 4.0), (1e9, 4.0)]))
     assert abs(out["g6.auc.log_tokens"] - 4.0) < 1e-9, "flat CE 4.0 → AUC 4.0"
+
+
+def test_v3_byte_curve_emits_all_three_scored_keys():
+    ctx = _byte_curve([(1, 2.0, 0), (1e6, 1.4, 50), (1e8, 1.2, 100)])
+    out = g6_curve.run(None, ctx)
+    assert 1.2 < out["g6.auc.log_bytes"] < 2.0
+    assert 1 < out["g6.bytes_to_bpb_threshold"] < 1e6
+    assert abs(out["g6.bpb_at_half_budget"] - 1.4) < 1e-9
+    flat = rollup.flatten_metrics({"g6": {"status": "ok", "metrics": out}})
+    assert {
+        "org.g6.auc_log_bytes",
+        "org.g6.bytes_to_bpb_threshold",
+        "org.g6.bpb_at_half_budget",
+    } <= set(flat)
+
+
+def test_v3_byte_threshold_and_half_budget_fail_closed():
+    out = g6_curve.run(None, _byte_curve([(1, 2.4, 0), (1e6, 2.0, 25)]))
+    assert out["g6.bytes_to_bpb_threshold"] == g6_curve.CENSORED_BYTES
+    assert out["g6.bpb_at_half_budget"] == 3.6
+    assert out["g6.bpb_at_half_budget.censored"] == 1.0
 
 
 # ------------------------------------------------------------ claim 3

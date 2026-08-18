@@ -18,7 +18,7 @@ blocks in-process train contamination.
 | `seeds.json` | Published dev seed (`public_seed`) for the procedural generators. |
 | `g2/<task>.jsonl` | Tiny public 0-shot anchors for G2. |
 | `g1/domains/<name>.jsonl` | Tiny multi-domain held-out anchors for G1 (`{"text"}` rows). |
-| `g1/fresh.jsonl` | Intentionally absent here — use the staged public pack (`build_public_pack.py`) which samples a FineWeb dump **other than** the FineWeb-Edu train pin. |
+| `g1/fresh.jsonl` | Tiny synthetic smoke rows so the canonical fresh-crawl key is contract-testable; production uses the staged FineWeb dump from `build_public_pack.py`. |
 | `g5/natural/*` | Tiny LongBench/HELMET-shaped smoke fixtures — not production natural pools. |
 
 ## Staged public pack (operator-side, assets never committed)

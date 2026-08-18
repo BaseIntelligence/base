@@ -98,11 +98,10 @@ impl AnchorInput {
     /// `min_spend_fraction` added; canonical bytes shared with
     /// `prism-recipe/anchors/v3.json`).
     ///
-    /// **Not selectable in practice yet.** v3 declares keys the battery does
-    /// not emit (`org.g6.auc_log_bytes` and siblings need the byte-curve
-    /// change; `org.conf.*` needs the operator confirmation tier), and a
-    /// declared-but-absent key is a hard `MissingMetric` → `Ineligible`.
-    /// Emit before declare.
+    /// The battery emits every scored v3 G1–G8 key. `org.conf.*` remains a
+    /// structurally inert, weight-zero operator record outside `GROUP_KEYS`.
+    /// v3 nevertheless stays default-off while numeric anchors are
+    /// placeholders; calibration + pre-registration must precede selection.
     #[must_use]
     pub fn v3_placeholder() -> Self {
         Self {

@@ -1071,7 +1071,7 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!(v["version"], "2.0.0");
+        assert_eq!(v["version"], "2.1.0");
         // Tracks the constant rather than hardcoding it: the wall cap is now
         // the anti-DoS bound under the attested-FLOPs currency, so it moves
         // with `prism_recipe::TRAIN_HOURS_CAP` and this assertion should not

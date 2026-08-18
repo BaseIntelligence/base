@@ -195,22 +195,24 @@ def eval_g2_cap(task):
     """Per-task G2 row cap.
 
     `PRISM_EVAL_G2_CAP` (base, default 200) applies to every task;
-    discriminative tasks default to `PRISM_EVAL_G2_CAP_USABLE` (1000).
+    discriminative tasks default to `PRISM_EVAL_G2_CAP_USABLE` (400), the
+    hard per-file governance cap enforced by the pack builder.
     Raising the base cap above the usable cap raises both (max of the two),
     so a single knob still works for operators.
 
     Cost of the default (structural, hardware-independent): a full G2 pass
-    is 5 800 forward passes at 200/task and 19 400 at 1000 on the four
+    is 5 800 forward passes at 200/task and 9 200 at 400 on the four
     usable tasks (choices per item, plus ~3 greedy forwards per LAMBADA
     strict row). At 10-25 ms per forward for a <=1B model on one RTX 5090
-    that is 194-485 s, inside the g2 share of `BATTERY_BUDGET_S` (792 s).
+    that is 92-230 s, inside the g2 share of `BATTERY_BUDGET_S` (792 s).
     The cost model is asserted in `tests/test_eval_budget.py`
     (`test_g2_raised_cap_fits_the_g2_budget_share`).
     """
-    base = eval_asset_cap(200, 8, env_key="PRISM_EVAL_G2_CAP")
+    base = min(400, eval_asset_cap(200, 8, env_key="PRISM_EVAL_G2_CAP"))
     if tiny_caps() or task not in G2_DISCRIMINATIVE:
         return base
-    return max(base, max(1, int_env("PRISM_EVAL_G2_CAP_USABLE", 1000)))
+    usable = min(400, max(1, int_env("PRISM_EVAL_G2_CAP_USABLE", 400)))
+    return max(base, usable)
 
 
 # Full G2 task order. Mirrors `g2_downstream.TASKS` (kept here rather than

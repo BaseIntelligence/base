@@ -82,9 +82,9 @@ pub const LATEST_ANCHOR_VERSION: u16 = 3;
 /// absent). Stays 0 until v1+ anchors are measured + pre-registered.
 ///
 /// This is load-bearing, not caution theatre: v1/v2/v3 are hash-committed
-/// pre-registration artifacts, and v3 declares keys the battery does not
-/// emit yet. Selecting it early would make every in-flight submission fail
-/// the `MissingMetric` completeness gate — `Ineligible`, lattice 0.
+/// pre-registration artifacts. The battery emits v3's scored G6 keys, but
+/// every numeric anchor is still an uncalibrated placeholder. Selection stays
+/// at v0 until baseline measurement and pre-registration are complete.
 pub const DEFAULT_ANCHOR_VERSION: u16 = 0;
 
 /// Per-metric normalization descriptor (research/12 §7 step 1).
@@ -730,6 +730,13 @@ mod tests {
                 all.contains(byte_marker),
                 "org.g6.auc_log_bytes requires the probe curve to carry \
                  {byte_marker} — otherwise the key name would be a lie"
+            );
+        }
+        for org_key in g6.keys() {
+            assert!(
+                all.contains(org_key),
+                "v3 declares {org_key}, but the embedded harness/rollup has no \
+                 producer mapping — selecting v3 would fail completeness"
             );
         }
     }

@@ -92,8 +92,12 @@ _DIRECT = {
     # G6 — sample efficiency from the train probe curve.
     "org.g6.auc_log_tokens": ("g6", "g6.auc.log_tokens"),
     "org.g6.tokens_to_threshold": ("g6", "g6.tokens_to_ce4.0"),
-    # G7 — inference efficiency (32k grid points + state/energy cards are
-    # CUDA/full-caps only; absent otherwise, never fabricated).
+    "org.g6.auc_log_bytes": ("g6", "g6.auc.log_bytes"),
+    "org.g6.bytes_to_bpb_threshold": ("g6", "g6.bytes_to_bpb_threshold"),
+    "org.g6.bpb_at_half_budget": ("g6", "g6.bpb_at_half_budget"),
+    # G7 — inference efficiency. Unsupported 32k, OOM, CPU-only state/energy,
+    # and exhausted budgets are emitted by g7_inference as explicit
+    # fail-closed censored values so anchored keys remain structurally total.
     "org.g7.throughput_toks_s": ("g7", "g7.throughput.b32.toks"),
     "org.g7.ttft_ms_32k": ("g7", "g7.ttft.L32768.ms"),
     "org.g7.tpot_ms_32k": ("g7", "g7.tpot.L32768.ms"),
@@ -122,6 +126,7 @@ _ITEM_CLUSTERS = {
     "org.g4.knights_knaves_acc": ("g4.item.acc", "kk/", None),
     "org.g4.proofwriter_acc": ("g4.item.acc", "proof/", None),
     "org.g6.tokens_to_threshold": ("g6.tokens_to", "ce4.0", None),
+    "org.g6.bytes_to_bpb_threshold": ("g6.bytes_to_bpb", None, None),
     "org.g7.throughput_toks_s": ("g7.throughput", "b32", None),
     "org.g7.ttft_ms_32k": ("g7.ttft", "L32768", None),
 }

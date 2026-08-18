@@ -27,11 +27,11 @@ pub const EVAL_ASSETS_POD_DIR: &str = "/tmp/prism_eval/eval-assets";
 // Engine + build toolchain so miners can NVFP4-train and `pip install`
 // extras from their own manifest (see prism-recipe/harness/prismlib/deps.py
 // and prism_recipe::POD_IMAGE_REF). Opt-in via env until built+pushed and
-// validated on a GPU node — live keeps the daturaai default.
-const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
-const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda13.0.2-devel-ubuntu24.04-dind";
+// validated on a GPU node — live keeps the immutable daturaai default.
+const RECIPES_TEMPLATE_IMAGE: &str =
+    "daturaai/pytorch@sha256:cb94d6b90de03faecef11a8f4d0ae02db27e4d7f8a3af8042172e9239d0c3a20";
 /// Default Lium template name (daturaai cu13 base).
-pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9";
+pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9-digest-cb94d6b9";
 /// Template name used automatically when the image is env-overridden
 /// (template identity is name-based / reuse-if-exists on Lium: a new image
 /// must ship under a new name or pods would keep the old template).
@@ -39,22 +39,41 @@ pub const RECIPES_TEMPLATE_NAME_V10: &str = "prism-recipe-v10";
 /// Startup commands (empty: sshd comes from image init).
 pub const RECIPES_TEMPLATE_STARTUP: &str = "";
 
-/// Resolved pod `(image, tag, default_template_name)`. `PRISM_POD_IMAGE` /
-/// `PRISM_POD_IMAGE_TAG` let ops stage the recipe-v10 TE image without a
-/// code bump; unset falls back to the daturaai cu13 default (whose pinned
-/// tag applies only to that image). An overridden image automatically flips
-/// the template name to [`RECIPES_TEMPLATE_NAME_V10`].
-#[must_use]
-pub fn resolved_pod_image() -> (String, Option<String>, &'static str) {
+/// Resolved pod `(image, tag, default_template_name)`.
+///
+/// `PRISM_POD_IMAGE_REF` lets ops stage recipe-v10 without a code bump. The
+/// value must be a complete `repository@sha256:<64 hex>` reference; floating
+/// and mutable tags fail closed. Unset falls back to the digest-pinned daturaai
+/// CUDA 13 image. An override flips the template name to v10.
+///
+/// # Errors
+///
+/// Returns [`prism_lium_types::LiumError::Integrity`] for a non-digest override.
+pub fn resolved_pod_image(
+) -> Result<(String, Option<String>, &'static str), prism_lium_types::LiumError> {
     let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
-    match env("PRISM_POD_IMAGE") {
-        Some(image) => (image, env("PRISM_POD_IMAGE_TAG"), RECIPES_TEMPLATE_NAME_V10),
-        None => (
+    match env("PRISM_POD_IMAGE_REF") {
+        Some(image) if is_digest_image_ref(&image) => Ok((image, None, RECIPES_TEMPLATE_NAME_V10)),
+        Some(_) => Err(prism_lium_types::LiumError::Integrity(
+            "PRISM_POD_IMAGE_REF must be repository@sha256:<64 lowercase hex>".into(),
+        )),
+        None => Ok((
             RECIPES_TEMPLATE_IMAGE.to_owned(),
-            Some(RECIPES_TEMPLATE_TAG.to_owned()),
+            None,
             RECIPES_TEMPLATE_NAME,
-        ),
+        )),
     }
+}
+
+fn is_digest_image_ref(image: &str) -> bool {
+    let Some((repository, digest)) = image.rsplit_once("@sha256:") else {
+        return false;
+    };
+    !repository.is_empty()
+        && digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Pod bootstrap prepended to the run command. Payloads are staged separately.
@@ -144,12 +163,21 @@ pub fn harness_env_pairs(
         "PRISM_FLOPS_PROBE_SAMPLES",
         "PRISM_FLOPS_PROBE_CV_MAX",
         "PRISM_FLOPS_ANALYTIC_GAP_MAX",
+        "PRISM_PROBE_EVERY",
+        "PRISM_PROBE_TIME_BUDGET_S",
+        "PRISM_G6_BPB_THRESHOLD",
+        "PRISM_BUILD_TIMEOUT_S",
+        "PRISM_SCORE_TIMEOUT_S",
+        "PRISM_EVAL_TIMEOUT_S",
+        "PRISM_INSTALL_TIMEOUT_SECS",
         "PRISM_TEST_MAX_PARAMS",
         "PRISM_TEST_EVAL_CAPS",
+        "PRISM_EVAL_BATTERY_BUDGET_S",
         "PRISM_EVAL_N_ITEMS",
         "PRISM_EVAL_G5_N_ITEMS",
         "PRISM_EVAL_G1_CAP",
         "PRISM_EVAL_G2_CAP",
+        "PRISM_EVAL_G2_CAP_USABLE",
         "PRISM_EVAL_NATURAL_ITEMS",
         "PRISM_EVAL_MIRROR_G2_CAP",
         "PRISM_EVAL_G1_BUDGET_S",
@@ -169,6 +197,26 @@ pub fn harness_env_pairs(
             if value.trim().parse::<f64>().is_ok() {
                 values.push((key, value.trim().to_owned()));
             }
+        }
+    }
+    if let Ok(raw) = std::env::var("PRISM_EVAL_G2_TASKS") {
+        let allowed = [
+            "lambada",
+            "hellaswag",
+            "piqa",
+            "arc_easy",
+            "arc_challenge",
+            "winogrande",
+            "boolq",
+            "openbookqa",
+        ];
+        let picked: Vec<&str> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|task| allowed.contains(task))
+            .collect();
+        if !picked.is_empty() {
+            values.push(("PRISM_EVAL_G2_TASKS", picked.join(",")));
         }
     }
     if let Ok(flow) = std::env::var("PRISM_FLOW") {
@@ -202,4 +250,22 @@ pub fn random_seed_hex() -> Result<String, LiumError> {
         .and_then(|mut file| file.read_exact(&mut bytes))
         .map_err(|error| LiumError::Exec(format!("entropy: {error}")))?;
     Ok(hex::encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_digest_image_ref;
+
+    #[test]
+    fn pod_image_override_requires_digest() {
+        assert!(is_digest_image_ref(
+            "ghcr.io/baseintelligence/base/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(!is_digest_image_ref(
+            "ghcr.io/baseintelligence/base/prism-pod:v10-cuda13-te"
+        ));
+        assert!(!is_digest_image_ref(
+            "ghcr.io/baseintelligence/base/prism-pod@sha256:ABCDEF"
+        ));
+    }
 }

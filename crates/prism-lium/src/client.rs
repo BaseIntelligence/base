@@ -295,7 +295,7 @@ impl LiumClient {
                 return Ok(id.clone());
             }
         }
-        let (image, tag, default_name) = resolved_pod_image();
+        let (image, tag, default_name) = resolved_pod_image()?;
         let name = spec
             .template_name
             .as_deref()
@@ -809,7 +809,7 @@ impl EvalJobBackend for LiumClient {
 
         let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
         let pref = GpuPreference::default_prism();
-        pref.filter_sort_offers(&mut offers, spec.gpu_count); // 1×5090 hard pin
+        pref.filter_sort_offers(&mut offers, spec.gpu_count); // RTX 5090 SKU + requested width
         let candidates: Vec<Offer> = match &spec.preferred_offer_id {
             Some(pref_id) => {
                 let matched: Vec<Offer> = offers
@@ -840,7 +840,7 @@ impl EvalJobBackend for LiumClient {
             }
             let effective =
                 prism_lium_types::effective_gpu_count(selected.gpu_count, &selected.gpu_type);
-            // Live 1-GPU pin still rents exactly 1. Multi-GPU hosts reject
+            // An explicit 1-GPU cutover still rents exactly 1. Multi-GPU hosts reject
             // splitting (`Provider doesn't allow GPU splitting`), so a 4-GPU
             // request on an 8×5090 machine must rent the whole host; the
             // harness then DDP-trains on `torch.cuda.device_count()`.
@@ -1297,6 +1297,10 @@ mod tests {
         std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
         std::env::set_var("PRISM_TEST_EVAL_CAPS", "0");
         std::env::set_var("PRISM_EVAL_G5_N_ITEMS", "1");
+        std::env::set_var(
+            "PRISM_EVAL_G2_TASKS",
+            "lambada,unknown,hellaswag,piqa,arc_easy",
+        );
         std::env::set_var("PRISM_FLOW", "v3");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
         assert!(pairs
@@ -1311,6 +1315,9 @@ mod tests {
         assert!(pairs
             .iter()
             .any(|(k, v)| *k == "PRISM_EVAL_G5_N_ITEMS" && v == "1"));
+        assert!(pairs.iter().any(|(k, v)| {
+            *k == "PRISM_EVAL_G2_TASKS" && v == "lambada,hellaswag,piqa,arc_easy"
+        }));
         assert!(pairs.iter().any(|(k, v)| *k == "PRISM_FLOW" && v == "v3"));
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15'; rm -rf /; '");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
@@ -1323,6 +1330,7 @@ mod tests {
         std::env::remove_var("PRISM_TEST_MAX_PARAMS");
         std::env::remove_var("PRISM_TEST_EVAL_CAPS");
         std::env::remove_var("PRISM_EVAL_G5_N_ITEMS");
+        std::env::remove_var("PRISM_EVAL_G2_TASKS");
         std::env::remove_var("PRISM_FLOW");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090' OR '1", false);
         assert!(pairs

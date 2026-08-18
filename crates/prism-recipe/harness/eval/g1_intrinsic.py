@@ -28,6 +28,8 @@ import os
 
 from . import common
 
+_CENSORED_BITS_PER_BYTE = 3.6
+
 _POS_EDGES = (128, 256, 384, 512)
 
 
@@ -95,7 +97,14 @@ def run(model, ctx):
     common.emit(out, "g1.bpb.val", common.bpb(common.mean(ces)))
     common.emit(out, "g1.bits_per_byte.val", common.mean(bpbytes))
     common.emit(out, "g1.bpb.key_token", common.bpb(common.mean(key_ces)))
-    common.emit(out, "g1.bits_per_byte.key_token", common.mean(key_bpbytes))
+    # Completeness is data-independent: if a tiny/public smoke cut happens to
+    # contain no key tokens, emit the anchored chance floor rather than omit
+    # the key and make the entire composite structurally ineligible.
+    common.emit(
+        out,
+        "g1.bits_per_byte.key_token",
+        common.mean(key_bpbytes) if key_bpbytes else _CENSORED_BITS_PER_BYTE,
+    )
     for b, vals in sorted(buckets.items()):
         common.emit(out, f"g1.posloss.{b}", common.bpb(common.mean(vals)))
 
@@ -137,7 +146,7 @@ def run(model, ctx):
     # public HF pack default; also present under optional private mirrors).
     fresh_path = common.assets_path(ctx, "g1/fresh.jsonl")
     # Prefer staged pack path when both staged + public_dev exist; assets_path
-    # already prefers eval_assets_dir. public_dev intentionally ships no fresh.
+    # already prefers eval_assets_dir.
     if fresh_path and budget.ok():
         texts = [r.get("text", "") for r in common.load_jsonl(fresh_path, cap=cap)]
         texts = [t for t in texts if t]

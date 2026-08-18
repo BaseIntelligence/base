@@ -21,6 +21,12 @@ on:
       - "Cargo.lock"
       - ".github/workflows/images.yml"
   workflow_dispatch:
+    inputs:
+      prism_pod_only:
+        description: Build the CUDA 13 + Transformer Engine Prism pod
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,6 +42,7 @@ concurrency:
 jobs:
   build-push-digests:
     name: build · push · record digests
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.prism_pod_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -134,6 +141,51 @@ jobs:
           name: digest-${{ matrix.image_suffix }}
           path: digests-out/${{ matrix.image_suffix }}.json
           if-no-files-found: error
+
+  build-prism-pod:
+    name: build · push Prism CUDA pod
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prism_pod_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk for the CUDA base
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          docker system prune --all --force
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Prism pod
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/prism-pod
+          file: deploy/prism-pod/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/baseintelligence/base/prism-pod:${{ github.sha }}
+            ghcr.io/baseintelligence/base/prism-pod:v10-cuda13-te
+
+      - name: Report immutable image reference
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "$DIGEST"
+          echo "ghcr.io/baseintelligence/base/prism-pod@$DIGEST"
 
   merge-digests:
     name: merge digest manifest
@@ -329,7 +381,7 @@ jobs:
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "https://api.github.com/orgs/${OWNER}/packages/container/${enc}/visibility" \
               -d '{"visibility":"public"}' || true)
-            echo "pkg=${pkg} http=${code} body=$(head -c 200 /tmp/vis-${enc}.json || true)"
+            echo "pkg=${pkg} http=${code} body=$(head -c 200 "/tmp/vis-${enc}.json" || true)"
             if [ "$code" = "204" ] || [ "$code" = "200" ]; then
               ok=$((ok + 1))
             fi

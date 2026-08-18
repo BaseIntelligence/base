@@ -136,8 +136,20 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/eval/public_dev/g1/domains/code.jsonl"),
     ),
     (
+        "eval/public_dev/g1/domains/math.jsonl",
+        include_str!("../harness/eval/public_dev/g1/domains/math.jsonl"),
+    ),
+    (
         "eval/public_dev/g1/domains/news.jsonl",
         include_str!("../harness/eval/public_dev/g1/domains/news.jsonl"),
+    ),
+    (
+        "eval/public_dev/g1/domains/prose.jsonl",
+        include_str!("../harness/eval/public_dev/g1/domains/prose.jsonl"),
+    ),
+    (
+        "eval/public_dev/g1/fresh.jsonl",
+        include_str!("../harness/eval/public_dev/g1/fresh.jsonl"),
     ),
     (
         "eval/public_dev/g2/arc_challenge.jsonl",
@@ -286,13 +298,13 @@ pub const BASELINE_ARCHITECTURE_PY: &str = include_str!("../baseline/architectur
 /// Baseline submission: `training.py`.
 pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 
-/// Recipe semantic version (surfaced through the API). **2.0.0** requires the
+/// Recipe semantic version (surfaced through the API). **2.1.0** requires the
 /// `AutoModel` pin + miner unified-diff ZIP layout (`automodel.base` +
 /// `automodel.patch`); legacy 1.x two-script / source-tree / `arch_id`
 /// layouts are rejected on live (`unsupported_layout` / `recipe_version`).
-/// Caps, `FineWeb` pin, telemetry, and the G1–G8 battery from 1.4 remain
-/// unless a later bump says otherwise. See `docs/PRISM_RECIPE.md`.
-pub const RECIPE_VERSION: &str = "2.0.0";
+/// It adds the 4-GPU CUDA 13/TE pod, attested dual-cap training, and the
+/// structurally complete v3 G1–G8 battery. See `docs/PRISM_RECIPE.md`.
+pub const RECIPE_VERSION: &str = "2.1.0";
 
 /// Maximum model parameters allowed after `build_model` (1B).
 ///
