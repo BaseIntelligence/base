@@ -285,10 +285,13 @@ not a way to score zero.
 
 The probe must not turn memory pressure into a budget escape. On OOM it
 halves the probe batch and retries after releasing the CUDA cache down to one
-row; `probe_rows` / `probe_rows_reduced` attest the condition. Only a
-non-OOM inability to execute `FlopCounterMode` leaves the FLOPs cap disarmed;
-the wall bound still contains that run and `org.diag.flops_probe_error` is
-emitted—a failed measurement is never treated as a zero-cost model.
+row; `probe_rows` / `probe_rows_reduced` attest the condition. If even a
+single row OOMs (LoopMoE / fused kernels on a resident model) or
+`FlopCounterMode` cannot run, the harness arms the FLOPs cap from the
+analytic graph (`estimator=analytic_fallback`,
+`org.diag.flops_probe_analytic_fallback=1`). The dual cap never silently
+disarms. Only a non-positive analytic estimate leaves the cap off — the wall
+bound still contains that run and `org.diag.flops_probe_error` is emitted.
 
 **Cheat surface, and what is still open.**
 

@@ -1,0 +1,12 @@
+# CUDA 13 / cp312. Do not use [pytorch] extra: it pulls the PyPI
+# transformer_engine_torch==2.16.0 sdist (needs nvcc; Lium has none).
+# Do not pin the Astral local version: wheels.astral.sh connect-times
+# out from Lium (seen on 4061a769). Use NVIDIA's GitHub release wheel
+# (github.com / release-assets.githubusercontent.com) + PyPI core_cu13.
+# FLA: pin fla-core wheel + einops ONLY. Never flash-linear-attention or
+# fla-core[cuda] — those extras pull torch rebuilds / TE sdist.
+# Do not put pip option lines here.
+transformer-engine[core_cu13]==2.16.0
+transformer_engine_torch @ https://github.com/NVIDIA/TransformerEngine/releases/download/v2.16/transformer_engine_torch-2.16.0+cu13torch26.05cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+einops
+fla-core==0.5.2

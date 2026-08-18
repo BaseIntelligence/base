@@ -583,8 +583,8 @@ governance action like the `composite` mode flip.
 | `PRISM_ANCHOR_VERSION` | `0` \| `1` \| `2` \| `3` | `0` | Selects the composite anchor set. v1 adds two battery keys; v2 swaps saturated MC LAMBADA for strict; v3 adds byte/compute G6, retires four pinned G2 tasks, and adds dual-cap gates. Unknown values fall back to v0 with a warning. v0 remains byte-frozen. |
 
 The v3 harness now emits every scored G1–G8 key declared by `anchors/v3.json`
-(including G1 prose/math/fresh crawl/key-token, all censored-or-measured 32k
-G7 cards + reasoning throughput, and G8 µP). This fixes structural
+(including G1 code/prose/math/fresh crawl/key-token, all censored-or-measured
+32k G7 cards + reasoning throughput, and G8 µP). This fixes structural
 `MissingMetric` ineligibility. **It does not activate v3:** all numeric v3
 anchors remain `placeholder`; keep `PRISM_ANCHOR_VERSION=0` and
 `PRISM_SCORING_MODE=benchmarks` on live `:28092` until reference calibration,
@@ -599,7 +599,7 @@ into the pod where applicable):
 | `PRISM_TRAIN_FLOPS_CAP` | organizer constant `3.0e18`; first of FLOPs or wall/steps binds |
 | `PRISM_MIN_SPEND_FRACTION` | `0.5`; voluntary under-spend only—`steps`, `wall`, and `flops` protocol stops are exempt |
 | `PRISM_PROBE_EVERY` / `PRISM_PROBE_TIME_BUDGET_S` | organizer batch cadence and per-probe time ceiling |
-| `PRISM_FLOPS_PROBE_SAMPLES` / `PRISM_FLOPS_PROBE_CV_MAX` / `PRISM_FLOPS_ANALYTIC_GAP_MAX` | attestation robustness thresholds |
+| `PRISM_FLOPS_PROBE_SAMPLES` / `PRISM_FLOPS_PROBE_CV_MAX` / `PRISM_FLOPS_ANALYTIC_GAP_MAX` | attestation robustness thresholds. `FlopCounterMode` OOM halves probe rows; if a single row still OOM (LoopMoE), the analytic graph arms the FLOPs cap (`estimator=analytic_fallback`). The dual cap never silently disarms. |
 | `PRISM_G6_BPB_THRESHOLD` | G6 bytes-to-bpb target (default `1.5`) |
 | `PRISM_EVAL_G2_TASKS` | v3 only: `lambada,hellaswag,piqa,arc_easy`; do not use with v0–v2 |
 | `PRISM_EVAL_BATTERY_BUDGET_S` | global battery cap (default `3600`) |
@@ -862,7 +862,10 @@ the workdir root and `submission/`):
 - `pyproject.toml` — `pip install .` (PEP 621)
 
 They install FlashAttention, `mamba-ssm`, custom Triton/CUDA kernels, etc.,
-into the image before training. `/v1/recipe` advertises the capability:
+into the image before training. A worked AutoModel example (LoopMoE, 4-GPU
+DDP + optional NVFP4) is
+[`docs/external-miner/examples/loopmoe/`](external-miner/examples/loopmoe/).
+`/v1/recipe` advertises the capability:
 `pod_image_ref`, `miner_install_supported`, `miner_deps_members`,
 `install_timeout_secs` (1800s).
 

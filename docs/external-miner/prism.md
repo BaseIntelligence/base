@@ -99,6 +99,13 @@ frameworks.
 bypass those hooks fail review (`missing_telemetry_hooks`, zero score,
 terminal).
 
+**Example: LoopMoE (4-GPU DDP + NVFP4).** A reference AutoModel patch that
+honors `ctx["train_stream"]`, rank-0 stream ownership, and optional
+Transformer Engine NVFP4 lives at
+[`examples/loopmoe/`](examples/loopmoe/). Pack `automodel.base` +
+`automodel.patch` (+ optional `prism.toml` / `requirements.txt`) as in
+this document. It is an example, not a scored baseline.
+
 **Diff visibility.** After intake, inspect your applied delta at
 `GET /v1/submissions/{id}/diff` (full unified diff + diffstat / classification).
 

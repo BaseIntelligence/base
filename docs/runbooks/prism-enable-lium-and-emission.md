@@ -40,7 +40,8 @@ For an isolated v3 calibration wave (not the live service), use:
 
 ```bash
 PRISM_FLOW=v3
-PRISM_ANCHOR_VERSION=3
+PRISM_SCORING_MODE=benchmarks   # do not flip live or isolated :28092 to composite
+PRISM_ANCHOR_VERSION=3          # measure only; placeholders until pre-register
 PRISM_TRAIN_FLOPS_CAP=3.0e18
 PRISM_MIN_SPEND_FRACTION=0.5
 PRISM_EVAL_G2_TASKS=lambada,hellaswag,piqa,arc_easy
