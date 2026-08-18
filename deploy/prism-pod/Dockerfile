@@ -42,14 +42,17 @@ RUN apt-get update \
 #
 # TE pin: 2.18.0 is the first CUDA-13 wheel we require to expose
 # `transformer_engine.common.recipe.NVFP4BlockScaling` (Blackwell / RTX 5090).
+# NGC 26.01 constrains cuDNN frontend to 1.17; clear `PIP_CONSTRAINT` only for
+# the explicit frontend/TE upgrade that satisfies TE 2.18's >=1.25 floor.
 # `--no-build-isolation` links the extension against the image torch.
 # Miners may re-pin via requirements.txt; install_deps is resubmittable.
 ARG TE_VERSION=2.18.0
 ARG CUDNN_FRONTEND_VERSION=1.25.0
 RUN pip install --no-cache-dir \
       "transformers==4.44.2" "datasets==3.0.2" "pyarrow==17.0.0" \
+ && PIP_CONSTRAINT= pip install --no-cache-dir --upgrade \
       "nvidia-cudnn-frontend==${CUDNN_FRONTEND_VERSION}" \
- && pip install --no-cache-dir --no-build-isolation \
+ && PIP_CONSTRAINT= pip install --no-cache-dir --no-build-isolation \
       "transformer-engine[pytorch]==${TE_VERSION}" \
  && pip install --no-cache-dir einops
 
