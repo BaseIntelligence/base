@@ -843,7 +843,7 @@ Evidence and full derivations:
 
 Miners are no longer limited to the harness's preinstalled stack. recipe-v10
 ships a **complete CUDA 13 base image** (`prism_recipe::POD_IMAGE_REF` is the
-immutable `ghcr.io/baseintelligence/base/prism-pod@sha256:…` reference built from
+immutable `ghcr.io/baseintelligence/prism-pod@sha256:…` reference built from
 [`deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) with
 PyTorch, a full build toolchain (`nvcc`, `ninja`, `build-essential`),
 **Transformer Engine** (NVFP4 training), and common accelerators — plus a

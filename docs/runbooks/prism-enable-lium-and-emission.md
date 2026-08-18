@@ -76,7 +76,7 @@ gh workflow run images.yml \
 ```
 
 Set the staged service only with
-`PRISM_POD_IMAGE_REF=ghcr.io/baseintelligence/base/prism-pod@sha256:…`.
+`PRISM_POD_IMAGE_REF=ghcr.io/baseintelligence/prism-pod@sha256:…`.
 Tags and malformed digests fail closed. Before promotion, one 4-GPU rent
 must prove:
 

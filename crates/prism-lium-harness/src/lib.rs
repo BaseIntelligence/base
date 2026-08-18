@@ -259,13 +259,13 @@ mod tests {
     #[test]
     fn pod_image_override_requires_digest() {
         assert!(is_digest_image_ref(
-            "ghcr.io/baseintelligence/base/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "ghcr.io/baseintelligence/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
         assert!(!is_digest_image_ref(
-            "ghcr.io/baseintelligence/base/prism-pod:v10-cuda13-te"
+            "ghcr.io/baseintelligence/prism-pod:v10-cuda13-te"
         ));
         assert!(!is_digest_image_ref(
-            "ghcr.io/baseintelligence/base/prism-pod@sha256:ABCDEF"
+            "ghcr.io/baseintelligence/prism-pod@sha256:ABCDEF"
         ));
     }
 }

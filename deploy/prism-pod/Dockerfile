@@ -6,7 +6,7 @@
 # extras from a shipped requirements.txt / pyproject.toml during the pod's
 # network-on install phase (see crates/prism-recipe/harness/prismlib/deps.py).
 #
-# Published under ghcr.io/baseintelligence/base/prism-pod. Runtime references
+# Published under ghcr.io/baseintelligence/prism-pod. Runtime references
 # are digest-only; the human tag is discovery metadata, never a deploy pin.
 #
 # Base: NVIDIA PyTorch NGC (CUDA 13, cuDNN, NCCL, build toolchain, and a

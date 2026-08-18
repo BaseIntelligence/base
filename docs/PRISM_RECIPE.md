@@ -62,7 +62,7 @@ miner unified diff ───────┘         │
 ### Modular pod image + miner dependencies (recipe-v10)
 
 The pod image (`/v1/recipe` `pod_image_ref` is an immutable
-`ghcr.io/baseintelligence/base/prism-pod@sha256:…` reference built from
+`ghcr.io/baseintelligence/prism-pod@sha256:…` reference built from
 [`../deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) is a
 complete CUDA 13 base: PyTorch, `nvcc`/`ninja`/`build-essential`,
 Transformer Engine (NVFP4 training), and common accelerators. A submission

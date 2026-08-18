@@ -32,6 +32,11 @@ on:
         required: false
         type: boolean
         default: false
+      prism_pod_digest:
+        description: Existing Prism pod digest for a publish-only repair
+        required: false
+        type: string
+        default: sha256:5b20fe9cf832231c05ae15b5ffbef164f009ce084a6144826c0557f846c6c8d2
 
 permissions:
   contents: read
@@ -152,6 +157,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.prism_pod_only && !inputs.prism_pod_publish_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,15 +189,15 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            ghcr.io/baseintelligence/base/prism-pod:${{ github.sha }}
-            ghcr.io/baseintelligence/base/prism-pod:v10-cuda13-te
+            ghcr.io/baseintelligence/prism-pod:${{ github.sha }}
+            ghcr.io/baseintelligence/prism-pod:v10-cuda13-te
 
       - name: Report immutable image reference
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           test -n "$DIGEST"
-          echo "ghcr.io/baseintelligence/base/prism-pod@$DIGEST"
+          echo "ghcr.io/baseintelligence/prism-pod@$DIGEST"
 
   publish-prism-pod:
     name: publish Prism CUDA pod
@@ -198,6 +205,30 @@ jobs:
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.prism_pod_only && (inputs.prism_pod_publish_only || needs.build-prism-pod.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy immutable manifest to canonical package
+        env:
+          DIGEST: ${{ inputs.prism_pod_publish_only && inputs.prism_pod_digest || needs.build-prism-pod.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$DIGEST"
+          source="ghcr.io/baseintelligence/prism-pod@${DIGEST}"
+          if [ "${{ inputs.prism_pod_publish_only }}" = "true" ]; then
+            source="ghcr.io/baseintelligence/base/prism-pod@${DIGEST}"
+          fi
+          docker buildx imagetools create \
+            --tag ghcr.io/baseintelligence/prism-pod:v10-cuda13-te \
+            "$source"
+
       - name: Set package visibility public
         env:
           GH_TOKEN: ${{ github.token }}
@@ -206,20 +237,17 @@ jobs:
           set -euo pipefail
           code=0
           for attempt in 1 2 3 4 5 6; do
-            for package in "base/prism-pod" "prism-pod"; do
-              pkg=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$package")
-              code=$(curl -sS -o /tmp/prism-pod-visibility.json -w "%{http_code}" \
-                -X PUT \
-                -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                "https://api.github.com/orgs/${OWNER}/packages/container/${pkg}/visibility" \
-                -d '{"visibility":"public"}' || true)
-              if [ "$code" = "204" ] || [ "$code" = "200" ]; then
-                echo "published container package ${package}"
-                exit 0
-              fi
-            done
+            code=$(curl -sS -o /tmp/prism-pod-visibility.json -w "%{http_code}" \
+              -X PUT \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/orgs/${OWNER}/packages/container/prism-pod/visibility" \
+              -d '{"visibility":"public"}' || true)
+            if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+              echo "published container package prism-pod"
+              exit 0
+            fi
             echo "package visibility attempt ${attempt} returned HTTP ${code}"
             sleep 5
           done
