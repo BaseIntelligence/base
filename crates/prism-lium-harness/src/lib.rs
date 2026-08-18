@@ -48,7 +48,7 @@ pub fn resolved_pod_image() -> Result<(String, Option<String>, String), prism_li
     match env("PRISM_POD_IMAGE_REF") {
         Some(image) if is_digest_image_ref(&image) => {
             let template_name = credential_scoped_template_name(
-                template_name_for_image(&image),
+                &template_name_for_image(&image),
                 credential.as_deref(),
             );
             let tag = env("PRISM_POD_IMAGE_TAG").unwrap_or_else(|| RECIPES_TEMPLATE_TAG.into());
@@ -60,18 +60,16 @@ pub fn resolved_pod_image() -> Result<(String, Option<String>, String), prism_li
         None => Ok((
             RECIPES_TEMPLATE_IMAGE.to_owned(),
             Some(RECIPES_TEMPLATE_TAG.to_owned()),
-            credential_scoped_template_name(
-                RECIPES_TEMPLATE_NAME.to_owned(),
-                credential.as_deref(),
-            ),
+            credential_scoped_template_name(RECIPES_TEMPLATE_NAME, credential.as_deref()),
         )),
     }
 }
 
-fn credential_scoped_template_name(base: String, credential: Option<&str>) -> String {
-    credential.map_or(base.clone(), |id| {
-        format!("{base}-cred-{}", id.get(..8).unwrap_or(id))
-    })
+fn credential_scoped_template_name(base: &str, credential: Option<&str>) -> String {
+    credential.map_or_else(
+        || base.to_owned(),
+        |id| format!("{base}-cred-{}", id.get(..8).unwrap_or(id)),
+    )
 }
 
 /// Build the Lium template payload without conflating a digest with an image
@@ -343,7 +341,7 @@ mod tests {
     fn pod_image_template_name_is_credential_scoped() {
         assert_eq!(
             credential_scoped_template_name(
-                "prism-recipe-v10-digest-abc".into(),
+                "prism-recipe-v10-digest-abc",
                 Some("4ca23da3-8f5c-4b41-b742-636d2d8c6be7")
             ),
             "prism-recipe-v10-digest-abc-cred-4ca23da3"
