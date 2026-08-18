@@ -62,7 +62,8 @@ miner unified diff ───────┘         │
 ### Modular pod image + miner dependencies (recipe-v10)
 
 The pod image (`/v1/recipe` `pod_image_ref` is an immutable
-`ghcr.io/baseintelligence/prism-pod@sha256:…` reference built from
+`registry.digitalocean.com/basecrawl/prism-pod@sha256:5d2508…dfa3aa`
+reference built from
 [`../deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) is a
 complete CUDA 13 base: PyTorch, `nvcc`/`ninja`/`build-essential`,
 Transformer Engine (NVFP4 training), and common accelerators. A submission
@@ -79,9 +80,14 @@ Descriptor keys: `pod_image_ref`, `miner_install_supported` (bool),
 `miner_deps_members` (`["requirements.txt","pyproject.toml"]`),
 `install_timeout_secs` (1800). Image is env-overridable for staged rollout:
 `PRISM_POD_IMAGE_REF=repository@sha256:<64 lowercase hex>` (tags fail closed;
-the Lium template name flips to `prism-recipe-v10` automatically — template
-identity is name-based, so a new image must ship under a new name). Ops:
-build + push the image and validate
+the Lium template name is digest-scoped automatically, so a new image cannot
+reuse a stale provider template). Lium also needs the mutable pull locator
+`PRISM_POD_IMAGE_TAG` (default `v10-cuda13-te`), but stores the digest
+separately as its integrity pin; the tag is never the runtime authority.
+Creating the private DigitalOcean template also requires
+`PRISM_POD_DOCKER_CREDENTIAL_ID`, which is a non-secret reference to a
+registry credential already stored by Lium. Ops: build + mirror the image and
+validate
 `transformer_engine` import **and** `NVFP4BlockScaling` on a GPU node
 **before** repinning live.
 
@@ -89,13 +95,12 @@ build + push the image and validate
 
 | Image | Pin | Why |
 |-------|-----|-----|
-| NGC `pytorch:25.06-py3` (v10 Dockerfile) | `transformer-engine[pytorch]==2.18.0` | image has nvcc; 2.18 is current |
-| Lium daturaai cu13.0.2 fallback | `transformer-engine[pytorch,core_cu13]==2.16.0` | no nvcc; use prebuilt `transformer_engine_torch` 2.16.0+cu.13.0.torch.2.12 from `https://wheels.astral.sh/simple/cu130/` |
+| NGC `pytorch:26.07-py3` (CUDA 13.3, digest-pinned) | `transformer-engine[pytorch]==2.18.0` | image has nvcc and the required cuDNN frontend |
 
-Both expose `transformer_engine.common.recipe.NVFP4BlockScaling`. An older
-wheel can still `import transformer_engine` (`te_available=True`) while
-leaving `te_mode=none`. Harness `deps.py` adds `--no-build-isolation` and
-the Astral CUDA-13 index when the miner manifest names Transformer Engine.
+The image exposes `transformer_engine.common.recipe.NVFP4BlockScaling`.
+An older wheel can still `import transformer_engine` (`te_available=True`)
+while leaving `te_mode=none`. Harness `deps.py` adds `--no-build-isolation`
+and the Astral CUDA-13 index when a miner manifest names Transformer Engine.
 On consumer Blackwell (SM120 / RTX 5090) construct the recipe as
 `NVFP4BlockScaling(disable_rht=True, disable_stochastic_rounding=True)`
 when those kwargs exist. BF16 remains the fallback if the class is absent.

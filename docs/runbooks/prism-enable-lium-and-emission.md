@@ -66,8 +66,9 @@ completed run reports `battery.mirror_defence.contamination_checked=true`.
 
 ## CUDA 13 + Transformer Engine pod image
 
-The workflow is manual and publishes two discovery tags, but runtime pins
-must use the reported digest:
+The workflow is manual: it builds in GHCR, mirrors the execution artifact to
+the existing private DigitalOcean registry, and reports the provider digest.
+Runtime pins must use that digest:
 
 ```bash
 gh workflow run images.yml \
@@ -75,10 +76,19 @@ gh workflow run images.yml \
   -f prism_pod_only=true
 ```
 
-Set the staged service only with
-`PRISM_POD_IMAGE_REF=ghcr.io/baseintelligence/prism-pod@sha256:…`.
-Tags and malformed digests fail closed. Before promotion, one 4-GPU rent
-must prove:
+Set the staged service with:
+
+```bash
+PRISM_POD_IMAGE_REF=registry.digitalocean.com/basecrawl/prism-pod@sha256:5d2508aea5f3eca9e57f1d27d11354249c7bde315feb35c1308f4e2175dfa3aa
+PRISM_POD_IMAGE_TAG=v10-cuda13-te
+PRISM_POD_DOCKER_CREDENTIAL_ID=<lium-docker-credential-id>
+```
+
+The credential ID is a non-secret reference; the registry username/password
+remain stored in Lium. It is needed to create a new provider template, whose
+name is digest-scoped. Lium needs the tag as a pull locator, but records and
+checks the digest separately; malformed or missing digest refs fail closed.
+Before promotion, one 4-GPU rent must prove:
 
 1. `torch.cuda.device_count() == 4`;
 2. `transformer_engine.pytorch` and

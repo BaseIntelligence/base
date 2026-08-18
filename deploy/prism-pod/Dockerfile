@@ -6,8 +6,9 @@
 # extras from a shipped requirements.txt / pyproject.toml during the pod's
 # network-on install phase (see crates/prism-recipe/harness/prismlib/deps.py).
 #
-# Published under ghcr.io/baseintelligence/prism-pod. Runtime references
-# are digest-only; the human tag is discovery metadata, never a deploy pin.
+# Built in GHCR and mirrored to registry.digitalocean.com/basecrawl/prism-pod
+# for Lium. Runtime references are digest-only; the human tag is discovery
+# metadata, never a deploy pin.
 #
 # Base: NVIDIA PyTorch NGC (CUDA 13, cuDNN, NCCL, build toolchain, and a
 # CUDA-matched torch already present). We add Transformer Engine + common

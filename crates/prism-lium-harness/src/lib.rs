@@ -18,20 +18,13 @@ pub use detached::{
 /// Pod-side staging directory for eval assets.
 pub const EVAL_ASSETS_POD_DIR: &str = "/tmp/prism_eval/eval-assets";
 
-// Pod image for the harness. Default is the cu13.0.2 DinD base (sshd from
-// image init, empty startup — other marketplace images lack a stable sshd
-// under Lium's metachar-free startup rules).
-//
-// recipe-v10 target: the "complete" base built from deploy/prism-pod
-// (ghcr.io/baseintelligence/prism-pod:v10-cuda13-te) ships Transformer
-// Engine + build toolchain so miners can NVFP4-train and `pip install`
-// extras from their own manifest (see prism-recipe/harness/prismlib/deps.py
-// and prism_recipe::POD_IMAGE_REF). Opt-in via env until built+pushed and
-// validated on a GPU node — live keeps the immutable daturaai default.
-const RECIPES_TEMPLATE_IMAGE: &str =
-    "daturaai/pytorch@sha256:cb94d6b90de03faecef11a8f4d0ae02db27e4d7f8a3af8042172e9239d0c3a20";
-/// Default Lium template name (daturaai cu13 base).
-pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9-digest-cb94d6b9";
+// Complete CUDA 13 + Transformer Engine execution image built from
+// deploy/prism-pod. The recipe crate owns the advertised immutable pin so the
+// API and Lium template cannot drift.
+const RECIPES_TEMPLATE_IMAGE: &str = prism_recipe::POD_IMAGE_REF;
+const RECIPES_TEMPLATE_TAG: &str = "v10-cuda13-te";
+/// Default Lium template name for the pinned recipe-v10 image.
+pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v10-digest-5d2508aea5f3-tagged";
 /// Template name used automatically when the image is env-overridden
 /// (template identity is name-based / reuse-if-exists on Lium: a new image
 /// must ship under a new name or pods would keep the old template).
@@ -41,28 +34,89 @@ pub const RECIPES_TEMPLATE_STARTUP: &str = "";
 
 /// Resolved pod `(image, tag, default_template_name)`.
 ///
-/// `PRISM_POD_IMAGE_REF` lets ops stage recipe-v10 without a code bump. The
+/// `PRISM_POD_IMAGE_REF` lets ops stage a replacement without a code bump. The
 /// value must be a complete `repository@sha256:<64 hex>` reference; floating
-/// and mutable tags fail closed. Unset falls back to the digest-pinned daturaai
-/// CUDA 13 image. An override flips the template name to v10.
+/// and mutable tags fail closed. Unset uses [`prism_recipe::POD_IMAGE_REF`].
 ///
 /// # Errors
 ///
 /// Returns [`prism_lium_types::LiumError::Integrity`] for a non-digest override.
-pub fn resolved_pod_image(
-) -> Result<(String, Option<String>, &'static str), prism_lium_types::LiumError> {
+pub fn resolved_pod_image() -> Result<(String, Option<String>, String), prism_lium_types::LiumError>
+{
     let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+    let credentialed = env("PRISM_POD_DOCKER_CREDENTIAL_ID").is_some();
+    let name = |base: String| {
+        if credentialed {
+            format!("{base}-credentialed")
+        } else {
+            base
+        }
+    };
     match env("PRISM_POD_IMAGE_REF") {
-        Some(image) if is_digest_image_ref(&image) => Ok((image, None, RECIPES_TEMPLATE_NAME_V10)),
+        Some(image) if is_digest_image_ref(&image) => {
+            let template_name = name(template_name_for_image(&image));
+            let tag = env("PRISM_POD_IMAGE_TAG").unwrap_or_else(|| RECIPES_TEMPLATE_TAG.into());
+            Ok((image, Some(tag), template_name))
+        }
         Some(_) => Err(prism_lium_types::LiumError::Integrity(
             "PRISM_POD_IMAGE_REF must be repository@sha256:<64 lowercase hex>".into(),
         )),
         None => Ok((
             RECIPES_TEMPLATE_IMAGE.to_owned(),
-            None,
-            RECIPES_TEMPLATE_NAME,
+            Some(RECIPES_TEMPLATE_TAG.to_owned()),
+            name(RECIPES_TEMPLATE_NAME.to_owned()),
         )),
     }
+}
+
+/// Build the Lium template payload without conflating a digest with an image
+/// name. Private provider images fail closed unless Lium owns a credential.
+pub fn lium_template_create_body(
+    name: &str,
+    docker_image: &str,
+    docker_image_tag: Option<&str>,
+    startup_commands: Option<&str>,
+    docker_credential_id: Option<&str>,
+) -> Result<serde_json::Value, LiumError> {
+    let (repository, digest) = docker_image
+        .rsplit_once('@')
+        .map_or((docker_image, None), |(repository, digest)| {
+            (repository, Some(digest))
+        });
+    if repository.starts_with("registry.digitalocean.com/basecrawl/")
+        && docker_credential_id.is_none()
+    {
+        return Err(LiumError::Integrity(
+            "PRISM_POD_DOCKER_CREDENTIAL_ID is required to create the private Prism template"
+                .into(),
+        ));
+    }
+    let mut body = serde_json::json!({
+        "name": name,
+        "docker_image": repository,
+        "internal_ports": [22],
+        "is_private": true,
+        "container_start_immediately": true,
+    });
+    for (key, value) in [
+        ("docker_image_digest", digest),
+        ("docker_image_tag", docker_image_tag),
+        ("startup_commands", startup_commands),
+        ("docker_credential_id", docker_credential_id),
+    ] {
+        if let Some(value) = value {
+            body[key] = serde_json::Value::String(value.to_owned());
+        }
+    }
+    Ok(body)
+}
+
+fn template_name_for_image(image: &str) -> String {
+    let digest = image
+        .rsplit_once("@sha256:")
+        .map_or("", |(_, digest)| digest);
+    let short = digest.get(..12).unwrap_or(digest);
+    format!("{RECIPES_TEMPLATE_NAME_V10}-digest-{short}-tagged")
 }
 
 fn is_digest_image_ref(image: &str) -> bool {
@@ -254,7 +308,7 @@ pub fn random_seed_hex() -> Result<String, LiumError> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_digest_image_ref;
+    use super::{is_digest_image_ref, template_name_for_image};
 
     #[test]
     fn pod_image_override_requires_digest() {
@@ -267,5 +321,16 @@ mod tests {
         assert!(!is_digest_image_ref(
             "ghcr.io/baseintelligence/prism-pod@sha256:ABCDEF"
         ));
+    }
+
+    #[test]
+    fn pod_image_template_name_is_digest_scoped() {
+        assert_eq!(
+            template_name_for_image(
+                "registry.digitalocean.com/basecrawl/prism-pod@sha256:\
+                 5d2508aea5f3eca9e57f1d27d11354249c7bde315feb35c1308f4e2175dfa3aa"
+            ),
+            "prism-recipe-v10-digest-5d2508aea5f3-tagged"
+        );
     }
 }

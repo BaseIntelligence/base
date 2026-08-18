@@ -4,7 +4,8 @@ name: images
 # Digests-only pins are consumed by deploy/scripts/promote.sh.
 # After merge: promote pin services into deploy/pins/staging.json and commit so
 # deploy-prod preflight can match staging.json.commit_sha to the image SHA.
-# Registry: GHCR only (never AWS ECR).
+# Service images use GHCR. The private Prism execution pod is mirrored to the
+# existing DigitalOcean registry used by Lium (never AWS ECR).
 
 on:
   push:
@@ -28,7 +29,7 @@ on:
         type: boolean
         default: false
       prism_pod_publish_only:
-        description: Publish the existing Prism pod package without rebuilding
+        description: Mirror the existing Prism pod to DOCR without rebuilding
         required: false
         type: boolean
         default: false
@@ -200,7 +201,7 @@ jobs:
           echo "ghcr.io/baseintelligence/prism-pod@$DIGEST"
 
   publish-prism-pod:
-    name: publish Prism CUDA pod
+    name: mirror Prism CUDA pod
     needs: build-prism-pod
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.prism_pod_only && (inputs.prism_pod_publish_only || needs.build-prism-pod.result == 'success') }}
     runs-on: ubuntu-latest
@@ -215,7 +216,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Copy immutable manifest to canonical package
+      - name: Set up doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      - name: Log in to DigitalOcean registry
+        run: doctl registry login --expiry-seconds 3600
+
+      - name: Copy immutable manifest to provider registry
         env:
           DIGEST: ${{ inputs.prism_pod_publish_only && inputs.prism_pod_digest || needs.build-prism-pod.outputs.digest }}
         run: |
@@ -226,32 +235,17 @@ jobs:
             source="ghcr.io/baseintelligence/base/prism-pod@${DIGEST}"
           fi
           docker buildx imagetools create \
-            --tag ghcr.io/baseintelligence/prism-pod:v10-cuda13-te \
+            --tag registry.digitalocean.com/basecrawl/prism-pod:v10-cuda13-te \
             "$source"
 
-      - name: Set package visibility public
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OWNER: ${{ github.repository_owner }}
+      - name: Report provider image digest
         run: |
           set -euo pipefail
-          code=0
-          for attempt in 1 2 3 4 5 6; do
-            code=$(curl -sS -o /tmp/prism-pod-visibility.json -w "%{http_code}" \
-              -X PATCH \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/orgs/${OWNER}/packages/container/prism-pod" \
-              -d '{"visibility":"public"}' || true)
-            if [ "$code" = "204" ] || [ "$code" = "200" ]; then
-              echo "published container package prism-pod"
-              exit 0
-            fi
-            echo "package visibility attempt ${attempt} returned HTTP ${code}"
-            sleep 5
-          done
-          exit 1
+          image=registry.digitalocean.com/basecrawl/prism-pod:v10-cuda13-te
+          digest=$(docker buildx imagetools inspect "$image" |
+            awk '$1 == "Digest:" { print $2; exit }')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "registry.digitalocean.com/basecrawl/prism-pod@${digest}"
 
   merge-digests:
     name: merge digest manifest

@@ -605,6 +605,8 @@ into the pod where applicable):
 | `PRISM_EVAL_BATTERY_BUDGET_S` | global battery cap (default `3600`) |
 | `PRISM_POD_GPU_COUNT` | default `4`; explicit `1` is the reversible live-width cutover |
 | `PRISM_POD_IMAGE_REF` | optional staged pod image, required form `repository@sha256:<64 lowercase hex>` |
+| `PRISM_POD_IMAGE_TAG` | Lium pull locator (default `v10-cuda13-te`); never accepted without the separate digest pin |
+| `PRISM_POD_DOCKER_CREDENTIAL_ID` | non-secret Lium reference required only when creating the private DigitalOcean registry template |
 
 **Anchor set v1 battery keys** (emitted by the harness on every real run;
 inert under v0 since unknown `org.*` keys are ignored):
@@ -843,7 +845,9 @@ Evidence and full derivations:
 
 Miners are no longer limited to the harness's preinstalled stack. recipe-v10
 ships a **complete CUDA 13 base image** (`prism_recipe::POD_IMAGE_REF` is the
-immutable `ghcr.io/baseintelligence/prism-pod@sha256:…` reference built from
+immutable
+`registry.digitalocean.com/basecrawl/prism-pod@sha256:5d2508…dfa3aa`
+reference built from
 [`deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) with
 PyTorch, a full build toolchain (`nvcc`, `ninja`, `build-essential`),
 **Transformer Engine** (NVFP4 training), and common accelerators — plus a
@@ -885,9 +889,11 @@ Wiring: the harness emits `EVAL_FAIL` + `{"stage": "install_deps"|"train"|"build
 `submission_gating::{is_miner_fixable_class, resubmit_allowed}` grants the
 unbounded resubmit. Later phases (eval/battery/score) keep the windowed
 `install` class. The pod image is env-overridable for staged rollout with
-`PRISM_POD_IMAGE_REF`; tags are rejected and the Lium template name flips to
-`prism-recipe-v10` automatically. Unset uses the digest-pinned daturaai CUDA
-13 fallback. Promote the v10 digest only after the 4-GPU validation below.
+`PRISM_POD_IMAGE_REF`; tags are rejected and the Lium template name includes
+the digest, preventing stale-template reuse. Unset uses the same immutable
+recipe-v10 pin advertised by `/v1/recipe`. A new private-registry template
+requires the non-secret `PRISM_POD_DOCKER_CREDENTIAL_ID` reference; registry
+credentials themselves remain stored in Lium.
 
 **4-GPU + netns contract.** `PRISM_POD_GPU_COUNT` defaults to `4`; selection
 accepts an exact 4× RTX 5090 host or rents an unsplittable larger 5090 host

@@ -723,8 +723,9 @@ pub fn descriptor() -> RecipeDescriptor {
 /// Pod container image the harness runs in (advertised via `/v1/recipe`).
 /// The recipe-v10 image ships CUDA 13, `PyTorch`, a full build toolchain,
 /// and Transformer Engine so miners can NVFP4-train and `pip install`
-/// extras (`FlashAttention`, `mamba-ssm`, …) from their own manifests.
-pub const POD_IMAGE_REF: &str = "ghcr.io/baseintelligence/prism-pod:v10-cuda13-te";
+/// extras (`FlashAttention`, `mamba-ssm`, …) from their own manifests. Lium
+/// receives its provider-stored registry credential separately.
+pub const POD_IMAGE_REF: &str = "registry.digitalocean.com/basecrawl/prism-pod@sha256:5d2508aea5f3eca9e57f1d27d11354249c7bde315feb35c1308f4e2175dfa3aa";
 
 /// The pod runs a network-on install phase for miner dependency manifests
 /// before the netns-isolated train/eval (recipe-v10).

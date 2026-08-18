@@ -16,9 +16,10 @@ use crate::ssh::{
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 use prism_lium_harness::{
     classify_log, detach_launch_cmd, eval_assets_dir, harness_env_pairs, harness_upload_tar,
-    parse_harness_probe, parse_metrics_output, random_seed_hex, resolved_pod_image,
-    HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
-    HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, RECIPES_TEMPLATE_STARTUP, TRAIN_DONE_MARKER,
+    lium_template_create_body, parse_harness_probe, parse_metrics_output, random_seed_hex,
+    resolved_pod_image, HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP,
+    HARNESS_EXTRACT_CMD, HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, RECIPES_TEMPLATE_STARTUP,
+    TRAIN_DONE_MARKER,
 };
 use prism_lium_types::{CostGuardrailError, LiumError};
 use prism_lium_types::{
@@ -251,6 +252,7 @@ impl LiumClient {
         docker_image: &str,
         docker_image_tag: Option<&str>,
         startup_commands: Option<&str>,
+        docker_credential_id: Option<&str>,
     ) -> Result<String, LiumError> {
         let v = self
             .request(reqwest::Method::GET, "/templates", None)
@@ -266,19 +268,13 @@ impl LiumClient {
                 }
             }
         }
-        let mut body = serde_json::json!({
-            "name": name,
-            "docker_image": docker_image,
-            "internal_ports": [22],
-            "is_private": true,
-            "container_start_immediately": true,
-        });
-        if let Some(tag) = docker_image_tag {
-            body["docker_image_tag"] = serde_json::Value::String(tag.to_owned());
-        }
-        if let Some(cmd) = startup_commands {
-            body["startup_commands"] = serde_json::Value::String(cmd.to_owned());
-        }
+        let body = lium_template_create_body(
+            name,
+            docker_image,
+            docker_image_tag,
+            startup_commands,
+            docker_credential_id,
+        )?;
         let created = self
             .request(reqwest::Method::POST, "/templates", Some(&body))
             .await?;
@@ -296,13 +292,22 @@ impl LiumClient {
             }
         }
         let (image, tag, default_name) = resolved_pod_image()?;
+        let docker_credential_id = std::env::var("PRISM_POD_DOCKER_CREDENTIAL_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
         let name = spec
             .template_name
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or(default_name);
-        self.ensure_template(name, &image, tag.as_deref(), Some(RECIPES_TEMPLATE_STARTUP))
-            .await
+            .unwrap_or(default_name.as_str());
+        self.ensure_template(
+            name,
+            &image,
+            tag.as_deref(),
+            Some(RECIPES_TEMPLATE_STARTUP),
+            docker_credential_id.as_deref(),
+        )
+        .await
     }
 
     /// Account balance (USD) when available.
@@ -1003,7 +1008,7 @@ mod tests {
     use super::*;
     use crate::ASSETS_ENV_LOCK;
     use prism_lium_harness::RECIPES_TEMPLATE_NAME;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -1150,6 +1155,69 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(offers))
             .mount(server)
             .await;
+    }
+
+    #[tokio::test]
+    async fn private_template_carries_provider_credential_reference() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/templates"))
+            .and(body_json(serde_json::json!({
+                "name": "prism-recipe-v10-private",
+                "docker_image": "registry.digitalocean.com/basecrawl/prism-pod",
+                "docker_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "internal_ports": [22],
+                "is_private": true,
+                "container_start_immediately": true,
+                "startup_commands": "",
+                "docker_credential_id": "credential-id"
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "private"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let id = client
+            .ensure_template(
+                "prism-recipe-v10-private",
+                "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                None,
+                Some(""),
+                Some("credential-id"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(id, "private");
+    }
+
+    #[tokio::test]
+    async fn private_template_creation_requires_provider_credential() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let client = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let error = client
+            .ensure_template(
+                "prism-recipe-v10-private",
+                "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                None,
+                Some(""),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LiumError::Integrity(_)));
     }
 
     #[tokio::test]

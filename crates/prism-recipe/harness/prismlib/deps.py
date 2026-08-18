@@ -73,8 +73,8 @@ def build_install_cmd(kind, path):
             body = open(path, encoding="utf-8").read()
         except OSError:
             body = ""
-        # Lium daturaai cu13 image has no nvcc. TE's pytorch extra is an
-        # sdist on PyPI; Astral publishes CUDA-13 / torch-2.12 wheels.
+        # Prefer a CUDA-13 wheel when a miner replaces the image's TE pin;
+        # PyPI may otherwise select a source build for the pytorch extra.
         if "transformer-engine" in body or "transformer_engine" in body:
             cmd = base + [
                 "--prefer-binary",
@@ -93,8 +93,8 @@ def build_install_cmd(kind, path):
 def _cuda_build_env(base=None):
     """Point TE / CUDA extension builds at the image toolkit.
 
-    The daturaai cu13 devel image ships nvcc, but the harness PATH does not
-    always include `/usr/local/cuda/bin`. TE 2.18's pytorch sdist then fails
+    CUDA devel images ship nvcc, but the harness PATH does not always include
+    `/usr/local/cuda/bin`. TE 2.18's pytorch sdist then fails
     with "Could neither find NVCC executable nor CUDA runtime Python package."
     """
     env = dict(base or os.environ)
