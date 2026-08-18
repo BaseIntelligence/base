@@ -231,12 +231,17 @@ jobs:
           set -euo pipefail
           test -n "$DIGEST"
           source="ghcr.io/baseintelligence/prism-pod@${DIGEST}"
-          if [ "${{ inputs.prism_pod_publish_only }}" = "true" ]; then
-            source="ghcr.io/baseintelligence/base/prism-pod@${DIGEST}"
-          fi
-          docker buildx imagetools create \
-            --tag registry.digitalocean.com/basecrawl/prism-pod:v10-cuda13-te \
-            "$source"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create \
+              --tag registry.digitalocean.com/basecrawl/prism-pod:v10-cuda13-te \
+              "$source"; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep "$((attempt * 15))"
+          done
 
       - name: Report provider image digest
         run: |
