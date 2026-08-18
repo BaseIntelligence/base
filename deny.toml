@@ -10,10 +10,7 @@ version = 2
 yanked = "deny"
 # Unmaintained crates are warned; ignore only with a dated justification.
 unmaintained = "workspace"
-ignore = [
-    # Transitive via dcap-qvl → dcap-qvl-webpki → rsa; no safe upgrade upstream yet.
-    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin Attack is transitive through dcap-qvl 0.6.1 (optional attest-policy/dcap feature); no patched rsa in that graph" },
-]
+ignore = []
 
 [licenses]
 version = 2
