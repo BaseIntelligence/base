@@ -99,7 +99,7 @@ mirror the image and validate
 
 | Image | Pin | Why |
 |-------|-----|-----|
-| NGC `pytorch:26.01-py3` (CUDA 13.1, digest-pinned) | `transformer-engine[pytorch]==2.18.0`, `nvidia-cudnn-frontend==1.25.0` | fits Lium's advertised CUDA 13.1 ceiling while retaining nvcc, NVFP4, and TE's frontend floor |
+| NGC `pytorch:26.01-py3` (CUDA 13.1, digest-pinned) | `transformer-engine[pytorch]==2.15.0` | newest published CUDA-13/Torch-26.01 wheel; fits Lium's CUDA ceiling and exposes NVFP4 |
 
 The image exposes `transformer_engine.common.recipe.NVFP4BlockScaling`.
 An older wheel can still `import transformer_engine` (`te_available=True`)

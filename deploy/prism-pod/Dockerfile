@@ -40,18 +40,14 @@ RUN apt-get update \
 # accelerators most linear/looped architectures want. Build tooling stays in
 # the image so a miner's `pip install flash-attn` / `mamba-ssm` can compile.
 #
-# TE pin: 2.18.0 is the first CUDA-13 wheel we require to expose
-# `transformer_engine.common.recipe.NVFP4BlockScaling` (Blackwell / RTX 5090).
-# NGC 26.01 constrains cuDNN frontend to 1.17; clear `PIP_CONSTRAINT` only for
-# the explicit frontend/TE upgrade that satisfies TE 2.18's >=1.25 floor.
+# TE 2.15 is the newest release publishing a CUDA-13 wheel for NGC 26.01's
+# Torch/Python ABI, and exposes `NVFP4BlockScaling` for Blackwell / RTX 5090.
+# Clear NGC's package constraint only for this explicit, compatible TE pin.
 # `--no-build-isolation` links the extension against the image torch.
 # Miners may re-pin via requirements.txt; install_deps is resubmittable.
-ARG TE_VERSION=2.18.0
-ARG CUDNN_FRONTEND_VERSION=1.25.0
+ARG TE_VERSION=2.15.0
 RUN pip install --no-cache-dir \
       "transformers==4.44.2" "datasets==3.0.2" "pyarrow==17.0.0" \
- && PIP_CONSTRAINT= pip install --no-cache-dir --upgrade \
-      "nvidia-cudnn-frontend==${CUDNN_FRONTEND_VERSION}" \
  && PIP_CONSTRAINT= pip install --no-cache-dir --no-build-isolation \
       "transformer-engine[pytorch]==${TE_VERSION}" \
  && pip install --no-cache-dir einops
@@ -65,7 +61,6 @@ import importlib.metadata as md, pathlib, torch; \
 assert torch.version.cuda and torch.version.cuda.split('.')[0] == '13', torch.version.cuda; \
 d = md.distribution('transformer-engine'); \
 assert d.version == '${TE_VERSION}', d.version; \
-assert md.version('nvidia-cudnn-frontend') == '${CUDNN_FRONTEND_VERSION}'; \
 r = pathlib.Path(d.locate_file('transformer_engine/common/recipe')); \
 assert any('NVFP4BlockScaling' in p.read_text(errors='ignore') for p in r.rglob('*.py')); \
 print('CUDA', torch.version.cuda, 'TE wheel', d.version, 'NVFP4 source OK')"
