@@ -4,7 +4,7 @@
 
 **challenge_id:** `prism`  
 **scoring_version:** `4` live (equal-weight G2 public-suite accuracies → lattice; LLM review is an anti-cheat gate, not a grader). **v3 harness (default):** every scored run executes the **G1–G8 battery**; the leaf uses G2 benches while `PRISM_SCORING_MODE=benchmarks` (default). Legacy `shadow` = bits/token bpb; `composite` = full G1–G8 lattice when anchors are ready.  
-**recipe_version:** `2.0.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) base + miner unified diff; legacy 1.x layouts rejected on live)  
+**recipe_version:** `2.1.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) diff + 4-GPU CUDA 13/TE pod + attested dual cap; legacy 1.x layouts rejected)
 **Path:** HTTP only — **no Phala/CVM**
 
 Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../PRISM_RECIPE.md).
@@ -12,7 +12,7 @@ Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../P
 ## What you submit
 
 A **ZIP** (preferred) — or JSON with the same members / `zip_base64` — that is
-**not** a free-form `architecture.py` / `training.py` project. Recipe **2.0.0**
+**not** a free-form `architecture.py` / `training.py` project. Recipe **2.1.0**
 accepts only an AutoModel pin id plus your git diff against that pin:
 
 ```text
@@ -53,6 +53,17 @@ the ZIP root on the legacy two-script path). It is installed in a
 install, then train/eval run offline. `requirements.txt` wins if you ship
 both. Check `GET /v1/recipe` for `pod_image_ref`, `miner_install_supported`,
 `miner_deps_members`, and `install_timeout_secs`.
+
+**Four-GPU train contract.** Recipe-v10 pods expose four RTX 5090 GPUs by
+default through `ctx["gpu_count"]`; the organizer eval stays on GPU 0.
+Training must consume global batches from the harness-owned
+`ctx["train_stream"]`, because that stream enforces step/wall/FLOPs caps and
+owns token/byte accounting for G6. For DDP, keep rank 0 as the stream owner
+and scatter/shard each accounted global batch to workers over the local
+process group. Do not let each worker create an independent dataset stream:
+v3 rejects a trainer that returns with zero harness-accounted tokens. The
+isolated network namespace brings `127.0.0.1` loopback up for rendezvous but
+has no external route.
 
 **Resubmit at will on your own failures.** If your dependency install fails
 (`install_deps`) or your `training.py` crashes at build/train time
@@ -160,7 +171,7 @@ Inspect recipe + AutoModel pin before coding:
 curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe"
 ```
 
-Live recipe **2.0.0** advertises `version: "2.0.0"` and AutoModel pin fields
+Live recipe **2.1.0** advertises `version: "2.1.0"` and AutoModel pin fields
 (`automodel_pin_id` = `automodel@v0.5.0`, `automodel_repo_url`,
 `automodel_git_ref`, `automodel_git_commit`, `automodel_content_sha256`),
 plus caps such as `train_flops_cap: 3.0e18` (the budget currency),
@@ -169,6 +180,10 @@ plus caps such as `train_flops_cap: 3.0e18` (the budget currency),
 `max_train_steps: 20000`, `max_params: 1000000000`, FineWeb dataset pin,
 and `pin_hex` (sha over the versioned descriptor). Trust `/v1/recipe`,
 not marketing chart labels.
+
+The FLOPs probe retries OOM at progressively smaller row counts down to one
+sequence and reports whether it reduced the batch; a deliberately
+memory-heavy model cannot turn probe OOM into an unmetered train.
 
 `POST /v1/submissions` is idempotent by `submission_id` (hash of **pin id ‖
 `0x00` ‖ patch bytes**).
@@ -408,6 +423,16 @@ long-context (G5), sample efficiency from the train probe curve (G6),
 inference efficiency (G7), and training stability/µP (G8). Everything the
 battery reports is organizer-measured (**Zone A**, `org.*`) and is computed
 inside the harness — your code never emits it.
+
+The v3 metric surface is structurally complete: G1 includes code, prose,
+math, fresh crawl, and key-token bits/byte; G6 includes byte-denominated AUC,
+bytes-to-threshold, and bpb at half of the organizer FLOPs cap; G7 includes
+measured-or-censored 32k TTFT/TPOT/state, board energy, throughput, and
+reasoning throughput; G8 emits loss stability and µP LR-transfer. Unsupported
+32k/OOM/power cases receive explicit worst-case censored values rather than
+silently disappearing. Live emission nevertheless remains G2 benchmarks +
+WTA until operators announce calibrated v3 anchors and a separate governance
+flip.
 
 **G5 is pretrain-only (recipe ≥ 1.4.0).** The long-context group scores a
 **base LM**, not an instruction-tuned chat model: completion-style /

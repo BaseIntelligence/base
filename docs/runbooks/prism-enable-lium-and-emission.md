@@ -19,6 +19,86 @@
    seal). Prefer rolling the challenge image when no pods are in
    `provisioning`/`running`, or accept resume after boot.
 
+## Prism v2.1 safe operator environment
+
+Keep the live `:28092` service on the established scoring/emission surface:
+
+```bash
+PRISM_SCORING_MODE=benchmarks
+PRISM_ANCHOR_VERSION=0
+PRISM_EMISSION_MODE=wta
+PRISM_OWNER_ARCH_CREDIT_BPS=0
+PRISM_EVAL_REQUIRE_PRIVATE=0
+PRISM_POD_GPU_COUNT=4
+```
+
+Unknown emission modes fall back to WTA; unknown anchor versions fall back
+to v0. Do not combine a pod/image change with a composite, private-required,
+owner-credit, top3, or sig flip.
+
+For an isolated v3 calibration wave (not the live service), use:
+
+```bash
+PRISM_FLOW=v3
+PRISM_ANCHOR_VERSION=3
+PRISM_TRAIN_FLOPS_CAP=3.0e18
+PRISM_MIN_SPEND_FRACTION=0.5
+PRISM_EVAL_G2_TASKS=lambada,hellaswag,piqa,arc_easy
+PRISM_EVAL_BATTERY_BUDGET_S=3600
+PRISM_G6_BPB_THRESHOLD=1.5
+PRISM_POD_GPU_COUNT=4
+```
+
+The 0.5 floor applies only when `binding_cap=none`; `steps`, `wall`, and
+`flops` are protocol stops and exempt. v3 remains a placeholder anchor set:
+the calibration wave measures references and does not authorize a live flip.
+
+Build a private-tier assets directory (hard cap: 400 rows per JSONL file):
+
+```bash
+PACK_TIER=private \
+PRISM_EVAL_ASSETS_DIR=/var/lib/prism/eval-assets-private \
+python3 crates/prism-recipe/harness/eval/build_private_pack.py
+```
+
+Verify `tier.json` says `private`, `manifest.json` hashes every asset, and the
+completed run reports `battery.mirror_defence.contamination_checked=true`.
+
+## CUDA 13 + Transformer Engine pod image
+
+The workflow is manual and publishes two discovery tags, but runtime pins
+must use the reported digest:
+
+```bash
+gh workflow run images.yml \
+  --ref prism-v2.1-scoring \
+  -f prism_pod_only=true
+```
+
+Set the staged service only with
+`PRISM_POD_IMAGE_REF=ghcr.io/baseintelligence/base/prism-pod@sha256:…`.
+Tags and malformed digests fail closed. Before promotion, one 4-GPU rent
+must prove:
+
+1. `torch.cuda.device_count() == 4`;
+2. `transformer_engine.pytorch` and
+   `transformer_engine.common.recipe.NVFP4BlockScaling` import;
+3. the dependency install phase can build/install a harmless manifest;
+4. a stream-owned 4-GPU train produces nonzero attested FLOPs and G6 probe
+   points;
+5. the fresh train netns has `lo` up and no external route;
+6. all anchored v3 G1–G8 keys are present; and
+7. the pod terminates and disappears from Lium inventory.
+
+### Reversible 1-GPU live cutover
+
+Drain active `provisioning`/`running` rows, change only
+`PRISM_POD_GPU_COUNT=1`, restart `prism-challenge`, and submit one operator
+smoke. Confirm the selected offer is exactly one RTX 5090 and G7 records one
+attested GPU. Do not edit Compose topology or the `:28092` scoring/emission
+knobs. Restore `PRISM_POD_GPU_COUNT=4` and restart to roll back; already
+rented pods retain their original width.
+
 ## Failed measure with EVAL_OK but no metrics (ops)
 
 If `error_detail` ends with cheatguard / `EVAL_OK` but has no parseable

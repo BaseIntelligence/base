@@ -1,14 +1,16 @@
-# PRISM recipe v2.0.0 — AutoModel base + miner git diffs
+# PRISM recipe v2.1.0 — AutoModel + attested 4-GPU training
 
-**Live contract:** recipe **`2.0.0`**. Miners submit a **unified diff against a
+**Live contract:** recipe **`2.1.0`**. Miners submit a **unified diff against a
 pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) checkout** —
 not a free-form `architecture.py` / `training.py` project. Megatron-Bridge is
 **out of scope**. Legacy recipe **1.x** two-script / source-tree / training-only
-layouts are **rejected on live** once 2.0 is enabled (`400 recipe_version` /
+layouts are **rejected on live** (`400 recipe_version` /
 `unsupported_layout`). Local Sim may keep a tiny fixture patch for CI.
 
-Caps, FineWeb dataset pin, telemetry, two-phase train/eval, and the G1–G8
-battery from 1.4 remain operator-owned unless a later bump says otherwise.
+Recipe 2.1 adds the digest-pinned four-GPU CUDA 13/Transformer Engine pod,
+OOM-safe attested FLOPs + dual-cap enforcement, and a structurally complete
+v3 G1–G8 surface. Caps, FineWeb dataset pin, telemetry, and two-phase
+train/eval remain operator-owned.
 
 **Harness staging (pod).** Operator harness (`prismlib/automodel.py`) materialises
 the pin + applied tree under `$PRISM_WORKDIR/automodel/` and invokes the train
@@ -26,7 +28,7 @@ for leaf/audit continuity.
 
 ---
 
-## Recipe 2.0.0 — product contract
+## Recipe 2.1.0 — product contract
 
 ```text
 pinned AutoModel commit ──┐
@@ -59,8 +61,8 @@ miner unified diff ───────┘         │
 
 ### Modular pod image + miner dependencies (recipe-v10)
 
-The pod image (`/v1/recipe` `pod_image_ref` =
-`ghcr.io/baseintelligence/prism-pod:v10-cuda13-te`, built from
+The pod image (`/v1/recipe` `pod_image_ref` is an immutable
+`ghcr.io/baseintelligence/base/prism-pod@sha256:…` reference built from
 [`../deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) is a
 complete CUDA 13 base: PyTorch, `nvcc`/`ninja`/`build-essential`,
 Transformer Engine (NVFP4 training), and common accelerators. A submission
@@ -76,9 +78,10 @@ network; model code that later sees private eval assets does not.
 Descriptor keys: `pod_image_ref`, `miner_install_supported` (bool),
 `miner_deps_members` (`["requirements.txt","pyproject.toml"]`),
 `install_timeout_secs` (1800). Image is env-overridable for staged rollout:
-`PRISM_POD_IMAGE` + `PRISM_POD_IMAGE_TAG` (the Lium template name flips to
-`prism-recipe-v10` automatically — template identity is name-based, so a new
-image must ship under a new name). Ops: build + push the image and validate
+`PRISM_POD_IMAGE_REF=repository@sha256:<64 lowercase hex>` (tags fail closed;
+the Lium template name flips to `prism-recipe-v10` automatically — template
+identity is name-based, so a new image must ship under a new name). Ops:
+build + push the image and validate
 `transformer_engine` import **and** `NVFP4BlockScaling` on a GPU node
 **before** repinning live.
 
@@ -96,6 +99,18 @@ the Astral CUDA-13 index when the miner manifest names Transformer Engine.
 On consumer Blackwell (SM120 / RTX 5090) construct the recipe as
 `NVFP4BlockScaling(disable_rht=True, disable_stochastic_rounding=True)`
 when those kwargs exist. BF16 remains the fallback if the class is absent.
+
+**GPU width and isolated rendezvous.** Eval pod requests default to
+`PRISM_POD_GPU_COUNT=4` on the RTX 5090 SKU. Miner training may use DDP over
+those GPUs; evaluation stays on GPU 0. `unshare --net` creates loopback down,
+so the harness wrapper runs `ip link set lo up` before the child—DDP can use
+`127.0.0.1` while the namespace still has no external route. The pod image
+therefore pins `iproute2` as well as the CUDA/TE toolchain.
+
+An operator may stage a 1-GPU live cutover by setting only
+`PRISM_POD_GPU_COUNT=1`, draining active pods, restarting the challenge, and
+verifying an exact single-5090 offer. This is independent of the image pin and
+must not be bundled with a scoring/anchor/emission flip.
 
 **Miner-fixable retry classes.** A failed custom-deps install (`install_deps`)
 or a `training.py` build/train crash (`train_script`) fails **without
@@ -259,9 +274,12 @@ more tokens** once a cap is reached — a hard stop, not the cooperative
 as `finish_evaluation()`: spending the full budget is the *expected* outcome,
 not a way to score zero.
 
-If the probe cannot run at all, the FLOPs cap is left **disarmed** (the wall
-bound still contains the run) and `org.diag.flops_probe_error` is emitted —
-a failed measurement is never treated as a zero-cost model.
+The probe must not turn memory pressure into a budget escape. On OOM it
+halves the probe batch and retries after releasing the CUDA cache down to one
+row; `probe_rows` / `probe_rows_reduced` attest the condition. Only a
+non-OOM inability to execute `FlopCounterMode` leaves the FLOPs cap disarmed;
+the wall bound still contains that run and `org.diag.flops_probe_error` is
+emitted—a failed measurement is never treated as a zero-cost model.
 
 **Cheat surface, and what is still open.**
 
@@ -269,7 +287,7 @@ a failed measurement is never treated as a zero-cost model.
 |---|---|
 | Under-report FLOPs | Structurally impossible: the miner never reports them |
 | Input-dependent cost (MoE routing cheaply on probe-shaped inputs, early exit) | Probes are real training batches at secret indices; `org.diag.flops_probe_cv` is published, and above `FLOPS_PROBE_CV_MAX = 0.15` the estimator switches from the **median to the max** — the expensive branch is charged |
-| Bypass the harness stream | `tokens_seen_source != "train_stream"` ⇒ FLOPs are **not** attested (the product inherits the token count's trust) |
+| Bypass the harness stream | v3 fails the train as miner-fixable: returning with zero accounted stream tokens is not scoreable. For DDP, rank 0 must consume each global batch from `ctx["train_stream"]` and scatter/shard it to workers; workers must not create an independent data stream. |
 | Physically impossible claim | `flops_attested ≤ peak × n_gpu × wall × 1.05` asserted; `n_gpu` is attested, not declared |
 | **Opaque fused kernel** (the real hole) | `FlopCounterMode` only sees what the PyTorch dispatcher sees, and recipe-v10 lets miners install their own dependencies — a fused Triton/CUDA op registered as one opaque dispatch is **invisible**. Cross-checked against an analytic model (below) with the gap published as `org.diag.flops_analytic_ratio` / `_gap`. **Evidence for review, never a silent pass.** |
 
