@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      prism_pod_publish_only:
+        description: Publish the existing Prism pod package without rebuilding
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -144,7 +149,7 @@ jobs:
 
   build-prism-pod:
     name: build · push Prism CUDA pod
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prism_pod_only }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prism_pod_only && !inputs.prism_pod_publish_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -187,29 +192,38 @@ jobs:
           test -n "$DIGEST"
           echo "ghcr.io/baseintelligence/base/prism-pod@$DIGEST"
 
-      - name: Publish Prism pod package
+  publish-prism-pod:
+    name: publish Prism CUDA pod
+    needs: build-prism-pod
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.prism_pod_only && (inputs.prism_pod_publish_only || needs.build-prism-pod.result == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set package visibility public
         env:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          pkg=$(python3 -c 'import urllib.parse; print(urllib.parse.quote("base/prism-pod", safe=""))')
           code=0
           for attempt in 1 2 3 4 5 6; do
-            code=$(curl -sS -o /tmp/prism-pod-visibility.json -w "%{http_code}" \
-              -X PUT \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/orgs/${OWNER}/packages/container/${pkg}/visibility" \
-              -d '{"visibility":"public"}' || true)
-            if [ "$code" = "204" ] || [ "$code" = "200" ]; then
-              break
-            fi
+            for package in "base/prism-pod" "prism-pod"; do
+              pkg=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$package")
+              code=$(curl -sS -o /tmp/prism-pod-visibility.json -w "%{http_code}" \
+                -X PUT \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/orgs/${OWNER}/packages/container/${pkg}/visibility" \
+                -d '{"visibility":"public"}' || true)
+              if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+                echo "published container package ${package}"
+                exit 0
+              fi
+            done
             echo "package visibility attempt ${attempt} returned HTTP ${code}"
             sleep 5
           done
-          test "$code" = "204" || test "$code" = "200"
+          exit 1
 
   merge-digests:
     name: merge digest manifest
