@@ -187,6 +187,30 @@ jobs:
           test -n "$DIGEST"
           echo "ghcr.io/baseintelligence/base/prism-pod@$DIGEST"
 
+      - name: Publish Prism pod package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          pkg=$(python3 -c 'import urllib.parse; print(urllib.parse.quote("base/prism-pod", safe=""))')
+          code=0
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o /tmp/prism-pod-visibility.json -w "%{http_code}" \
+              -X PUT \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/orgs/${OWNER}/packages/container/${pkg}/visibility" \
+              -d '{"visibility":"public"}' || true)
+            if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+              break
+            fi
+            echo "package visibility attempt ${attempt} returned HTTP ${code}"
+            sleep 5
+          done
+          test "$code" = "204" || test "$code" = "200"
+
   merge-digests:
     name: merge digest manifest
     needs: build-push-digests
@@ -365,6 +389,7 @@ jobs:
             "base/design-egress-proxy"
             "base/design-runtime"
             "base/design-review"
+            "base/prism-pod"
           )
           ok=0
           # First list packages to Learn exact names (debug)

@@ -66,4 +66,5 @@ ENTRYPOINT ["/usr/local/bin/prism-pod-entrypoint"]
 
 LABEL org.baseintelligence.prism.recipe="v10" \
       org.baseintelligence.prism.miner_install="true" \
-      org.baseintelligence.prism.cuda="13"
+      org.baseintelligence.prism.cuda="13" \
+      org.opencontainers.image.source="https://github.com/BaseIntelligence/base"
