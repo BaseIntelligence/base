@@ -238,11 +238,11 @@ jobs:
           code=0
           for attempt in 1 2 3 4 5 6; do
             code=$(curl -sS -o /tmp/prism-pod-visibility.json -w "%{http_code}" \
-              -X PUT \
+              -X PATCH \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/orgs/${OWNER}/packages/container/prism-pod/visibility" \
+              "https://api.github.com/orgs/${OWNER}/packages/container/prism-pod" \
               -d '{"visibility":"public"}' || true)
             if [ "$code" = "204" ] || [ "$code" = "200" ]; then
               echo "published container package prism-pod"
