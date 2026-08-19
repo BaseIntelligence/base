@@ -312,7 +312,7 @@ pub const RECIPE_VERSION: &str = "2.1.0";
 
 /// Maximum model parameters allowed after `build_model` (1B).
 ///
-/// Raised 350M → 1B alongside multi-GPU recipe-v10 pods (2×6000 / 4×5090): the
+/// Raised 350M → 1B alongside recipe-v10 pods (1× B200 / 2×6000 / 4×5090): the
 /// wall-clock budget is unchanged (6h), so the cap buys architectural
 /// headroom rather than a longer run. Placeholder anchors and the public
 /// GPT-2 Large reference row MUST be re-measured at this cap before any
@@ -323,7 +323,7 @@ pub const MAX_PARAMS: u64 = 1_000_000_000;
 ///
 /// Recipe 2.1 rejects packs that stay at the old ~215M `LoopMoE` width:
 /// the miner reference is a dense ~975M transformer (`examples/dense-1b`).
-/// `ZeRO`/`FSDP` only pays at this scale on 2×96GB 6000 or 4×32GB 5090. Count is **total**
+/// `ZeRO`/`FSDP` only pays at this scale on 1×180GB B200, 2×96GB 6000, or 4×32GB 5090. Count is **total**
 /// unique parameters (tied embeddings once) — same convention as
 /// [`MAX_PARAMS`]. Staging (`PRISM_TEST_MAX_PARAMS`) forces the floor to
 /// 0 unless `PRISM_TEST_MIN_PARAMS` is set.
@@ -382,18 +382,16 @@ pub fn dataset_sha256() -> String {
 }
 
 /// Train wall-clock cap per submission (**hours**) — a **safety bound**, not
-/// the budget currency.
+/// the budget currency. **4.0 h** (240 min) is the recipe / operator default.
 ///
-/// Lowered 6.0 → 5.0 when [`TRAIN_FLOPS_CAP`] became the currency. The pair
-/// is chosen so FLOPs, not the clock, binds for essentially the whole field:
-/// at `C_MAX = 3.0e18` on 4×RTX 5090 (838 TFLOPS peak bf16) the wall needed
-/// is `C_MAX / (838e12 × MFU)` = 4.97 h at 20 % MFU, 3.98 h at 25 %, 3.31 h
-/// at 30 %. So any implementation at ≥ 20 % MFU is FLOPs-bound and the
-/// kernel lottery stops being a scored quantity. A slower implementation
+/// Isolated proofs shrink it with `PRISM_TEST_TRAIN_MINUTES` (e.g. 60).
+/// Unset uses this constant. At `C_MAX = 3.0e18` on 1× B200 (2250 TFLOPS
+/// peak) the wall needed is `C_MAX / (2250e12 × MFU)` ≈ 1.85 h at 20 % MFU,
+/// so FLOPs still binds for a competent B200 run. A slower implementation
 /// still terminates — that is the anti-DoS job this cap keeps.
 ///
 /// Asserted against the FLOPs cap in `tests::wall_bound_is_slack_at_target_mfu`.
-pub const TRAIN_HOURS_CAP: f64 = 5.0;
+pub const TRAIN_HOURS_CAP: f64 = 4.0;
 
 /// Attested-FLOPs cap per submission — **the budget currency**.
 ///
@@ -474,9 +472,9 @@ pub const HARNESS_EVAL_TIMEOUT_S: f64 = 5400.0;
 /// Derivation — the pod must strictly contain both children:
 ///
 /// ```text
-/// train child : build 900 + train (5 h = 18000) + grace 120 + checkpoint 1800 = 20820 s
+/// train child : build 900 + train (4 h = 14400) + grace 120 + checkpoint 1800 = 17220 s
 /// eval child  : PRISM_EVAL_TIMEOUT_S 5400 (battery 3600 + load/rollup/score reserve)
-/// worst case  : 26220 s = 7.28 h        ⇒ 7.5 h cap leaves 780 s of margin
+/// worst case  : 22620 s = 6.28 h        ⇒ 7.0 h cap leaves 2580 s of margin
 /// ```
 ///
 /// **History of the 7.0-vs-8.5 disagreement.** 7.0 was "6 h train + 1 h",
@@ -489,19 +487,19 @@ pub const HARNESS_EVAL_TIMEOUT_S: f64 = 5400.0;
 /// does not fit **any** train cap once the real phase ceilings are added
 /// (7.0 h would need `PRISM_EVAL_TIMEOUT_S ≤ 4380 s`, i.e. 60 s of reserve
 /// above the 3600 s battery — not workable). With [`TRAIN_HOURS_CAP`] now
-/// 5.0 h the arithmetic closes at **7.5 h**, which is both below the old 8.5
-/// and above the design's 7.0.
+/// 4.0 h the arithmetic closes at **7.0 h**.
 ///
 /// A higher ceiling never raises the bill for a run that finishes early
 /// (pods are billed for time used); it only stops the orchestrator from
 /// killing a run the recipe itself permits. `prism_lium_payer::sealed`
 /// derives its TTL from these same constants, so the payer cannot drift.
 /// Asserted in `tests::pod_lifetime_covers_train_plus_eval`.
-pub const POD_LIFETIME_HOURS_CAP: f64 = 7.5;
+pub const POD_LIFETIME_HOURS_CAP: f64 = 7.0;
 
 /// Effective train wall-clock cap (hours). Production is always
-/// [`TRAIN_HOURS_CAP`]; `PRISM_TEST_TRAIN_MINUTES` (staging/e2e only, works
-/// for Sim and real Lium) shrinks it so a full eval fits in minutes.
+/// [`TRAIN_HOURS_CAP`] (4.0 h / 240 min operator default). Staging/e2e set
+/// `PRISM_TEST_TRAIN_MINUTES` (Sim and real Lium) to shrink it; `240` is the
+/// same as unset. Isolated 1h proofs use `60`.
 #[must_use]
 pub fn train_hours_cap() -> f64 {
     std::env::var("PRISM_TEST_TRAIN_MINUTES")
@@ -1045,12 +1043,12 @@ mod tests {
 
     /// The dual cap must be *dual*: FLOPs has to bind before the wall for a
     /// competent implementation, or the currency reverts to wall-clock and
-    /// the kernel lottery is scored again. 4×RTX 5090 = 838 TFLOPS peak bf16.
+    /// the kernel lottery is scored again. 1× NVIDIA B200 = 2250 TFLOPS peak.
     #[test]
     fn wall_bound_is_slack_at_target_mfu() {
-        const PEAK_FLOPS: f64 = 838e12;
+        const PEAK_FLOPS: f64 = 2250e12;
         let wall_needed_h = |mfu: f64| TRAIN_FLOPS_CAP / (PEAK_FLOPS * mfu) / 3600.0;
-        // At 20% MFU the FLOPs cap is still reachable inside the wall bound.
+        // At 20% MFU the FLOPs cap is still reachable inside the 4h wall.
         let at_20 = wall_needed_h(0.20);
         assert!(
             at_20 <= TRAIN_HOURS_CAP,
@@ -1060,7 +1058,7 @@ mod tests {
         // ...and it is not so slack that the anti-DoS bound is vacuous: a
         // very slow implementation must still be stopped by the clock.
         assert!(
-            wall_needed_h(0.10) > TRAIN_HOURS_CAP,
+            wall_needed_h(0.08) > TRAIN_HOURS_CAP,
             "wall bound must still bite for a pathologically slow run"
         );
         // The underspend floor has to be reachable well inside the wall.
@@ -1207,8 +1205,8 @@ mod tests {
 
     #[test]
     fn caps_match_user_goal() {
-        // 5.0h wall is the anti-DoS bound; TRAIN_FLOPS_CAP is the currency.
-        assert!((TRAIN_HOURS_CAP - 5.0).abs() < f64::EPSILON);
+        // 4.0h / 240 min wall is the recipe + operator default.
+        assert!((TRAIN_HOURS_CAP - 4.0).abs() < f64::EPSILON);
         let a = POD_LIFETIME_HOURS_CAP;
         let b = TRAIN_HOURS_CAP;
         assert!(a > b);
@@ -1218,6 +1216,11 @@ mod tests {
         assert!(all.contains("1000000000") || all.contains("PRISM_MAX_PARAMS"));
         assert!(all.contains("850000000") || all.contains("PRISM_MIN_PARAMS"));
         assert!(all.contains("parameter cap"));
+        assert!(
+            all.contains("PRISM_TRAIN_HOURS_CAP\", 4.0"),
+            "harness Python default must match TRAIN_HOURS_CAP=4.0"
+        );
+        assert!(all.contains("Operator full-train default is 240 min"));
     }
 
     #[test]
@@ -1232,6 +1235,11 @@ mod tests {
         assert!((train_hours_cap() - 0.25).abs() < f64::EPSILON);
         assert_eq!(max_params(), 2_000_000);
         assert_eq!(min_params(), 0, "tiny-model profile disables the floor");
+        std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "240");
+        assert!(
+            (train_hours_cap() - TRAIN_HOURS_CAP).abs() < f64::EPSILON,
+            "240 min operator default must match TRAIN_HOURS_CAP"
+        );
         std::env::set_var("PRISM_TEST_MIN_PARAMS", "850000000");
         assert_eq!(min_params(), 850_000_000);
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "nope");

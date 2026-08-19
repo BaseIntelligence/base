@@ -159,7 +159,7 @@ def _run(cfg, st):
     enforce_param_range(n_params, min_params, max_params)
     model = model.to(device)
 
-    train_hours_cap = float(cfg.get("train_hours_cap", 6.0))
+    train_hours_cap = float(cfg.get("train_hours_cap", 4.0))
 
     def guard():
         if time.time() - t0 > train_hours_cap * 3600.0:

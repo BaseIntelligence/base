@@ -81,7 +81,36 @@ def test_dense_defaults_in_param_range():
     print(f"dense-1b n_params={n}")
 
 
+def test_b200_profile_microbatch_and_pin():
+    import importlib.util
+    import types
+
+    pkg = types.ModuleType("dense1b_local")
+    pkg.__path__ = [str(EXAMPLE)]
+    sys.modules["dense1b_local"] = pkg
+    kspec = importlib.util.spec_from_file_location("dense1b_local.kernels", EXAMPLE / "kernels.py")
+    kmod = importlib.util.module_from_spec(kspec)
+    sys.modules["dense1b_local.kernels"] = kmod
+    kspec.loader.exec_module(kmod)
+    mspec = importlib.util.spec_from_file_location("dense1b_local.model", EXAMPLE / "model.py")
+    mmod = importlib.util.module_from_spec(mspec)
+    sys.modules["dense1b_local.model"] = mmod
+    mspec.loader.exec_module(mmod)
+
+    b200 = {"gpu_type": "NVIDIA B200", "gpu_count": 1}
+    rtx = {"gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1}
+    wide = {"gpu_type": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpu_count": 2}
+    assert mmod.is_b200_class(b200, 1)
+    assert not mmod.is_b200_class(rtx, 1)
+    assert not mmod.is_b200_class(wide, 2)
+    assert mmod.is_96gb_class(b200, 1)
+    entry = (EXAMPLE / "entry.py").read_text(encoding="utf-8")
+    assert "B200_MICRO_BATCH = 8" in entry
+    assert "PEAK_FLOPS_B200 = 2250.0e12" in entry
+
+
 if __name__ == "__main__":
     test_example_sources_have_no_moe()
     test_dense_defaults_in_param_range()
+    test_b200_profile_microbatch_and_pin()
     print("dense-1b example OK")

@@ -1,10 +1,11 @@
 """Prism-shaped AutoModel entry for dense 1B (recipe 2.1, ~975M).
 
 Exposes build_model / train for the operator harness seams. Uses FineWeb
-stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 2×
-RTX PRO 6000 (96 GB) or 4×5090 fallback. NVFP4 TE on 96 GB-class.
+stream + prism_telemetry from ctx. Default parallel is single-GPU DDP
+world=1 on 1× NVIDIA B200 (~180 GiB, TE on, mb≥8) with ZeRO-1 on 2×
+RTX PRO 6000 (96 GB) or 4×5090 as explicit env fallbacks.
 
-submission_nonce: dense-1b-zero1-20260819T2215Z
+submission_nonce: dense-1b-b200-20260819T2335Z
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from nemo_automodel.components.models.dense1b import kernels as dense1b_kernels
 from nemo_automodel.components.models.dense1b.model import (
     build_dense1b,
     is_96gb_class,
+    is_b200_class,
     unique_n_params,
 )
 
@@ -51,9 +53,12 @@ GRAD_CLIP = 1.0
 REPORT_EVERY = 10
 WALL_MARGIN_S = 90.0
 # Per-GPU microbatch. 32 GB 5090: mb=1 + ckpt. 96 GB 6000: mb>=4 + TE.
+# 180 GB B200: mb>=8 + TE, ckpt off, world=1 is OK.
 DEFAULT_MICRO_BATCH = 1
 WIDE_MICRO_BATCH = 4
-PEAK_FLOPS_PER_GPU = 209.5e12
+B200_MICRO_BATCH = 8
+PEAK_FLOPS_5090 = 209.5e12
+PEAK_FLOPS_B200 = 2250.0e12
 PAYLOAD_NAME = "dense_1b_ddp_payload.pt"
 METRICS_NAME = "dense_1b_ddp_metrics.json"
 WEIGHTS_NAME = "dense_1b_ddp_weights.pt"
@@ -62,6 +67,12 @@ WEIGHTS_NAME = "dense_1b_ddp_weights.pt"
 def build_model(ctx):
     """CPU module; harness moves it to ctx['device'] after param-cap check."""
     return build_dense1b(ctx)
+
+
+def _peak_flops_per_gpu(ctx, gpu_count):
+    if is_b200_class(ctx, gpu_count):
+        return PEAK_FLOPS_B200
+    return PEAK_FLOPS_5090
 
 
 def _param_groups(model):
@@ -791,6 +802,8 @@ def _launch_ddp(model, ctx, gpu_count):
     # Do not inherit harness batch_size (that was DP-sharded).
     if env_micro.isdigit():
         micro = max(1, int(env_micro))
+    elif is_b200_class(ctx, gpu_count):
+        micro = B200_MICRO_BATCH
     elif is_96gb_class(ctx, gpu_count):
         micro = WIDE_MICRO_BATCH
     else:
@@ -880,13 +893,14 @@ def train(model, ctx):
             te_available = False
 
     wide = is_96gb_class(ctx, gpu_count)
+    b200 = is_b200_class(ctx, gpu_count)
     te_raw = os.environ.get("DENSE1B_TE", "").strip().lower()
     if te_raw in {"0", "false", "no", "off"}:
         te_want = False
     elif te_raw in {"1", "true", "yes", "on"}:
         te_want = True
     else:
-        te_want = wide
+        te_want = wide or b200
     rec, te_mode = _maybe_te_recipe() if (te_available and te_want) else (None, "none")
     n_params = unique_n_params(model)
     print(
@@ -896,13 +910,18 @@ def train(model, ctx):
         f"te_mode={te_mode} te_version={_te_version()} "
         f"cuda_devices={torch.cuda.device_count() if torch.cuda.is_available() else 0} "
         f"use_te_linear={getattr(model, 'use_te', None)} "
-        f"te_want={te_want} wide96={wide} "
+        f"te_want={te_want} wide96={wide} b200={b200} "
         f"parallel={os.environ.get('DENSE1B_PARALLEL', 'zero1')}",
         flush=True,
     )
 
-    # Never train on an 8×5090 fallback. Cap at profile width (2 or 4).
-    default_max = "2" if wide else "4"
+    # Never train on an 8× fallback. Cap at profile width (1 / 2 / 4).
+    if b200:
+        default_max = "1"
+    elif wide:
+        default_max = "2"
+    else:
+        default_max = "4"
     max_gpus = int(os.environ.get("DENSE1B_MAX_GPUS", default_max) or default_max)
     if gpu_count > max_gpus:
         print(f"[dense1b] capping visible GPUs {gpu_count} -> {max_gpus}", flush=True)
@@ -922,7 +941,7 @@ def train(model, ctx):
         if fpt <= 0.0:
             fpt = fpt_analytic
             fpt_source = "analytic_6n_loops"
-        mfu = (tokens * fpt) / (PEAK_FLOPS_PER_GPU * gpu_count * elapsed) if fpt > 0 else 0.0
+        mfu = (tokens * fpt) / (_peak_flops_per_gpu(ctx, gpu_count) * gpu_count * elapsed) if fpt > 0 else 0.0
         metrics["mfu_est"] = mfu
         metrics["flops_per_token_probe"] = fpt
         metrics["flops_per_token_analytic"] = fpt_analytic
@@ -942,6 +961,17 @@ def train(model, ctx):
     stream = ctx.get("train_stream")
     if stream is None:
         raise RuntimeError("train_stream required for live AutoModel dense 1B")
+    env_micro = os.environ.get("DENSE1B_MICRO_BATCH", "").strip()
+    if env_micro.isdigit():
+        micro = max(1, int(env_micro))
+    elif b200:
+        micro = B200_MICRO_BATCH
+    elif wide:
+        micro = WIDE_MICRO_BATCH
+    else:
+        micro = DEFAULT_MICRO_BATCH
+    if hasattr(stream, "batch_size"):
+        stream.batch_size = max(1, int(micro))
     compiled, did_compile = _maybe_compile(model)
     max_steps = int(ctx.get("max_train_steps", 20000))
     cap_s = float(ctx.get("train_hours_cap", 1.0)) * 3600.0
@@ -958,6 +988,16 @@ def train(model, ctx):
         rank=0,
         world=1,
     )
+    elapsed = float(metrics.get("train_seconds") or 1.0)
+    tokens = float(int(getattr(stream, "tokens_seen", 0)) or int(metrics.get("tokens_local") or 0))
+    loop_f = float(getattr(model, "prism_loop_factor", 1.0) or 1.0)
+    fpt_analytic = 6.0 * float(n_params) * loop_f
+    fpt = float(ctx.get("flops_per_token_probe") or 0.0)
+    fpt_source = "probe"
+    if fpt <= 0.0:
+        fpt = fpt_analytic
+        fpt_source = "analytic_6n_loops"
+    mfu = (tokens * fpt) / (_peak_flops_per_gpu(ctx, gpu_count) * max(1, gpu_count) * elapsed) if fpt > 0 else 0.0
     metrics.update(
         {
             "te_mode": te_mode,
@@ -968,13 +1008,19 @@ def train(model, ctx):
             "world_size": 1,
             "backend": "none",
             "gpu_count": gpu_count,
-            "tokens_seen": int(getattr(stream, "tokens_seen", 0)) or int(metrics["tokens_local"]),
+            "micro_batch": micro,
+            "tokens_seen": int(tokens),
             "n_params": n_params,
+            "mfu_est": mfu,
+            "flops_per_token_probe": fpt,
+            "flops_per_token_analytic": fpt_analytic,
+            "flops_per_token_source": fpt_source,
         }
     )
     print(
         f"[dense1b] train done n_params={n_params} steps={metrics['train_steps']} "
-        f"seconds={metrics['train_seconds']:.1f} te_mode={te_mode} parallel=single",
+        f"seconds={metrics['train_seconds']:.1f} te_mode={te_mode} parallel=single "
+        f"micro_batch={micro} tok/s={metrics.get('tokens_per_sec')} mfu_est={mfu*100:.2f}%",
         flush=True,
     )
     prism_telemetry.finish_evaluation()

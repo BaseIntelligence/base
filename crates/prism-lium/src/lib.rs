@@ -44,6 +44,7 @@ pub use prism_lium_types::{
     effective_gpu_count, gpu_count_from_label, pod_gpu_count_from_env, pod_gpu_preference_from_env,
     CostGuardrailError, EvalReceipt, EvalTelemetry, GpuPreference, Instance, InstanceSpec,
     LiumError, LiumSshConfig, NoScoreGate, Offer, ProbePoint, RemoteExecResult, TelemetryPoint,
+    DEFAULT_MAX_PRICE_PER_HOUR, DEFAULT_POD_GPU_COUNT,
 };
 
 use async_trait::async_trait;

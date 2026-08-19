@@ -561,7 +561,7 @@ fn orchestrator_config(
 ) -> OrchestratorConfig {
     OrchestratorConfig {
         netuid: cli.netuid,
-        max_price_per_hour: 2.5,
+        max_price_per_hour: prism_lium::DEFAULT_MAX_PRICE_PER_HOUR,
         max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
         ssh_public_keys: ssh_pks,
         image_digest: None,

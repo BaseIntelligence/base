@@ -302,7 +302,7 @@ def _run(cfg, st):
 
     seq_len = int(cfg.get("seq_len", 512))
     batch_size = int(cfg.get("batch_size", 8))
-    train_hours_cap = float(cfg.get("train_hours_cap", 5.0))
+    train_hours_cap = float(cfg.get("train_hours_cap", 4.0))
     flops_cap = float(cfg.get("train_flops_cap", 0.0) or 0.0)
     stream = SeededTrainStream(
         train_texts,

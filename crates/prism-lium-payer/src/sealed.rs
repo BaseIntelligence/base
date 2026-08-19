@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 /// This constant used to be a hardcoded 6 h next to a hardcoded 2 h eval,
 /// which is how the payer came to model an 8 h pod while
 /// `prism_recipe::POD_LIFETIME_HOURS_CAP` said 7 h. Deriving it means the
-/// dual-cap reconciliation (train 5 h, pod 7.5 h) cannot leave the payer
+/// dual-cap reconciliation (train 4 h, pod 7.0 h) cannot leave the payer
 /// behind. Overridden by `PRISM_TRAIN_HOURS_CAP` when set.
 // The recipe caps are small positive hour counts, so the second counts are
 // exact in u64; the casts cannot truncate or lose a sign in practice.

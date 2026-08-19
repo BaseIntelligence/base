@@ -27,11 +27,12 @@ fn plausible_gpu_count(n: u32) -> bool {
 /// GPUs to rent per Prism eval pod, from `PRISM_POD_GPU_COUNT`.
 ///
 /// Bounded to `1..=8`; anything absent, unparseable or out of range falls back
-/// to the default **2** (recipe-v10 1B path: 2× RTX PRO 6000 Blackwell).
+/// to the default **1** (recipe-v10 1B path: 1× NVIDIA B200).
 ///
-/// Two profiles, never mixed in one job:
-/// - default / 1B dense: `2` + [`GpuPreference::profile_6000`]
-/// - fallback / smaller runs: `4` + [`GpuPreference::profile_5090`]
+/// Profiles, never mixed in one job:
+/// - default / 1B dense: `1` + [`GpuPreference::profile_b200`]
+/// - explicit env fallbacks: `4` + [`GpuPreference::profile_5090`],
+///   `2`/`8` + [`GpuPreference::profile_6000`]
 ///
 /// Miners may train across the rented width (`ctx["gpu_count"]`); the eval
 /// battery stays on GPU 0 so G7 timings stay comparable.
@@ -40,8 +41,12 @@ pub fn pod_gpu_count_from_env() -> u32 {
     parse_pod_gpu_count(std::env::var("PRISM_POD_GPU_COUNT").ok().as_deref())
 }
 
-/// Default GPUs per Prism eval pod when unset (2× RTX PRO 6000, 1B dense).
-pub const DEFAULT_POD_GPU_COUNT: u32 = 2;
+/// Default GPUs per Prism eval pod when unset (1× NVIDIA B200, 1B dense).
+pub const DEFAULT_POD_GPU_COUNT: u32 = 1;
+
+/// Default USD/GPU-hour cap. B200 inventory is ~$5.5/gpu-hr; 8.0 leaves
+/// headroom without opening 8× host totals.
+pub const DEFAULT_MAX_PRICE_PER_HOUR: f64 = 8.0;
 
 /// Pure core of [`pod_gpu_count_from_env`] (kept separate so bounds and
 /// garbage-fallback are testable without mutating process env).
@@ -164,7 +169,7 @@ impl Default for InstanceSpec {
         Self {
             name: "prism-eval".into(),
             max_lifetime_hours: 1.0,
-            max_price_per_hour: 2.5,
+            max_price_per_hour: DEFAULT_MAX_PRICE_PER_HOUR,
             gpu_count: DEFAULT_POD_GPU_COUNT,
             image_digest: None,
             ssh_public_keys: vec![],
@@ -223,17 +228,27 @@ pub fn pod_gpu_preference_from_env() -> GpuPreference {
 }
 
 impl GpuPreference {
-    /// Default 1B SKU pin: **RTX PRO 6000 Blackwell** (fail-closed).
+    /// Default 1B SKU pin: **1× NVIDIA B200** (fail-closed).
     ///
     /// Ranking fairness requires a single SKU per profile. Width is enforced
     /// separately by [`Offer::matches_gpu_count`]. Override needles with
-    /// `PRISM_POD_GPU_NAME` or pick the 5090 profile via count `1`/`4`.
+    /// `PRISM_POD_GPU_NAME`. Count `4` → 5090; `2`/`8` → RTX PRO 6000.
     #[must_use]
     pub fn default_prism() -> Self {
-        Self::profile_6000()
+        Self::profile_b200()
     }
 
-    /// Primary 1B train SKU: 2× NVIDIA RTX PRO 6000 Blackwell Server Edition.
+    /// Primary 1B train SKU: 1× NVIDIA B200 (~180–192 GiB).
+    ///
+    /// Needles are `B200` / `NVIDIA B200` only — not 5090, not RTX PRO 6000.
+    #[must_use]
+    pub fn profile_b200() -> Self {
+        Self {
+            prefer: vec!["NVIDIA B200".into(), "B200".into()],
+        }
+    }
+
+    /// Explicit env fallback: 2×/8× NVIDIA RTX PRO 6000 Blackwell.
     #[must_use]
     pub fn profile_6000() -> Self {
         Self {
@@ -245,7 +260,7 @@ impl GpuPreference {
         }
     }
 
-    /// Fallback / smaller-run SKU: RTX 5090 (typically 4×).
+    /// Explicit env fallback: RTX 5090 (typically 4×).
     #[must_use]
     pub fn profile_5090() -> Self {
         Self {
@@ -253,8 +268,8 @@ impl GpuPreference {
         }
     }
 
-    /// Pin for a rent request. Name env wins; else count `1`/`4` → 5090,
-    /// any other in-band count (including default `2`) → 6000.
+    /// Pin for a rent request. `PRISM_POD_GPU_NAME` wins; else count `4` →
+    /// 5090, `2`/`8` → 6000, any other in-band count (default `1`) → B200.
     #[must_use]
     pub fn for_request(requested_gpus: u32) -> Self {
         if let Some(prefer) =
@@ -262,10 +277,10 @@ impl GpuPreference {
         {
             return Self { prefer };
         }
-        if requested_gpus == 4 || requested_gpus == 1 {
-            Self::profile_5090()
-        } else {
-            Self::profile_6000()
+        match requested_gpus {
+            4 => Self::profile_5090(),
+            2 | 8 => Self::profile_6000(),
+            _ => Self::profile_b200(),
         }
     }
 
@@ -456,39 +471,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_prism_pins_rtx_pro_6000() {
+    fn default_prism_pins_b200() {
         let p = GpuPreference::default_prism();
-        assert_eq!(
-            p.prefer.as_slice(),
-            [
-                "RTX PRO 6000 Blackwell Server",
-                "Blackwell Server",
-                "RTX PRO 6000"
-            ]
-        );
-        assert!(p.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
-        assert!(p.matches_pin("2x RTX PRO 6000 Blackwell"));
+        assert_eq!(p.prefer.as_slice(), ["NVIDIA B200", "B200"]);
+        assert!(p.matches_pin("NVIDIA B200"));
+        assert!(p.matches_pin("NVIDIA RTX BLACKWELL B200"));
         assert!(!p.matches_pin("NVIDIA GeForce RTX 5090"));
-        assert!(!p.matches_pin("NVIDIA GeForce RTX 4090"));
+        assert!(!p.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
         assert!(!p.matches_pin("NVIDIA H100"));
-        assert!(
-            p.rank("NVIDIA RTX PRO 6000 Blackwell Server Edition")
-                < p.rank("NVIDIA RTX PRO 6000 Blackwell Workstation Edition")
-        );
-        assert!(
-            p.rank("NVIDIA RTX PRO 6000 Blackwell Server Edition")
-                < p.rank("NVIDIA GeForce RTX 5090")
-        );
+        assert!(p.rank("NVIDIA B200") < p.rank("NVIDIA GeForce RTX 5090"));
     }
 
     #[test]
     fn for_request_profiles_from_count_and_name() {
+        let p1 = GpuPreference::for_request(1);
+        assert!(p1.matches_pin("NVIDIA B200"));
+        assert!(!p1.matches_pin("NVIDIA GeForce RTX 5090"));
+        assert!(!p1.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
         let p2 = GpuPreference::for_request(2);
         assert!(p2.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
         assert!(!p2.matches_pin("NVIDIA GeForce RTX 5090"));
+        assert!(!p2.matches_pin("NVIDIA B200"));
+        let p8 = GpuPreference::for_request(8);
+        assert!(p8.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
         let p4 = GpuPreference::profile_5090();
         assert!(p4.matches_pin("NVIDIA GeForce RTX 5090"));
         assert!(!p4.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
+        assert!(!p4.matches_pin("NVIDIA B200"));
         let named = parse_pod_gpu_name(Some(" RTX 5090 , RTX PRO 6000 "));
         assert_eq!(
             named.as_deref(),
@@ -510,24 +519,53 @@ mod tests {
     }
 
     #[test]
-    fn pod_gpu_count_defaults_to_two_and_bounds() {
-        // Default when unset / empty / garbage (2× RTX PRO 6000).
-        assert_eq!(parse_pod_gpu_count(None), 2);
-        assert_eq!(parse_pod_gpu_count(Some("")), 2);
-        assert_eq!(parse_pod_gpu_count(Some("   ")), 2);
-        assert_eq!(parse_pod_gpu_count(Some("four")), 2);
-        assert_eq!(parse_pod_gpu_count(Some("2.5")), 2);
-        assert_eq!(parse_pod_gpu_count(Some("-1")), 2);
+    fn pod_gpu_count_defaults_to_one_b200_and_bounds() {
+        // Default when unset / empty / garbage (1× NVIDIA B200).
+        assert_eq!(parse_pod_gpu_count(None), 1);
+        assert_eq!(parse_pod_gpu_count(Some("")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("   ")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("four")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("2.5")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("-1")), 1);
         // Out of the 1..=8 band falls back to the default, never clamps.
-        assert_eq!(parse_pod_gpu_count(Some("0")), 2);
-        assert_eq!(parse_pod_gpu_count(Some("9")), 2);
-        assert_eq!(parse_pod_gpu_count(Some("64")), 2);
+        assert_eq!(parse_pod_gpu_count(Some("0")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("9")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("64")), 1);
         // In-band values are honored (with surrounding whitespace).
         assert_eq!(parse_pod_gpu_count(Some("1")), 1);
         assert_eq!(parse_pod_gpu_count(Some("4")), 4);
         assert_eq!(parse_pod_gpu_count(Some("8")), 8);
         assert_eq!(parse_pod_gpu_count(Some(" 2 ")), 2);
-        assert_eq!(DEFAULT_POD_GPU_COUNT, 2);
+        assert_eq!(DEFAULT_POD_GPU_COUNT, 1);
+    }
+
+    #[test]
+    fn one_gpu_b200_request_excludes_5090_and_8x() {
+        let mk = |id: &str, gpu_type: &str, gpu_count: u32, price: f64| Offer {
+            id: id.into(),
+            gpu_type: gpu_type.into(),
+            gpu_count,
+            price_per_hour: price,
+            provider: "lium".into(),
+        };
+        let pin = mk("1xb200", "NVIDIA B200", 1, 5.5);
+        let eight = mk("8xb200", "NVIDIA B200", 8, 5.6);
+        let rtx = mk("1x5090", "NVIDIA GeForce RTX 5090", 1, 0.65);
+        let pro = mk(
+            "2x6000",
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            2,
+            3.2,
+        );
+        let pref = GpuPreference::profile_b200();
+        let mut offers = vec![eight.clone(), rtx.clone(), pro.clone(), pin.clone()];
+        pref.filter_sort_offers(&mut offers, 1);
+        let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["1xb200"], "exact 1× B200 only; never 5090 or 8× B200");
+        assert!(pin.matches_gpu_count(1));
+        assert!(!eight.matches_gpu_count(1));
+        assert!(!pref.matches_pin(&rtx.gpu_type));
+        assert!(!pref.matches_pin(&pro.gpu_type));
     }
 
     #[test]

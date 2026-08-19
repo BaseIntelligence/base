@@ -1,9 +1,10 @@
 # dense-1b
 
 Reference AutoModel patch for Prism recipe 2.1: a **dense ~975M** transformer
-(GQA + RMSNorm + SwiGLU + RoPE + QK-norm) with **ZeRO-1** (default) on
-**2× RTX PRO 6000 Blackwell** (~96 GB, TE on, mb≥4) or **4× RTX 5090**
-fallback (32 GB, TE off, mb=1).
+(GQA + RMSNorm + SwiGLU + RoPE + QK-norm) on **1× NVIDIA B200** (~180–192 GB,
+TE on, mb≥8, ckpt off, DDP world=1). Explicit env fallbacks: **2×/8× RTX PRO
+6000 Blackwell** (~96 GB, TE on, mb≥4) or **4× RTX 5090** (32 GB, TE off,
+mb=1).
 
 Fine-grained **MoE at ~1B is a bad default** (tiny expert GEMMs, irregular
 routing, no NVFP4 wgrad). MoE remains a miner experiment if you want it —
@@ -23,7 +24,7 @@ binary, not a scored organizer baseline, and not a live `:28092` flip.
 | `automodel.base` | Pin id — must match `GET /v1/recipe` (`automodel@v0.5.0`) |
 | `automodel.patch` | Unified diff vs that pin (entry, model, kernels, DDP worker) |
 | `prism.toml` | Optional entry pointer |
-| `requirements.txt` | Comment-only pin so AutoModel `pyproject.toml` is not installed (debian blinker). TE defaults on 96 GB-class. |
+| `requirements.txt` | Comment-only pin so AutoModel `pyproject.toml` is not installed (debian blinker). TE defaults on 96/180 GB-class. |
 
 Pack the four files at the ZIP root and `POST /v1/submissions` with your
 hotkey + `X-Lium-Api-Key`. See [`../../prism.md`](../../prism.md).
@@ -43,10 +44,11 @@ are the same tree the patch applies under
   curve) so the parent `prism_telemetry` / G6 ingest sees DDP/ZeRO workers.
 - Default `DENSE1B_PARALLEL=zero1` (`ZeroRedundancyOptimizer`). `fsdp`
   selects FSDP2 (`fully_shard`) when available. `ddp` remains a fallback
-  (debug only).
-- 96 GB-class (`gpu_count==2` and name contains 6000, or ≥90 GiB):
-  `DENSE1B_TE=1` default, `DENSE1B_MICRO_BATCH≥4`, activation ckpt **off**
-  (`DENSE1B_CKPT=1` only if you OOM). 32 GB 5090: TE off, mb=1, ckpt on.
+  (debug only). Single-GPU B200 stays `world=1`.
+- 180 GB-class (`B200` in `gpu_type`, or ≥170 GiB): `DENSE1B_TE=1` default,
+  `DENSE1B_MICRO_BATCH≥8`, activation ckpt **off**. 96 GB-class (`gpu_count==2`
+  and name contains 6000, or ≥90 GiB): TE on, mb≥4, ckpt off. 32 GB 5090:
+  TE off, mb=1, ckpt on.
 - `ctx["gpu_count"]` / `ctx["gpu_type"]` / TE `NVFP4BlockScaling` when the
   class exists (consumer Blackwell: `disable_rht=True`,
   `disable_stochastic_rounding=True`).

@@ -50,7 +50,7 @@ pub struct OrchestratorConfig {
     pub auto_retry_max: u32,
     pub scoring_mode: ScoringMode,
     pub orphan_grace_secs: u64,
-    /// GPUs rented per eval pod (`PRISM_POD_GPU_COUNT`, default 2×6000).
+    /// GPUs rented per eval pod (`PRISM_POD_GPU_COUNT`, default 1× B200).
     ///
     /// Miners may train across all of them; the eval battery stays pinned to
     /// GPU 0 so G7 timings stay comparable across submissions.
@@ -61,7 +61,7 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             netuid: 1,
-            max_price_per_hour: 2.5,
+            max_price_per_hour: prism_lium::DEFAULT_MAX_PRICE_PER_HOUR,
             max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
             ssh_public_keys: vec![],
             image_digest: None,

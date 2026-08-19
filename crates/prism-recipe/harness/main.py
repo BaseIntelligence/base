@@ -89,7 +89,7 @@ TRAIN_SEED = int_env("PRISM_SEED_OVERRIDE", RECIPE_SEED)
 # Wall-clock is the ANTI-DOS BOUND, not the budget currency (dual cap;
 # shipped in RECIPE_VERSION 2.1.0).
 # Must match prism_recipe::TRAIN_HOURS_CAP.
-TRAIN_HOURS_CAP = float_env("PRISM_TRAIN_HOURS_CAP", 5.0)
+TRAIN_HOURS_CAP = float_env("PRISM_TRAIN_HOURS_CAP", 4.0)
 # The budget currency: attested FLOPs. Must match
 # prism_recipe::TRAIN_FLOPS_CAP. Whichever cap binds first stops the run and
 # the metrics record which one it was (`org.diag.binding_cap`).
@@ -97,8 +97,8 @@ TRAIN_FLOPS_CAP = float_env("PRISM_TRAIN_FLOPS_CAP", 3.0e18)
 MIN_SPEND_FRACTION = float_env("PRISM_MIN_SPEND_FRACTION", 0.5)
 FLOPS_PROBE_SAMPLES = int_env("PRISM_FLOPS_PROBE_SAMPLES", 8)
 FLOPS_ANALYTIC_GAP_MAX = float_env("PRISM_FLOPS_ANALYTIC_GAP_MAX", 0.25)
-# Test-mode knobs (staging/e2e; sim or real Lium): shrink the wall cap and
-# the parameter cap so a full lifecycle fits in minutes on tiny models.
+# Operator full-train default is 240 min (= TRAIN_HOURS_CAP). Unset uses the
+# recipe constant. Isolated 1h proofs set PRISM_TEST_TRAIN_MINUTES=60.
 _TEST_TRAIN_MINUTES = float_env("PRISM_TEST_TRAIN_MINUTES", 0.0)
 if _TEST_TRAIN_MINUTES > 0:
     TRAIN_HOURS_CAP = _TEST_TRAIN_MINUTES / 60.0
@@ -682,11 +682,11 @@ def main():
         "val_rows": VAL_ROWS,
         "train_rows": TRAIN_ROWS,
         "device": device,
-        # Multi-GPU contract: default 2× RTX PRO 6000 (PRISM_POD_GPU_COUNT=2)
-        # or 4×5090 fallback. Miners may use every visible GPU for
-        # build/train (e.g. torch.distributed / FSDP over env:// on
-        # 127.0.0.1 — the harness brings `lo` up inside the train netns).
-        # The eval battery stays pinned to GPU 0 so G7 timings stay
+        # Multi-GPU contract: default 1× NVIDIA B200 (PRISM_POD_GPU_COUNT=1)
+        # with 4×5090 / 2×6000 as explicit env fallbacks. Miners may use every
+        # visible GPU for build/train (e.g. torch.distributed / FSDP over
+        # env:// on 127.0.0.1 — the harness brings `lo` up inside the train
+        # netns). The eval battery stays pinned to GPU 0 so G7 timings stay
         # comparable across submissions.
         "gpu_count": torch.cuda.device_count() if device == "cuda" else 0,
         "gpu_type": os.environ.get("PRISM_GPU_TYPE", ""),

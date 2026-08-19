@@ -55,10 +55,10 @@ install, then train/eval run offline. `requirements.txt` wins if you ship
 both. Check `GET /v1/recipe` for `pod_image_ref`, `miner_install_supported`,
 `miner_deps_members`, and `install_timeout_secs`.
 
-**GPU train contract.** Recipe-v10 1B pods default to **two RTX PRO 6000
-Blackwell** GPUs (`ctx["gpu_count"]==2`, ~96 GB, TE on). Set
-`PRISM_POD_GPU_COUNT=4` for the **four RTX 5090** fallback. The organizer
-eval stays on GPU 0.
+**GPU train contract.** Recipe-v10 1B pods default to **one NVIDIA B200**
+(`ctx["gpu_count"]==1`, ~180–192 GB, TE on, mb≥8, world=1). Set
+`PRISM_POD_GPU_COUNT=4` for the **four RTX 5090** fallback, or `2`/`8` for
+**RTX PRO 6000**. The organizer eval stays on GPU 0.
 Training must consume global batches from the harness-owned
 `ctx["train_stream"]`, because that stream enforces step/wall/FLOPs caps and
 owns token/byte accounting for G6. For DDP/ZeRO/FSDP, keep rank 0 as the
@@ -104,9 +104,10 @@ frameworks.
 bypass those hooks fail review (`missing_telemetry_hooks`, zero score,
 terminal).
 
-**Example: dense 1B (4-GPU ZeRO-1).** A reference AutoModel patch
-that honors `ctx["train_stream"]`, rank-0 stream ownership, and BF16 +
-activation checkpoint (NVFP4 via `DENSE1B_TE=1`) lives at
+**Example: dense 1B (1× B200, NVFP4).** A reference AutoModel patch
+that honors `ctx["train_stream"]`, rank-0 stream ownership, and NVFP4 TE
+on 180 GB-class (mb≥8, ckpt off; 4×5090 stays BF16 + activation checkpoint)
+lives at
 [`examples/dense-1b/`](examples/dense-1b/). It is a **dense** ~975M
 transformer (GQA + SwiGLU). The harness uses analytic 6N for the parent
 FLOPs cap so GPU0 stays free for spawn. Fine-grained MoE at 1B is a miner
@@ -133,7 +134,7 @@ X-Lium-Api-Key: <your Lium API key>
 The key is held in master memory for that submission and may also land in a
 **TTL-bounded encrypted seal file** on the master host (default ≥36h; never in
 Postgres, never logged). Master **re-seals** on measure start and heartbeats
-so a full 6h train wall cannot outlive the seal across a control-plane
+so a full 4h train wall cannot outlive the seal across a control-plane
 restart. Missing key on live → `400 missing_lium_api_key`. Cost guardrails
 (`max_price_per_hour`, lifetime) still apply so a bad key cannot rent
 unbounded SKUs through the orchestrator.
@@ -142,7 +143,7 @@ unbounded SKUs through the orchestrator.
 used, not the ceiling, so a run that finishes early costs the same as
 before — the raise exists because the old 7h could **terminate a
 full-budget submission mid-eval** and lose the whole rental. The ceiling has
-to contain build (≤15m) + your 6h train wall + checkpoint (≤30m) + the eval
+to contain build (≤15m) + your 4h train wall + checkpoint (≤30m) + the eval
 phase (≤1.5h) ≈ 8.3h. The eval battery itself runs under one global 1h
 budget with per-group shares, and if a group hits its ceiling the run
 reports it (`budget.truncated` / `budget.partial_groups` in the battery
@@ -190,7 +191,8 @@ Live recipe **2.1.0** advertises `version: "2.1.0"` and AutoModel pin fields
 (`automodel_pin_id` = `automodel@v0.5.0`, `automodel_repo_url`,
 `automodel_git_ref`, `automodel_git_commit`, `automodel_content_sha256`),
 plus caps such as `train_flops_cap: 3.0e18` (the budget currency),
-`train_hours_cap: 5.0` (anti-DoS wall), `min_spend_fraction: 0.5`
+`train_hours_cap: 4.0` (240 min anti-DoS wall; operator default
+`PRISM_TEST_TRAIN_MINUTES=240` is the same as unset), `min_spend_fraction: 0.5`
 (voluntary-stop floor; a step/wall/FLOPs-bound run stays eligible),
 `max_train_steps: 20000`, `min_params: 850000000`, `max_params: 1000000000`, FineWeb dataset pin,
 and `pin_hex` (sha over the versioned descriptor). Trust `/v1/recipe`,

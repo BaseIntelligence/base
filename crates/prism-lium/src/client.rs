@@ -1112,7 +1112,7 @@ mod tests {
         InstanceSpec {
             name: "x".into(),
             max_lifetime_hours: 1.0,
-            max_price_per_hour: 2.5,
+            max_price_per_hour: 8.0,
             gpu_count: 1,
             image_digest: None,
             ssh_public_keys: vec!["ssh-ed25519 AAAA".into()],
@@ -1232,42 +1232,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_prefers_5090_over_cheaper_a100() {
+    async fn provision_prefers_b200_over_cheaper_5090() {
         let server = MockServer::start().await;
         mount_common(
             &server,
             serde_json::json!([
-                {"id": "cheap-a100", "gpu_type": "NVIDIA A100-SXM4-80GB", "gpu_count": 1, "price_per_hour": 0.5},
-                {"id": "pin-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 2.0},
+                {"id": "cheap-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 0.65},
+                {"id": "pin-b200", "gpu_type": "NVIDIA B200", "gpu_count": 1, "price_per_hour": 5.5},
                 {"id": "mid-h100", "gpu_type": "NVIDIA H100", "gpu_count": 1, "price_per_hour": 1.5}
             ]),
         )
         .await;
-        // Every candidate rents fine: the returned pod proves which offer the
-        // sort put first (5090 despite being the priciest within the cap).
-        mount_rent_path(&server, "pin-5090", "pod-5090").await;
-        mount_rent_path(&server, "cheap-a100", "pod-a100").await;
+        mount_rent_path(&server, "pin-b200", "pod-b200").await;
+        mount_rent_path(&server, "cheap-5090", "pod-5090").await;
         mount_rent_path(&server, "mid-h100", "pod-h100").await;
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
         let inst = c.provision(&provision_spec()).await.unwrap();
-        assert_eq!(inst.id, "pod-5090");
+        assert_eq!(inst.id, "pod-b200");
     }
 
     #[tokio::test]
-    async fn provision_never_selects_8x_5090_when_1x_available() {
+    async fn provision_never_selects_8x_b200_when_1x_available() {
         let server = MockServer::start().await;
         mount_common(
             &server,
             serde_json::json!([
-                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48},
-                {"id": "eight-label", "gpu_type": "8x RTX 5090", "gpu_count": 1, "price_per_hour": 0.45},
-                {"id": "one-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 2.0}
+                {"id": "eight-b200", "gpu_type": "NVIDIA B200", "gpu_count": 8, "price_per_hour": 5.6},
+                {"id": "eight-label", "gpu_type": "8x NVIDIA B200", "gpu_count": 1, "price_per_hour": 5.0},
+                {"id": "one-b200", "gpu_type": "NVIDIA B200", "gpu_count": 1, "price_per_hour": 5.5}
             ]),
         )
         .await;
-        mount_rent_path(&server, "one-5090", "pod-1x").await;
-        // If multi-GPU slipped through, these would be rented instead.
-        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        mount_rent_path(&server, "one-b200", "pod-1x").await;
+        mount_rent_path(&server, "eight-b200", "pod-8x").await;
         mount_rent_path(&server, "eight-label", "pod-8x-label").await;
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
         let inst = c.provision(&provision_spec()).await.unwrap();
@@ -1343,7 +1340,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_fail_closed_when_no_5090() {
+    async fn provision_fail_closed_when_no_b200() {
         let server = MockServer::start().await;
         mount_common(
             &server,
@@ -1376,7 +1373,7 @@ mod tests {
             &server,
             serde_json::json!([{
                 "id": "only",
-                "gpu_type": "NVIDIA GeForce RTX 5090",
+                "gpu_type": "NVIDIA B200",
                 "gpu_count": 1,
                 "price_per_hour": 1.0
             }]),

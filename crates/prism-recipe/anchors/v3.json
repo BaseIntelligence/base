@@ -95,7 +95,7 @@
     "ci_half_width_delta": 0.05,
     "max_params": 1000000000,
     "min_params": 850000000,
-    "max_wall_s": 18000.0,
+    "max_wall_s": 14400.0,
     "max_flops": 3.0e18,
     "min_spend_fraction": 0.5
   },

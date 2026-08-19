@@ -25,5 +25,5 @@ pub use types::{
     effective_gpu_count, gpu_count_from_label, parse_pod_gpu_count, parse_pod_gpu_name,
     pod_gpu_count_from_env, pod_gpu_preference_from_env, EvalTelemetry, GpuPreference, Instance,
     InstanceSpec, LiumSshConfig, Offer, ProbePoint, RemoteExecResult, TelemetryPoint,
-    DEFAULT_POD_GPU_COUNT,
+    DEFAULT_MAX_PRICE_PER_HOUR, DEFAULT_POD_GPU_COUNT,
 };

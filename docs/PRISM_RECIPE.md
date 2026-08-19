@@ -110,20 +110,19 @@ On consumer Blackwell (SM120 / RTX 5090) construct the recipe as
 when those kwargs exist. BF16 remains the fallback if the class is absent.
 
 **GPU width and isolated rendezvous.** Eval pod requests default to
-`PRISM_POD_GPU_COUNT=2` on **RTX PRO 6000 Blackwell Server Edition**
-(`PRISM_POD_GPU_NAME` needles `RTX PRO 6000` / `Blackwell Server`). The
-second profile is `PRISM_POD_GPU_COUNT=4` on RTX 5090. Never mix SKUs in
-one job; never fall through to 8×5090. Prefer an unsplittable full 6000
-host when an exact 2-GPU offer is missing. Miner training may use DDP over
-the rented width; evaluation stays on GPU 0. `unshare --net` creates
-loopback down, so the harness wrapper runs `ip link set lo up` before the
-child—DDP can use `127.0.0.1` while the namespace still has no external
-route. The pod image therefore pins `iproute2` as well as the CUDA/TE
-toolchain.
+`PRISM_POD_GPU_COUNT=1` on **NVIDIA B200** (`PRISM_POD_GPU_NAME` needles
+`NVIDIA B200` / `B200`). Explicit env fallbacks: `PRISM_POD_GPU_COUNT=4` on
+RTX 5090, or `2`/`8` on RTX PRO 6000 Blackwell Server Edition. Never mix
+SKUs in one job; never fall through to 8× B200 or 8×5090. Miner training
+may use DDP over the rented width (world=1 is OK on 1× B200); evaluation
+stays on GPU 0. `unshare --net` creates loopback down, so the harness
+wrapper runs `ip link set lo up` before the child—DDP can use
+`127.0.0.1` while the namespace still has no external route. The pod image
+therefore pins `iproute2` as well as the CUDA/TE toolchain.
 
-An operator may stage a 1-GPU 5090 cutover by setting
-`PRISM_POD_GPU_COUNT=1`, draining active pods, restarting the challenge, and
-verifying an exact single-5090 offer. This is independent of the image pin and
+An operator may stage a 4×5090 or 2×/8×6000 fallback by setting
+`PRISM_POD_GPU_COUNT`, draining active pods, restarting the challenge, and
+verifying the selected offer. This is independent of the image pin and
 must not be bundled with a scoring/anchor/emission flip or a live `:28092`
 change.
 
@@ -249,9 +248,9 @@ Master applies `automodel.patch` onto a clean pin checkout. Reject when:
 | Cap | Value |
 |-----|-------|
 | **Train budget (currency)** | **`3.0e18` attested FLOPs** (`TRAIN_FLOPS_CAP`) |
-| Train wall clock | **5.0 h** per submission — **safety bound, not the currency** |
+| Train wall clock | **4.0 h** (240 min) per submission — **safety bound, not the currency**. Operator default `PRISM_TEST_TRAIN_MINUTES=240` is the same as unset. Isolated proofs may set `60`. |
 | Underspend floor | **0.5 ×** the FLOPs cap (`MIN_SPEND_FRACTION`) for a **voluntary** stop; protocol-bound runs (`binding_cap` ∈ `steps`/`wall`/`flops`) stay eligible |
-| Pod lifetime | **7.5 h** (derived; see *Budget currency* below) |
+| Pod lifetime | **7.0 h** (derived; see *Budget currency* below) |
 | Eval battery | **3600 s** global, per-group ceilings are fractional shares |
 | Hard step cap | 20 000 (config may only lower) |
 | Model parameters | **850 000 000–1 000 000 000** total unique (`MIN_PARAMS`–`MAX_PARAMS`) |
@@ -331,10 +330,10 @@ delta-net/SSM is not billed for a phantom cost. A gap above
 children, and the payer's model must reconstruct it exactly:
 
 ```text
-train child : build 900 + train 18000 (5.0 h) + grace 120 + checkpoint 1800 = 20820 s
+train child : build 900 + train 14400 (4.0 h) + grace 120 + checkpoint 1800 = 17220 s
 eval  child : PRISM_EVAL_TIMEOUT_S 5400  (battery 3600 + load/rollup/score reserve 1800)
-worst case  : 26220 s = 7.28 h      ⇒ POD_LIFETIME_HOURS_CAP = 7.5 h (780 s margin)
-payer       : TRAIN_WALL_SECS + EVAL_BUDGET_SECS == 7.5 h exactly (derived from these constants)
+worst case  : 22620 s = 6.28 h      ⇒ POD_LIFETIME_HOURS_CAP = 7.0 h (2580 s margin)
+payer       : TRAIN_WALL_SECS + EVAL_BUDGET_SECS == 7.0 h exactly (derived from these constants)
 ```
 
 `prism_lium_payer::sealed` derives its TTL from these same constants rather
@@ -342,12 +341,10 @@ than duplicating them, which is how the old 6 h/2 h payer model came to
 disagree with a 7.0 h pod cap.
 
 **Calibration status.** `TRAIN_FLOPS_CAP = 3.0e18` is sized so that any
-implementation at **≥ 20 % MFU is FLOPs-bound** inside the 5.0 h wall
-(4.97 h at 20 %, 3.98 h at 25 %). Real MFU is **measured, not assumed**:
-Phase 0 measured **40.2 %** on 1×RTX 5090 with the reference Transformer++
-(`d=1024, L=24`), so the full budget needs ≈ 2.5 h on 4 GPUs — comfortably
-FLOPs-bound. See `deploy/scripts/prism-phase0-seed-variance.sh` and the
-evidence under [`docs/evidence/prism-v3-phase0/`](evidence/prism-v3-phase0/).
+implementation at **≥ 20 % MFU is FLOPs-bound** inside the 4.0 h wall on
+**1× NVIDIA B200** (2250 TFLOPS peak → ≈ 1.85 h at 20 % MFU). Real MFU is
+**measured, not assumed**. Isolated 1h proofs set
+`PRISM_TEST_TRAIN_MINUTES=60`; a full operator train uses unset or `240`.
 
 > ### ⚠ Batch size is now load-bearing (measured, not theoretical)
 >
@@ -413,7 +410,7 @@ def build_model(ctx):
 # training.py
 def train(model, ctx):
     """Train the model; must respect ctx.budget():
-    budget.max_steps <= 20000 and budget.max_seconds <= 21600 (6h train)."""
+    budget.max_steps <= 20000 and budget.max_seconds <= 14400 (4h train)."""
 ```
 
 The pod runs [`prism_harness.py`](../crates/prism-recipe/harness/prism_harness.py),
@@ -656,8 +653,8 @@ score.
 | Cap | Value |
 |-----|-------|
 | Train budget (currency) | **`3.0e18` attested FLOPs** — see *Budget currency* above |
-| Train wall clock | **5.0 h** per submission (safety bound, not the currency) |
-| Pod lifetime | **7.5 h** (derived from the phase ceilings) |
+| Train wall clock | **4.0 h** (240 min) per submission (safety bound, not the currency) |
+| Pod lifetime | **7.0 h** (derived from the phase ceilings) |
 | Hard step cap | 20 000 (config may only lower) |
 | Source size | 128 KiB per script (two-script intake); tree budgets per `zip_submit` |
 | Model parameters | **850 000 000–1 000 000 000** after `build_model` (`MIN_PARAMS`–`MAX_PARAMS`) |

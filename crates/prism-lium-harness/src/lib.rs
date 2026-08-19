@@ -201,10 +201,8 @@ pub fn harness_env_pairs(
     ];
     for key in [
         "PRISM_TEST_TRAIN_MINUTES",
-        // Miner-visible train geometry. Default harness stream is 8×512,
-        // which DataParallel then shards (2 samples/GPU on 4×5090). Passing
-        // these through lets an isolated 4-GPU proof raise per-rank batch
-        // and seq without a harness rebuild on the pod.
+        // Operator full-train default is 240 min (= recipe TRAIN_HOURS_CAP).
+        // Isolated 1h proofs set 60. Unset uses the 4.0 h recipe constant.
         "PRISM_SEQ_LEN",
         "PRISM_TRAIN_BATCH_SIZE",
         // Operator seed-variance sweep. This list is an ALLOWLIST, so a knob
