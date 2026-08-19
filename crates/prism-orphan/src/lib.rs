@@ -3,8 +3,10 @@
 //! Workers register in [`ActiveJobs`] for the whole `run_row` hold. On boot
 //! (and periodically) [`reconcile_once`] **resume-first**: mid-pod rows whose
 //! Lium instance is still alive are requeued with `pod_id` kept (no terminate).
-//! Only unreattachable rows fail-closed (`control_plane_restart` /
-//! `harness_detached`). Post-measure review stages requeue as before.
+//! [`PrismStore::claim_next`] then prefers those rows so they reattach before
+//! new submits take the concurrent slots. Only unreattachable rows fail-closed
+//! (`control_plane_restart` / `harness_detached`). Post-measure review stages
+//! requeue as before.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -271,6 +273,13 @@ mod tests {
         let got = store.get(&r.id).await.unwrap().unwrap();
         assert_eq!(got.status, Stage::Queued);
         assert_eq!(got.pod_id.as_deref(), Some("pod-live"));
+        store
+            .insert_queued(&row("aaaaaaaaaaaaaaaa", Stage::Queued, None))
+            .await
+            .unwrap();
+        let claimed = store.claim_next().await.unwrap().unwrap();
+        assert_eq!(claimed.id, r.id, "resume row must skip the new-submit FIFO");
+        assert_eq!(claimed.pod_id.as_deref(), Some("pod-live"));
     }
 
     #[tokio::test]

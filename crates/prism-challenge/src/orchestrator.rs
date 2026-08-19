@@ -696,6 +696,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             }
         }
         let backend = self.backend_for(id)?;
+        // `pod_id` present ⇒ reattach (never rent a second offer). Fresh
+        // submits have no pod and take the provision path below.
         let resume = mid_pod_resume(row);
         let (pod_id, provider) = if let Some(pid) = row.pod_id.clone() {
             (
