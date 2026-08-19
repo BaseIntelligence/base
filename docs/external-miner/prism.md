@@ -64,7 +64,7 @@ stream owner and scatter/shard each accounted global batch to workers over
 the local process group. At 850M–1B, default the example pack to ZeRO-1. Do not let each worker create an independent dataset stream:
 v3 rejects a trainer that returns with zero harness-accounted tokens. The
 isolated network namespace brings `127.0.0.1` loopback up for rendezvous but
-has no external route. Rank 0 should write `loopmoe_ddp/telemetry.json`
+has no external route. Rank 0 should write `dense_1b_ddp/telemetry.json`
 (loss series + probe curve): spawned workers do not share the parent
 `prism_telemetry` hook, and without that sidecar G6/G8 used to omit keys.
 
@@ -102,12 +102,14 @@ frameworks.
 bypass those hooks fail review (`missing_telemetry_hooks`, zero score,
 terminal).
 
-**Example: LoopMoE (4-GPU DDP + NVFP4).** A reference AutoModel patch that
-honors `ctx["train_stream"]`, rank-0 stream ownership, and optional
+**Example: dense 1B (4-GPU ZeRO-1 + NVFP4).** A reference AutoModel patch
+that honors `ctx["train_stream"]`, rank-0 stream ownership, and optional
 Transformer Engine NVFP4 lives at
-[`examples/loopmoe/`](examples/loopmoe/). Pack `automodel.base` +
-`automodel.patch` (+ optional `prism.toml` / `requirements.txt`) as in
-this document. It is an example, not a scored baseline.
+[`examples/dense-1b/`](examples/dense-1b/). It is a **dense** ~975M
+transformer (GQA + SwiGLU). Fine-grained MoE at 1B is a miner experiment,
+not the reference. Pack `automodel.base` + `automodel.patch` (+ optional
+`prism.toml` / `requirements.txt`) as in this document. It is an example,
+not a scored baseline.
 
 **Diff visibility.** After intake, inspect your applied delta at
 `GET /v1/submissions/{id}/diff` (full unified diff + diffstat / classification).

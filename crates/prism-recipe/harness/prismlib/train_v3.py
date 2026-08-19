@@ -364,7 +364,7 @@ def _run(cfg, st):
     train_s = time.time() - t0
     _log(f"train done in {train_s:.0f}s ({finish_reason})")
 
-    # DDP workers write prism_ddp/ / loopmoe_ddp/telemetry.json because they
+    # DDP workers write prism_ddp/ / dense_1b_ddp/telemetry.json because they
     # never share this process's prism_telemetry shim. Ingest before the
     # post-train boundary probe so G6 has a real curve when rank-0 probed.
     n_side = ingest_ddp_sidecar(state, cfg.get("workdir"))

@@ -322,6 +322,7 @@ pub const MAX_PARAMS: u64 = 1_000_000_000;
 /// Inclusive parameter floor after `build_model` (850M).
 ///
 /// Recipe 2.1 rejects packs that stay at the old ~215M `LoopMoE` width:
+/// the miner reference is a dense ~975M transformer (`examples/dense-1b`).
 /// `ZeRO`/`FSDP` only pays at this scale on 4×32GB 5090. Count is **total**
 /// unique parameters (tied embeddings once) — same convention as
 /// [`MAX_PARAMS`]. Staging (`PRISM_TEST_MAX_PARAMS`) forces the floor to

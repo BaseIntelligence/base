@@ -418,7 +418,7 @@ curve. Anchor v3 supersedes it with tokenizer-neutral
 is owned by accounted stream batches, not miner telemetry calls; forced
 pre/post boundaries make the curve total even when an external DDP trainer
 reports tokens itself. Spawned DDP workers do not share the parent
-`prism_telemetry` shim: rank 0 must write `loopmoe_ddp/telemetry.json` (or
+`prism_telemetry` shim: rank 0 must write `dense_1b_ddp/telemetry.json` (or
 `prism_ddp/telemetry.json`); `train_v3` ingests it after `train()` so
 `report_count` / `probe_curve` are not left empty. An empty curve still
 emits fail-closed `org.g6.auc_log_tokens` and `org.g6.tokens_to_threshold`
@@ -564,7 +564,9 @@ orchestrator finalizes `Score(0)` / `rejected` — never a measured score,
 no review/agentic spend, no auto-retry. v0/v1/v2 anchor JSON stays
 byte-frozen without `min_params`; the 850M floor lives on **v3** only
 (and on the recipe descriptor). The 215M LoopMoE example is invalid for
-v2.1 submit.
+v2.1 submit. The miner reference is a **dense ~975M** transformer
+([`docs/external-miner/examples/dense-1b/`](external-miner/examples/dense-1b/));
+MoE is allowed as a miner experiment but is not the default pack.
 
 **Migration note.** No chain-facing change in `shadow`: scoring stays
 `scoring_version 2` and the v2 number is bit-identical. The flip to
@@ -882,9 +884,9 @@ the workdir root and `submission/`):
 - `pyproject.toml` — `pip install .` (PEP 621)
 
 They install FlashAttention, `mamba-ssm`, custom Triton/CUDA kernels, etc.,
-into the image before training. A worked AutoModel example (LoopMoE, 4-GPU
-DDP + optional NVFP4) is
-[`docs/external-miner/examples/loopmoe/`](external-miner/examples/loopmoe/).
+into the image before training. A worked AutoModel example (dense ~975M,
+4-GPU ZeRO-1 + optional NVFP4) is
+[`docs/external-miner/examples/dense-1b/`](external-miner/examples/dense-1b/).
 `/v1/recipe` advertises the capability:
 `pod_image_ref`, `miner_install_supported`, `miner_deps_members`,
 `install_timeout_secs` (1800s).

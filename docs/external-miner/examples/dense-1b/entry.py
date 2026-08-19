@@ -1,10 +1,10 @@
-"""Prism-shaped AutoModel entry for LoopMoE (recipe 2.1, ~908M).
+"""Prism-shaped AutoModel entry for dense 1B (recipe 2.1, ~975M).
 
 Exposes build_model / train for the operator harness seams. Uses FineWeb
 stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
-(DDP lost at 215M; optimizer state matters at 1B). NVFP4 TE when present.
+(optimizer state matters at 1B). NVFP4 TE when present. Dense FFN only.
 
-submission_nonce: loopmoe-1b-zero1-20260819T1200Z
+submission_nonce: dense-1b-zero1-20260819T1230Z
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from pathlib import Path
 
 import torch
 
-from nemo_automodel.components.models.loopmoe import kernels as loopmoe_kernels
-from nemo_automodel.components.models.loopmoe.model import build_loopmoe
+from nemo_automodel.components.models.dense1b import kernels as dense1b_kernels
+from nemo_automodel.components.models.dense1b.model import build_dense1b, unique_n_params
 
 try:
     import prism_telemetry
@@ -44,22 +44,21 @@ EPS = 1e-8
 WARMUP_FRAC = 0.02
 MIN_LR_FRAC = 0.10
 GRAD_CLIP = 1.0
-AUX_LOSS_COEF = 0.01
 REPORT_EVERY = 10
 WALL_MARGIN_S = 90.0
 # Per-GPU microbatch. Harness default is 8 *then DataParallel-sharded*.
 # DDP keeps this whole batch on every rank (× world_size global tokens).
-# Factored WY drops the 5-D decay tensor; mb=8 feeds GEMMs (seq stays 512).
+# mb=8 feeds dense GEMMs (seq stays 512).
 DEFAULT_MICRO_BATCH = 8
 PEAK_FLOPS_PER_GPU = 209.5e12
-PAYLOAD_NAME = "loopmoe_ddp_payload.pt"
-METRICS_NAME = "loopmoe_ddp_metrics.json"
-WEIGHTS_NAME = "loopmoe_ddp_weights.pt"
+PAYLOAD_NAME = "dense_1b_ddp_payload.pt"
+METRICS_NAME = "dense_1b_ddp_metrics.json"
+WEIGHTS_NAME = "dense_1b_ddp_weights.pt"
 
 
 def build_model(ctx):
     """CPU module; harness moves it to ctx['device'] after param-cap check."""
-    return build_loopmoe(ctx)
+    return build_dense1b(ctx)
 
 
 def _param_groups(model):
@@ -67,7 +66,7 @@ def _param_groups(model):
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if p.ndim < 2 or "emb" in name or "loop_bias" in name or "inject_scale" in name:
+        if p.ndim < 2 or "emb" in name or "norm" in name:
             no_decay.append(p)
         else:
             decay.append(p)
@@ -91,7 +90,7 @@ def _maybe_te_recipe():
     try:
         from transformer_engine.common import recipe as te_recipe  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        print(f"[loopmoe] TE recipe import failed ({exc})", flush=True)
+        print(f"[dense1b] TE recipe import failed ({exc})", flush=True)
         return None, "none"
     sm = None
     if torch.cuda.is_available():
@@ -111,22 +110,22 @@ def _maybe_te_recipe():
             try:
                 rec = cls(**kw)
                 print(
-                    f"[loopmoe] NVFP4 recipe class={name} kwargs={kw} sm={sm}",
+                    f"[dense1b] NVFP4 recipe class={name} kwargs={kw} sm={sm}",
                     flush=True,
                 )
                 return rec, "nvfp4"
             except TypeError:
                 continue
             except Exception as exc:  # noqa: BLE001
-                print(f"[loopmoe] {name}({kw}) failed ({exc})", flush=True)
+                print(f"[dense1b] {name}({kw}) failed ({exc})", flush=True)
                 continue
     delayed = getattr(te_recipe, "DelayedScaling", None)
     if delayed is not None:
         try:
-            print("[loopmoe] NVFP4 class missing; DelayedScaling FP8 fallback", flush=True)
+            print("[dense1b] NVFP4 class missing; DelayedScaling FP8 fallback", flush=True)
             return delayed(), "fp8"
         except Exception as exc:  # noqa: BLE001
-            print(f"[loopmoe] DelayedScaling failed ({exc})", flush=True)
+            print(f"[dense1b] DelayedScaling failed ({exc})", flush=True)
     return None, "none"
 
 
@@ -144,20 +143,20 @@ def _fp8_ctx(enabled, rec):
         except TypeError:
             ctx = te_autocast(recipe=rec)
         if not getattr(_fp8_ctx, "_logged", False):
-            print("[loopmoe] using te.autocast for NVFP4/FP8 recipe (fwd+bwd)", flush=True)
+            print("[dense1b] using te.autocast for NVFP4/FP8 recipe (fwd+bwd)", flush=True)
             _fp8_ctx._logged = True
         return ctx
     except Exception as exc:  # noqa: BLE001
-        print(f"[loopmoe] te.autocast unavailable ({exc}); trying fp8_autocast", flush=True)
+        print(f"[dense1b] te.autocast unavailable ({exc}); trying fp8_autocast", flush=True)
     try:
         from transformer_engine.pytorch import fp8_autocast  # type: ignore
 
         if not getattr(_fp8_ctx, "_logged", False):
-            print("[loopmoe] using te.fp8_autocast for NVFP4/FP8 recipe", flush=True)
+            print("[dense1b] using te.fp8_autocast for NVFP4/FP8 recipe", flush=True)
             _fp8_ctx._logged = True
         return fp8_autocast(enabled=True, fp8_recipe=rec)
     except Exception as exc:  # noqa: BLE001
-        print(f"[loopmoe] fp8_autocast unavailable ({exc}); BF16", flush=True)
+        print(f"[dense1b] fp8_autocast unavailable ({exc}); BF16", flush=True)
         from contextlib import nullcontext
 
         return nullcontext()
@@ -207,10 +206,10 @@ def _make_adam(model, *, zero=False):
                 fused=True,
                 **kwargs,
             )
-            print("[loopmoe] ZeRO-1 ZeroRedundancyOptimizer fused AdamW", flush=True)
+            print("[dense1b] ZeRO-1 ZeroRedundancyOptimizer fused AdamW", flush=True)
             return opt
         except (TypeError, RuntimeError) as exc:
-            print(f"[loopmoe] ZeRO-1 fused failed ({exc}); plain AdamW", flush=True)
+            print(f"[dense1b] ZeRO-1 fused failed ({exc}); plain AdamW", flush=True)
             try:
                 return ZeroRedundancyOptimizer(
                     groups,
@@ -219,11 +218,11 @@ def _make_adam(model, *, zero=False):
                     **kwargs,
                 )
             except Exception as exc2:  # noqa: BLE001
-                print(f"[loopmoe] ZeRO-1 unavailable ({exc2}); DDP AdamW", flush=True)
+                print(f"[dense1b] ZeRO-1 unavailable ({exc2}); DDP AdamW", flush=True)
     try:
         return torch.optim.AdamW(groups, fused=True, **kwargs)
     except (TypeError, RuntimeError) as exc:
-        print(f"[loopmoe] fused AdamW unavailable ({exc}); foreach", flush=True)
+        print(f"[dense1b] fused AdamW unavailable ({exc}); foreach", flush=True)
         try:
             return torch.optim.AdamW(groups, foreach=True, **kwargs)
         except TypeError:
@@ -232,8 +231,8 @@ def _make_adam(model, *, zero=False):
 
 def _maybe_compile(model):
     # TE NVFP4 + dynamo OOMed the first 8-GPU smoke; enable only when
-    # LOOPMOE_COMPILE=1 after a saturated eager run.
-    if os.environ.get("LOOPMOE_COMPILE", "").strip() not in {"1", "true", "yes"}:
+    # DENSE1B_COMPILE=1 after a saturated eager run.
+    if os.environ.get("DENSE1B_COMPILE", "").strip() not in {"1", "true", "yes"}:
         return model, False
     compile_fn = getattr(torch, "compile", None)
     if compile_fn is None:
@@ -242,7 +241,7 @@ def _maybe_compile(model):
         compiled = compile_fn(model, mode="default", fullgraph=False, dynamic=False)
         return compiled, True
     except Exception as exc:  # noqa: BLE001
-        print(f"[loopmoe] torch.compile skipped ({exc})", flush=True)
+        print(f"[dense1b] torch.compile skipped ({exc})", flush=True)
         return model, False
 
 
@@ -290,7 +289,7 @@ def _release_parent_cuda(model, stream=None):
                 freed.append(f"{i}:{free/1e9:.2f}/{total/1e9:.2f}GiB")
             except Exception:  # noqa: BLE001
                 continue
-        print(f"[loopmoe] parent CUDA released {freed}", flush=True)
+        print(f"[dense1b] parent CUDA released {freed}", flush=True)
 
 
 class _LocalStream:
@@ -408,7 +407,7 @@ def _train_loop(
     probe_texts=None,
     probe_seq_len=512,
 ):
-    """Single backward: CE + local MoE aux. No second backward, no DP gather."""
+    """Single backward: dense CE. No second backward, no DP gather."""
     core = _unwrap(train_model)
     if hasattr(core, "grad_checkpoint"):
         # TE NVFP4 Linear cannot recompute under torch.utils.checkpoint
@@ -440,15 +439,10 @@ def _train_loop(
                 logits = train_model(input_ids)
                 if hasattr(logits, "logits"):
                     logits = logits.logits
-                loss = loopmoe_kernels.cross_entropy(
+                loss = dense1b_kernels.cross_entropy(
                     logits.float().reshape(-1, logits.shape[-1]), labels.reshape(-1)
                 )
-                aux = getattr(core, "aux_loss", None)
-                if aux is not None and torch.is_tensor(aux) and aux.requires_grad:
-                    last_aux = float(aux.detach().float().item())
-                    loss = loss + AUX_LOSS_COEF * aux.float()
-                elif aux is not None and torch.is_tensor(aux):
-                    last_aux = float(aux.detach().float().item())
+                last_aux = 0.0
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
         grad_norm = float(torch.nn.utils.clip_grad_norm_(core.parameters(), GRAD_CLIP))
@@ -461,9 +455,9 @@ def _train_loop(
         if rank == 0 and step == 1 and torch.cuda.is_available():
             try:
                 free, total = torch.cuda.mem_get_info()
-                km = loopmoe_kernels.kernel_map()
+                km = dense1b_kernels.kernel_map()
                 print(
-                    f"[loopmoe] step1 mem_free={free/1e9:.2f}/{total/1e9:.2f}GiB "
+                    f"[dense1b] step1 mem_free={free/1e9:.2f}/{total/1e9:.2f}GiB "
                     f"ckpt={getattr(core, 'grad_checkpoint', None)} te_mode={te_mode} "
                     f"delta_kernel={km.get('delta_kernel')} attn_kernel={km.get('attn_kernel')} "
                     f"ce_kernel={km.get('ce_kernel')} zero={zero}",
@@ -475,9 +469,9 @@ def _train_loop(
             elapsed = max(1e-6, time.time() - t0)
             tps_local = tokens_this / elapsed
             tps_global = tps_local * world
-            km = loopmoe_kernels.kernel_map()
+            km = dense1b_kernels.kernel_map()
             print(
-                f"[loopmoe] step={step} loss={last_loss:.4f} aux={last_aux:.4f} "
+                f"[dense1b] step={step} loss={last_loss:.4f} "
                 f"tok/s_local={tps_local:.1f} tok/s_global={tps_global:.1f} "
                 f"world={world} te_mode={te_mode} rank={rank} "
                 f"delta_kernel={km.get('delta_kernel')} attn_kernel={km.get('attn_kernel')}",
@@ -520,7 +514,7 @@ def _train_loop(
         "train_loss": last_loss,
         "train_steps": step,
         "train_seconds": elapsed,
-        "moe_aux_loss": last_aux,
+        "aux_loss": last_aux,
         "tokens_local": tokens_this,
         "tokens_per_sec_local": tps_local,
         "tokens_per_sec": tps_local * world,
@@ -531,7 +525,7 @@ def _train_loop(
 
 def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
     """One process per GPU. Called from ddp_worker.py via mp.spawn."""
-    payload_path = payload_path or os.environ.get("LOOPMOE_PAYLOAD")
+    payload_path = payload_path or os.environ.get("DENSE1B_PAYLOAD")
     rank = int(os.environ["RANK"] if rank is None else rank)
     world = int(os.environ["WORLD_SIZE"] if world is None else world)
     port = int(os.environ["MASTER_PORT"] if port is None else port)
@@ -560,14 +554,14 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
         timeout=timedelta(minutes=15),
     )
     print(
-        f"[loopmoe] ddp init rank={rank}/{world} local_rank={local_rank} "
+        f"[dense1b] ddp init rank={rank}/{world} local_rank={local_rank} "
         f"backend={backend} master=127.0.0.1:{port} "
         f"device={torch.cuda.get_device_name(local_rank)} "
         f"sm={torch.cuda.get_device_capability(local_rank)} "
         f"nccl={getattr(torch.cuda.nccl, 'version', lambda: '?')()}",
         flush=True,
     )
-    print(f"[loopmoe] rank={rank} loading payload", flush=True)
+    print(f"[dense1b] rank={rank} loading payload", flush=True)
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
     ctx = dict(payload["ctx"])
     ctx["device"] = device
@@ -578,27 +572,27 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
         texts = [json.loads(line) for line in open(texts_path, encoding="utf-8") if line.strip()]
     if not texts:
         raise RuntimeError("DDP worker missing train texts")
-    print(f"[loopmoe] rank={rank} texts={len(texts)} building model", flush=True)
-    model = build_loopmoe(ctx)
+    print(f"[dense1b] rank={rank} texts={len(texts)} building model", flush=True)
+    model = build_dense1b(ctx)
     # TE Linear writes `_extra_state` during the parent FLOPs probe; a
     # freshly constructed worker module does not declare those keys yet.
     model.load_state_dict(payload["state_dict"], strict=False)
     model = model.to(device)
-    n_params = int(sum(p.numel() for p in model.parameters()))
-    print(f"[loopmoe] rank={rank} n_params={n_params} ({n_params/1e6:.1f}M)", flush=True)
+    n_params = unique_n_params(model)
+    print(f"[dense1b] rank={rank} n_params={n_params} ({n_params/1e6:.1f}M)", flush=True)
     micro = int(payload["micro_batch"])
     seq_len = int(payload["seq_len"])
     rec, te_mode = _maybe_te_recipe()
-    parallel = str(payload.get("parallel") or os.environ.get("LOOPMOE_PARALLEL", "zero1")).strip().lower()
+    parallel = str(payload.get("parallel") or os.environ.get("DENSE1B_PARALLEL", "zero1")).strip().lower()
     if parallel not in {"ddp", "zero1", "fsdp"}:
         parallel = "zero1"
     print(
-        f"[loopmoe] worker te_version={_te_version()} te_mode={te_mode} "
+        f"[dense1b] worker te_version={_te_version()} te_mode={te_mode} "
         f"use_te_linear={getattr(model, 'use_te', None)} parallel={parallel}",
         flush=True,
     )
-    loopmoe_kernels.enable_attn_backends()
-    loopmoe_kernels.log_kernel_banner()
+    dense1b_kernels.enable_attn_backends()
+    dense1b_kernels.log_kernel_banner()
     use_zero = parallel == "zero1"
     if parallel == "fsdp":
         train_wrap, parallel_used = _wrap_fsdp(model, local_rank)
@@ -649,7 +643,7 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
         probe_texts=texts[:8],
         probe_seq_len=seq_len,
     )
-    km = loopmoe_kernels.kernel_map()
+    km = dense1b_kernels.kernel_map()
     metrics.update(
         {
             "te_mode": te_mode,
@@ -682,7 +676,7 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
             telemetry_bag.get("probe_curve") or [],
         )
         print(
-            f"[loopmoe] train done n_params={n_params} steps={metrics['train_steps']} "
+            f"[dense1b] train done n_params={n_params} steps={metrics['train_steps']} "
             f"seconds={metrics['train_seconds']:.1f} loss={metrics['train_loss']:.4f} "
             f"tokens={metrics['tokens_seen']} tok/s={metrics['tokens_per_sec']:.1f} "
             f"te_mode={te_mode} parallel={parallel_used} world={world} "
@@ -706,10 +700,10 @@ def _wrap_fsdp(model, local_rank):
             except Exception:  # noqa: BLE001
                 continue
         fully_shard(model, mp_policy=mp)
-        print(f"[loopmoe] FSDP2 fully_shard rank={local_rank}", flush=True)
+        print(f"[dense1b] FSDP2 fully_shard rank={local_rank}", flush=True)
         return model, "fsdp2"
     except Exception as exc:  # noqa: BLE001
-        print(f"[loopmoe] FSDP2 unavailable ({exc}); trying FSDP1", flush=True)
+        print(f"[dense1b] FSDP2 unavailable ({exc}); trying FSDP1", flush=True)
     try:
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         from torch.distributed.fsdp import MixedPrecision
@@ -725,10 +719,10 @@ def _wrap_fsdp(model, local_rank):
             use_orig_params=True,
             device_id=local_rank,
         )
-        print(f"[loopmoe] FSDP1 wrap rank={local_rank}", flush=True)
+        print(f"[dense1b] FSDP1 wrap rank={local_rank}", flush=True)
         return wrapped, "fsdp1"
     except Exception as exc:  # noqa: BLE001
-        print(f"[loopmoe] FSDP failed ({exc}); falling back to DDP", flush=True)
+        print(f"[dense1b] FSDP failed ({exc}); falling back to DDP", flush=True)
         ddp = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[local_rank],
@@ -742,11 +736,11 @@ def _wrap_fsdp(model, local_rank):
 
 def _launch_ddp(model, ctx, gpu_count):
     workdir = Path(ctx.get("workdir") or os.environ.get("PRISM_WORKDIR") or "/tmp")
-    out_dir = workdir / "loopmoe_ddp"
+    out_dir = workdir / "dense_1b_ddp"
     out_dir.mkdir(parents=True, exist_ok=True)
     stream = ctx.get("train_stream")
     if stream is None:
-        raise RuntimeError("train_stream required for DDP LoopMoE")
+        raise RuntimeError("train_stream required for DDP dense 1B")
     texts = list(getattr(stream, "_texts", []) or [])
     tok = ctx.get("tokenizer") or getattr(stream, "_tok", None)
     if not texts or tok is None:
@@ -756,8 +750,8 @@ def _launch_ddp(model, ctx, gpu_count):
     _release_parent_cuda(model, stream)
     seq_len = int(ctx.get("seq_len") or getattr(stream, "seq_len", 512) or 512)
     harness_bs = int(ctx.get("batch_size") or getattr(stream, "batch_size", 8) or 8)
-    env_micro = os.environ.get("LOOPMOE_MICRO_BATCH", "").strip()
-    # Do not inherit harness batch_size (that was DP-sharded). LoopMoE
+    env_micro = os.environ.get("DENSE1B_MICRO_BATCH", "").strip()
+    # Do not inherit harness batch_size (that was DP-sharded). Dense 1B
     # activations at seq=512 need a small per-GPU microbatch.
     micro = int(env_micro) if env_micro.isdigit() else DEFAULT_MICRO_BATCH
     _ = harness_bs  # kept for payload logs / MFU context
@@ -787,18 +781,18 @@ def _launch_ddp(model, ctx, gpu_count):
         "cap_s": cap_s,
         "wall_margin_s": WALL_MARGIN_S,
         "out_dir": str(out_dir),
-        "parallel": os.environ.get("LOOPMOE_PARALLEL", "zero1").strip().lower(),
+        "parallel": os.environ.get("DENSE1B_PARALLEL", "zero1").strip().lower(),
     }
     payload_path = out_dir / PAYLOAD_NAME
     torch.save(payload, payload_path)
     port = _rendezvous_port()
     _set_dist_env(port)
     print(
-        f"[loopmoe] launching dist spawn world={gpu_count} master=127.0.0.1:{port} "
+        f"[dense1b] launching dist spawn world={gpu_count} master=127.0.0.1:{port} "
         f"micro_batch={micro} seq={seq_len} parallel={payload['parallel']}",
         flush=True,
     )
-    from nemo_automodel.components.models.loopmoe.ddp_worker import spawn_workers
+    from nemo_automodel.components.models.dense1b.ddp_worker import spawn_workers
 
     spawn_workers(gpu_count, port, str(payload_path))
     metrics_path = out_dir / METRICS_NAME
@@ -842,23 +836,23 @@ def train(model, ctx):
             te_available = False
 
     rec, te_mode = _maybe_te_recipe() if te_available else (None, "none")
-    n_params = int(sum(p.numel() for p in model.parameters()))
+    n_params = unique_n_params(model)
     print(
-        f"[loopmoe] train start n_params={n_params} "
+        f"[dense1b] train start n_params={n_params} "
         f"({n_params/1e6:.1f}M; floor 850e6 cap 1e9) "
         f"gpu_count={gpu_count} te_available={te_available} "
         f"te_mode={te_mode} te_version={_te_version()} "
         f"cuda_devices={torch.cuda.device_count() if torch.cuda.is_available() else 0} "
         f"use_te_linear={getattr(model, 'use_te', None)} "
-        f"parallel={os.environ.get('LOOPMOE_PARALLEL', 'zero1')}",
+        f"parallel={os.environ.get('DENSE1B_PARALLEL', 'zero1')}",
         flush=True,
     )
 
     # Marketplace often only lists 8×5090 hosts (no GPU splitting). Cap at 4
     # so the proof matches the 4-GPU contract and leaves headroom on GPU 0.
-    max_gpus = int(os.environ.get("LOOPMOE_MAX_GPUS", "4") or 4)
+    max_gpus = int(os.environ.get("DENSE1B_MAX_GPUS", "4") or 4)
     if gpu_count > max_gpus:
-        print(f"[loopmoe] capping visible GPUs {gpu_count} -> {max_gpus}", flush=True)
+        print(f"[dense1b] capping visible GPUs {gpu_count} -> {max_gpus}", flush=True)
         gpu_count = max_gpus
     if gpu_count > 1 and torch.cuda.is_available():
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(gpu_count))
@@ -880,7 +874,7 @@ def train(model, ctx):
         metrics["flops_per_token_source"] = fpt_source
         metrics["n_params"] = int(n_params)
         print(
-            f"[loopmoe] ddp parent metrics n_params={int(n_params)} "
+            f"[dense1b] ddp parent metrics n_params={int(n_params)} "
             f"world={metrics.get('world_size')} "
             f"te_mode={metrics.get('te_mode')} tok/s={metrics.get('tokens_per_sec')} "
             f"mfu_est={mfu*100:.2f}% fpt_src={fpt_source} "
@@ -892,7 +886,7 @@ def train(model, ctx):
 
     stream = ctx.get("train_stream")
     if stream is None:
-        raise RuntimeError("train_stream required for live AutoModel LoopMoE")
+        raise RuntimeError("train_stream required for live AutoModel dense 1B")
     compiled, did_compile = _maybe_compile(model)
     max_steps = int(ctx.get("max_train_steps", 20000))
     cap_s = float(ctx.get("train_hours_cap", 1.0)) * 3600.0
@@ -924,7 +918,7 @@ def train(model, ctx):
         }
     )
     print(
-        f"[loopmoe] train done n_params={n_params} steps={metrics['train_steps']} "
+        f"[dense1b] train done n_params={n_params} steps={metrics['train_steps']} "
         f"seconds={metrics['train_seconds']:.1f} te_mode={te_mode} parallel=single",
         flush=True,
     )

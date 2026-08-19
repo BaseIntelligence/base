@@ -693,6 +693,12 @@ reference row MUST be re-measured under the dual cap before any
 The parameter-range breach semantics: terminal `Score(0)` (`CAP_EXCEEDED`),
 not an infra retry.
 
+The miner **reference pack** is a dense ~975M transformer (GQA + SwiGLU,
+ZeRO-1) at
+[`docs/external-miner/examples/dense-1b/`](../external-miner/examples/dense-1b/).
+Fine-grained MoE / LoopMoE at 1B is allowed as a miner experiment but is
+not the default: expert GEMMs waste MFU on 4×5090.
+
 ## Recipe pin (1.x descriptor)
 
 `recipe_pin_hex()` = SHA-256 over the versioned descriptor (URL, dataset pin,

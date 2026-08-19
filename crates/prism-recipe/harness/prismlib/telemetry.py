@@ -97,6 +97,7 @@ def build_telemetry_module(log=print):
 # after train() returns so G6/G8 stay complete.
 DDP_SIDECAR_RELPATHS = (
     "prism_ddp/telemetry.json",
+    "dense_1b_ddp/telemetry.json",
     "loopmoe_ddp/telemetry.json",
 )
 
@@ -105,7 +106,7 @@ def sidecar_path(workdir, rel="prism_ddp/telemetry.json"):
     return os.path.join(str(workdir), rel)
 
 
-def write_ddp_sidecar(workdir, reports, probe_curve=None, rel="loopmoe_ddp/telemetry.json"):
+def write_ddp_sidecar(workdir, reports, probe_curve=None, rel="dense_1b_ddp/telemetry.json"):
     """Miner/worker helper: persist rank-0 telemetry for the parent ingest."""
     os.makedirs(os.path.dirname(sidecar_path(workdir, rel)), exist_ok=True)
     payload = {
