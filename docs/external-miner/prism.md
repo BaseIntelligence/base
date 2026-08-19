@@ -55,8 +55,10 @@ install, then train/eval run offline. `requirements.txt` wins if you ship
 both. Check `GET /v1/recipe` for `pod_image_ref`, `miner_install_supported`,
 `miner_deps_members`, and `install_timeout_secs`.
 
-**Four-GPU train contract.** Recipe-v10 pods expose four RTX 5090 GPUs by
-default through `ctx["gpu_count"]`; the organizer eval stays on GPU 0.
+**GPU train contract.** Recipe-v10 1B pods default to **two RTX PRO 6000
+Blackwell** GPUs (`ctx["gpu_count"]==2`, ~96 GB, TE on). Set
+`PRISM_POD_GPU_COUNT=4` for the **four RTX 5090** fallback. The organizer
+eval stays on GPU 0.
 Training must consume global batches from the harness-owned
 `ctx["train_stream"]`, because that stream enforces step/wall/FLOPs caps and
 owns token/byte accounting for G6. For DDP/ZeRO/FSDP, keep rank 0 as the

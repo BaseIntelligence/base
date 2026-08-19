@@ -1,10 +1,10 @@
 """Prism-shaped AutoModel entry for dense 1B (recipe 2.1, ~975M).
 
 Exposes build_model / train for the operator harness seams. Uses FineWeb
-stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
-(optimizer state matters at 1B). NVFP4 TE when present. Dense FFN only.
+stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 2×
+RTX PRO 6000 (96 GB) or 4×5090 fallback. NVFP4 TE on 96 GB-class.
 
-submission_nonce: dense-1b-zero1-20260819T1840Z
+submission_nonce: dense-1b-zero1-20260819T2215Z
 """
 
 from __future__ import annotations
@@ -19,7 +19,11 @@ from pathlib import Path
 import torch
 
 from nemo_automodel.components.models.dense1b import kernels as dense1b_kernels
-from nemo_automodel.components.models.dense1b.model import build_dense1b, unique_n_params
+from nemo_automodel.components.models.dense1b.model import (
+    build_dense1b,
+    is_96gb_class,
+    unique_n_params,
+)
 
 try:
     import prism_telemetry
@@ -46,9 +50,9 @@ MIN_LR_FRAC = 0.10
 GRAD_CLIP = 1.0
 REPORT_EVERY = 10
 WALL_MARGIN_S = 90.0
-# Per-GPU microbatch. 4× 975M BF16 replicas on 32 GB: mb=8 + TE + no
-# ckpt OOMs. mb=1 + activation ckpt + TE off is what actually steps.
+# Per-GPU microbatch. 32 GB 5090: mb=1 + ckpt. 96 GB 6000: mb>=4 + TE.
 DEFAULT_MICRO_BATCH = 1
+WIDE_MICRO_BATCH = 4
 PEAK_FLOPS_PER_GPU = 209.5e12
 PAYLOAD_NAME = "dense_1b_ddp_payload.pt"
 METRICS_NAME = "dense_1b_ddp_metrics.json"
@@ -581,11 +585,11 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
     ctx = dict(payload["ctx"])
     ctx["device"] = device
-    ctx["te_available"] = os.environ.get("DENSE1B_TE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    te_raw = os.environ.get("DENSE1B_TE", "").strip().lower()
+    if te_raw in {"0", "false", "no", "off"}:
+        ctx["te_available"] = False
+    elif te_raw in {"1", "true", "yes", "on"}:
+        ctx["te_available"] = True
     texts = list(payload.get("texts") or [])
     texts_path = payload.get("texts_path")
     if not texts and texts_path:
@@ -784,9 +788,13 @@ def _launch_ddp(model, ctx, gpu_count):
     seq_len = int(ctx.get("seq_len") or getattr(stream, "seq_len", 512) or 512)
     harness_bs = int(ctx.get("batch_size") or getattr(stream, "batch_size", 8) or 8)
     env_micro = os.environ.get("DENSE1B_MICRO_BATCH", "").strip()
-    # Do not inherit harness batch_size (that was DP-sharded). Dense 1B
-    # activations at seq=512 need a small per-GPU microbatch.
-    micro = int(env_micro) if env_micro.isdigit() else DEFAULT_MICRO_BATCH
+    # Do not inherit harness batch_size (that was DP-sharded).
+    if env_micro.isdigit():
+        micro = max(1, int(env_micro))
+    elif is_96gb_class(ctx, gpu_count):
+        micro = WIDE_MICRO_BATCH
+    else:
+        micro = DEFAULT_MICRO_BATCH
     _ = harness_bs  # kept for payload logs / MFU context
     cap_s = float(ctx.get("train_hours_cap", 1.0)) * 3600.0
     texts_path = out_dir / "train_texts.jsonl"
@@ -804,7 +812,9 @@ def _launch_ddp(model, ctx, gpu_count):
             "seed": int(ctx.get("seed", 0)),
             "vocab_size": int(ctx.get("vocab_size") or 50257),
             "te_available": os.environ.get("DENSE1B_TE", "").strip().lower()
-            in {"1", "true", "yes"},
+            not in {"0", "false", "no", "off"},
+            "gpu_type": ctx.get("gpu_type") or os.environ.get("PRISM_GPU_TYPE"),
+            "gpu_count": gpu_count,
             "arch": ctx.get("arch"),
             "prism_width_multiplier": ctx.get("prism_width_multiplier", 1.0),
         },
@@ -869,7 +879,14 @@ def train(model, ctx):
         except Exception:  # noqa: BLE001
             te_available = False
 
-    te_want = os.environ.get("DENSE1B_TE", "").strip().lower() in {"1", "true", "yes"}
+    wide = is_96gb_class(ctx, gpu_count)
+    te_raw = os.environ.get("DENSE1B_TE", "").strip().lower()
+    if te_raw in {"0", "false", "no", "off"}:
+        te_want = False
+    elif te_raw in {"1", "true", "yes", "on"}:
+        te_want = True
+    else:
+        te_want = wide
     rec, te_mode = _maybe_te_recipe() if (te_available and te_want) else (None, "none")
     n_params = unique_n_params(model)
     print(
@@ -879,14 +896,14 @@ def train(model, ctx):
         f"te_mode={te_mode} te_version={_te_version()} "
         f"cuda_devices={torch.cuda.device_count() if torch.cuda.is_available() else 0} "
         f"use_te_linear={getattr(model, 'use_te', None)} "
-        f"te_want={te_want} micro_batch={DEFAULT_MICRO_BATCH} "
+        f"te_want={te_want} wide96={wide} "
         f"parallel={os.environ.get('DENSE1B_PARALLEL', 'zero1')}",
         flush=True,
     )
 
-    # Marketplace often only lists 8×5090 hosts (no GPU splitting). Cap at 4
-    # so the proof matches the 4-GPU contract and leaves headroom on GPU 0.
-    max_gpus = int(os.environ.get("DENSE1B_MAX_GPUS", "4") or 4)
+    # Never train on an 8×5090 fallback. Cap at profile width (2 or 4).
+    default_max = "2" if wide else "4"
+    max_gpus = int(os.environ.get("DENSE1B_MAX_GPUS", default_max) or default_max)
     if gpu_count > max_gpus:
         print(f"[dense1b] capping visible GPUs {gpu_count} -> {max_gpus}", flush=True)
         gpu_count = max_gpus

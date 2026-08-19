@@ -37,7 +37,7 @@
 | `400 missing_lium_api_key` | Live path needs miner-funded Lium | Pass `X-Lium-Api-Key` (your Lium account); see [`prism.md`](prism.md) |
 | `409 not_failed` on `/retry` | Row is not `failed` (queued/running/scored) | `/retry` is only for failed rows. Identical ZIP re-POST → `already-queued` (no-op). After infra failure use `/retry` + `X-Lium-Api-Key` |
 | `400 missing_lium_api_key` on `/retry` | Failed infra row needs another GPU rent | Send `X-Lium-Api-Key` (hotkey / Bearer alone is not enough) |
-| Stuck `Provisioning` | Lium market / underfunded key / no 1×5090 | Check Lium balance; Prism hard-pins **1× RTX 5090** (non-5090 rejected) |
+| Stuck `Provisioning` | Lium market / underfunded key / no pin SKU | Check Lium balance; default pin is **2× RTX PRO 6000 Blackwell** (`PRISM_POD_GPU_COUNT=4` → 4×5090). Non-pin / 8×5090 rejected |
 | Idempotent replay | Same `submission_id` (pin id + patch bytes) | Expected — returns prior row |
 
 ## Shared

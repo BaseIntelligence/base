@@ -1,4 +1,4 @@
-# BF16 + activation checkpoint. Do not install AutoModel pyproject
-# (debian blinker has no RECORD). TE wheels are opt-in via DENSE1B_TE=1.
+# 32 GB: BF16 + ckpt. 96 GB-class: TE NVFP4 default (DENSE1B_TE=0 to off).
+# Do not install AutoModel pyproject (debian blinker has no RECORD).
 # Do not put pip option lines here.
-# submission_nonce: dense-1b-zero1-20260819T1840Z
+# submission_nonce: dense-1b-zero1-20260819T2215Z

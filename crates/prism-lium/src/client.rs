@@ -396,7 +396,7 @@ impl LiumClient {
         })
     }
 
-    /// Fail-closed: nvidia-smi must report the Prism SKU pin (1× RTX 5090).
+    /// Fail-closed: nvidia-smi must report the selected Prism SKU pin.
     async fn require_pin_gpu(
         &self,
         instance_id: &str,
@@ -404,13 +404,13 @@ impl LiumClient {
         key: &Path,
     ) -> Result<String, LiumError> {
         let gpu_type = self.gpu_smoke(target, key).await?;
-        if GpuPreference::default_prism().matches_pin(&gpu_type) {
+        if crate::pod_gpu_preference_from_env().matches_pin(&gpu_type) {
             return Ok(gpu_type);
         }
         warn!(instance_id, gpu = %gpu_type, "non-pin GPU — terminate for requeue");
         let _ = self.terminate(instance_id).await;
         Err(LiumError::Exec(format!(
-            "non-pin GPU ({gpu_type}); Prism requires 1× RTX 5090 — resubmit/retry"
+            "non-pin GPU ({gpu_type}); Prism SKU pin mismatch — resubmit/retry"
         )))
     }
 
@@ -822,8 +822,8 @@ impl EvalJobBackend for LiumClient {
         }
 
         let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
-        let pref = GpuPreference::default_prism();
-        pref.filter_sort_offers(&mut offers, spec.gpu_count); // RTX 5090 SKU + requested width
+        let pref = GpuPreference::for_request(spec.gpu_count);
+        pref.filter_sort_offers(&mut offers, spec.gpu_count);
         let candidates: Vec<Offer> = match &spec.preferred_offer_id {
             Some(pref_id) => {
                 let matched: Vec<Offer> = offers
@@ -854,18 +854,15 @@ impl EvalJobBackend for LiumClient {
             }
             let effective =
                 prism_lium_types::effective_gpu_count(selected.gpu_count, &selected.gpu_type);
-            // An explicit 1-GPU cutover still rents exactly 1. Multi-GPU hosts reject
-            // splitting (`Provider doesn't allow GPU splitting`), so a 4-GPU
-            // request on an 8×5090 machine must rent the whole host; the
-            // harness then DDP-trains on `torch.cuda.device_count()`.
+            // 1-GPU rents 1; else whole host (no split). Never 8×5090 fallback.
             let rent_gpu_count = if spec.gpu_count <= 1 {
-                spec.gpu_count.max(1)
+                1
             } else {
                 effective.max(spec.gpu_count)
             };
-            if spec.gpu_count == 4 && rent_gpu_count > 4 {
+            if pref.matches_pin("RTX 5090") && rent_gpu_count >= 8 && spec.gpu_count < 8 {
                 return Err(LiumError::Api(format!(
-                    "abort: refusing {rent_gpu_count}× rent when PRISM_POD_GPU_COUNT=4 (no 8×5090 fallback)"
+                    "abort: refusing {rent_gpu_count}× 5090 rent (no 8×5090 fallback)"
                 )));
             }
             info!(
@@ -1296,6 +1293,51 @@ mod tests {
             matches!(err, LiumError::Cost(CostGuardrailError::NoCapacity))
                 || err.to_string().contains("NoCapacity")
                 || err.to_string().to_ascii_lowercase().contains("capacity"),
+            "got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_prefers_2x_6000_over_5090() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "four-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 4, "price_per_hour": 1.0},
+                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48},
+                {"id": "two-6000", "gpu_type": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpu_count": 2, "price_per_hour": 2.4}
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "two-6000", "pod-6000").await;
+        mount_rent_path(&server, "four-5090", "pod-5090").await;
+        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let mut spec = provision_spec();
+        spec.gpu_count = 2;
+        let inst = c.provision(&spec).await.unwrap();
+        assert_eq!(inst.id, "pod-6000");
+    }
+
+    #[tokio::test]
+    async fn provision_refuses_8x_5090_when_requesting_four() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48}
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let mut spec = provision_spec();
+        spec.gpu_count = 4;
+        let err = c.provision(&spec).await.unwrap_err();
+        assert!(
+            err.to_string().contains("8×5090")
+                || err.to_string().contains("8x5090")
+                || err.to_string().contains("no 8"),
             "got {err}"
         );
     }

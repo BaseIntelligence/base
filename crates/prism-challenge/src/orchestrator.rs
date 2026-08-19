@@ -50,7 +50,7 @@ pub struct OrchestratorConfig {
     pub auto_retry_max: u32,
     pub scoring_mode: ScoringMode,
     pub orphan_grace_secs: u64,
-    /// GPUs rented per eval pod (`PRISM_POD_GPU_COUNT`, default 4).
+    /// GPUs rented per eval pod (`PRISM_POD_GPU_COUNT`, default 2×6000).
     ///
     /// Miners may train across all of them; the eval battery stays pinned to
     /// GPU 0 so G7 timings stay comparable across submissions.

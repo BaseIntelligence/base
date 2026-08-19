@@ -110,16 +110,22 @@ On consumer Blackwell (SM120 / RTX 5090) construct the recipe as
 when those kwargs exist. BF16 remains the fallback if the class is absent.
 
 **GPU width and isolated rendezvous.** Eval pod requests default to
-`PRISM_POD_GPU_COUNT=4` on the RTX 5090 SKU. Miner training may use DDP over
-those GPUs; evaluation stays on GPU 0. `unshare --net` creates loopback down,
-so the harness wrapper runs `ip link set lo up` before the child—DDP can use
-`127.0.0.1` while the namespace still has no external route. The pod image
-therefore pins `iproute2` as well as the CUDA/TE toolchain.
+`PRISM_POD_GPU_COUNT=2` on **RTX PRO 6000 Blackwell Server Edition**
+(`PRISM_POD_GPU_NAME` needles `RTX PRO 6000` / `Blackwell Server`). The
+second profile is `PRISM_POD_GPU_COUNT=4` on RTX 5090. Never mix SKUs in
+one job; never fall through to 8×5090. Prefer an unsplittable full 6000
+host when an exact 2-GPU offer is missing. Miner training may use DDP over
+the rented width; evaluation stays on GPU 0. `unshare --net` creates
+loopback down, so the harness wrapper runs `ip link set lo up` before the
+child—DDP can use `127.0.0.1` while the namespace still has no external
+route. The pod image therefore pins `iproute2` as well as the CUDA/TE
+toolchain.
 
-An operator may stage a 1-GPU live cutover by setting only
+An operator may stage a 1-GPU 5090 cutover by setting
 `PRISM_POD_GPU_COUNT=1`, draining active pods, restarting the challenge, and
 verifying an exact single-5090 offer. This is independent of the image pin and
-must not be bundled with a scoring/anchor/emission flip.
+must not be bundled with a scoring/anchor/emission flip or a live `:28092`
+change.
 
 **Miner-fixable retry classes.** A failed custom-deps install (`install_deps`)
 or a `training.py` build/train crash (`train_script`) fails **without
@@ -684,9 +690,9 @@ shows billions. Changing that field would alter the recipe pin (harness bytes
 are hashed) — coordinate a version bump if/when fixing it.
 
 The **parameter range is 850M–1B** total unique params (recipe 2.1). The
-1B cap was raised from 350M alongside the 4×RTX 5090 recipe-v10 pod; the
+1B cap was raised from 350M alongside multi-GPU recipe-v10 pods; the
 850M **floor** is new on **anchor v3** + the recipe descriptor so a 215M
-pack cannot score (ZeRO/FSDP only pays at this scale on 4×32GB). v0/v1/v2
+pack cannot score (ZeRO-1 on 2×96GB 6000 or 4×32GB 5090). v0/v1/v2
 anchor bytes stay frozen without `min_params`. Under the iso-FLOPs
 currency the *cap* is still a VRAM/checkpoint parameter; the *floor* is
 an eligibility rule. Placeholder anchors and the public GPT-2 Large
@@ -699,7 +705,7 @@ The miner **reference pack** is a dense ~975M transformer (GQA + SwiGLU,
 ZeRO-1) at
 [`docs/external-miner/examples/dense-1b/`](../external-miner/examples/dense-1b/).
 Fine-grained MoE / LoopMoE at 1B is allowed as a miner experiment but is
-not the default: expert GEMMs waste MFU on 4×5090.
+not the default: expert GEMMs waste MFU on 4×5090 and on 2×6000.
 
 ## Recipe pin (1.x descriptor)
 

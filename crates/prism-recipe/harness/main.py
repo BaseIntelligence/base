@@ -682,13 +682,14 @@ def main():
         "val_rows": VAL_ROWS,
         "train_rows": TRAIN_ROWS,
         "device": device,
-        # Multi-GPU contract: the pod rents 4×RTX 5090 by default
-        # (PRISM_POD_GPU_COUNT). Miners may use every visible GPU for
+        # Multi-GPU contract: default 2× RTX PRO 6000 (PRISM_POD_GPU_COUNT=2)
+        # or 4×5090 fallback. Miners may use every visible GPU for
         # build/train (e.g. torch.distributed / FSDP over env:// on
         # 127.0.0.1 — the harness brings `lo` up inside the train netns).
         # The eval battery stays pinned to GPU 0 so G7 timings stay
         # comparable across submissions.
         "gpu_count": torch.cuda.device_count() if device == "cuda" else 0,
+        "gpu_type": os.environ.get("PRISM_GPU_TYPE", ""),
         # Transformer Engine ships in the CUDA13 pod image; miners opt into
         # TE fp8/fp4 (NVFP4) autocast themselves. The harness never forces a
         # dtype on miner build/train code.

@@ -29,7 +29,9 @@ PRISM_ANCHOR_VERSION=0
 PRISM_EMISSION_MODE=wta
 PRISM_OWNER_ARCH_CREDIT_BPS=0
 PRISM_EVAL_REQUIRE_PRIVATE=0
-PRISM_POD_GPU_COUNT=4
+PRISM_POD_GPU_COUNT=2
+# PRISM_POD_GPU_NAME=RTX PRO 6000,Blackwell Server
+# fallback profile: PRISM_POD_GPU_COUNT=4 and/or PRISM_POD_GPU_NAME=RTX 5090
 ```
 
 Unknown emission modes fall back to WTA; unknown anchor versions fall back
@@ -47,7 +49,7 @@ PRISM_MIN_SPEND_FRACTION=0.5
 PRISM_EVAL_G2_TASKS=lambada,hellaswag,piqa,arc_easy
 PRISM_EVAL_BATTERY_BUDGET_S=3600
 PRISM_G6_BPB_THRESHOLD=1.5
-PRISM_POD_GPU_COUNT=4
+PRISM_POD_GPU_COUNT=2
 ```
 
 The 0.5 floor applies only when `binding_cap=none`; `steps`, `wall`, and
@@ -96,12 +98,12 @@ and keeps sshd in the foreground. Before promotion, run the billable test with
 `PRISM_LIVE_RUNNING_TIMEOUT_SECS=1800`; bound retries during diagnosis with
 `PRISM_LIVE_MAX_ATTEMPTS=1` (accepted range 1–8). One 4-GPU rent must prove:
 
-1. `torch.cuda.device_count() == 4`;
+1. `torch.cuda.device_count()` matches the profile (`2` for 6000, `4` for 5090);
 2. `transformer_engine.pytorch` and
    `transformer_engine.common.recipe.NVFP4BlockScaling` import;
 3. the dependency install phase can build/install a harmless manifest;
 4. a stream-owned 4-GPU train produces nonzero attested FLOPs and G6 probe
-   points;
+   points (2×6000 or 4×5090);
 5. the fresh train netns has `lo` up and no external route;
 6. all anchored v3 G1–G8 keys are present; and
 7. the pod terminates and disappears from Lium inventory.
@@ -112,8 +114,8 @@ Drain active `provisioning`/`running` rows, change only
 `PRISM_POD_GPU_COUNT=1`, restart `prism-challenge`, and submit one operator
 smoke. Confirm the selected offer is exactly one RTX 5090 and G7 records one
 attested GPU. Do not edit Compose topology or the `:28092` scoring/emission
-knobs. Restore `PRISM_POD_GPU_COUNT=4` and restart to roll back; already
-rented pods retain their original width.
+knobs. Restore `PRISM_POD_GPU_COUNT=2` (6000 default) and restart to roll
+back; already rented pods retain their original width.
 
 ## Failed measure with EVAL_OK but no metrics (ops)
 

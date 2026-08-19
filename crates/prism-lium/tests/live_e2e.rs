@@ -107,10 +107,10 @@ async fn live_rent_ssh_eval_terminate() {
 
     // Fail closed to the ranked SKU and requested width before any billable call.
     let mut sorted = offers;
-    GpuPreference::default_prism().filter_sort_offers(&mut sorted, gpu_count);
+    GpuPreference::for_request(gpu_count).filter_sort_offers(&mut sorted, gpu_count);
     assert!(
         !sorted.is_empty(),
-        "no {gpu_count}-GPU RTX 5090 offer under ${max_price}/gpu/hr"
+        "no {gpu_count}-GPU pin offer under ${max_price}/gpu/hr"
     );
     let top: Vec<_> = sorted
         .iter()

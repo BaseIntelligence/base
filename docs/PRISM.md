@@ -625,7 +625,8 @@ into the pod where applicable):
 | `PRISM_G6_BPB_THRESHOLD` | G6 bytes-to-bpb target (default `1.5`) |
 | `PRISM_EVAL_G2_TASKS` | v3 only: `lambada,hellaswag,piqa,arc_easy`; do not use with v0–v2 |
 | `PRISM_EVAL_BATTERY_BUDGET_S` | global battery cap (default `3600`) |
-| `PRISM_POD_GPU_COUNT` | default `4`; explicit `1` is the reversible live-width cutover |
+| `PRISM_POD_GPU_COUNT` | default `2` (1B: 2× RTX PRO 6000 Blackwell). `4` selects the 4×5090 fallback. `1` is the reversible 5090 cutover |
+| `PRISM_POD_GPU_NAME` | optional comma-separated offer needles (default from count: `RTX PRO 6000`/`Blackwell Server` vs `RTX 5090`) |
 | `PRISM_POD_IMAGE_REF` | optional staged pod image, required form `repository@sha256:<64 lowercase hex>` |
 | `PRISM_POD_IMAGE_TAG` | Lium pull locator (default `v10-cuda13-te`); never accepted without the separate digest pin |
 | `PRISM_POD_DOCKER_CREDENTIAL_ID` | non-secret Lium reference required only when creating the private DigitalOcean registry template |
@@ -924,19 +925,34 @@ remain stored in Lium. Lium's startup bootstrap substitutes
 `authorized_keys` and touches `/root/container_ready`. The image uses
 overridable Docker `CMD` so the provider bootstrap can run.
 
-**4-GPU + netns contract.** `PRISM_POD_GPU_COUNT` defaults to `4`; selection
-accepts an exact 4× RTX 5090 host or rents an unsplittable larger 5090 host
-while the miner caps DDP to the requested width. The eval battery remains on
+**GPU profiles + netns contract.** Two Lium profiles, never mixed in one job:
+
+1. **Default / 1B dense:** `PRISM_POD_GPU_COUNT=2` + name match **RTX PRO 6000
+   Blackwell** (Server Edition). Prefer an exact 2-GPU offer; if Lium will
+   not split, rent the whole 6000 host. ~96 GB/card → dense-1b uses mb≥4,
+   `DENSE1B_TE=1` default, checkpoint off.
+2. **Fallback / smaller runs:** `PRISM_POD_GPU_COUNT=4` + **RTX 5090**.
+   Exact 4× only — **do not** fall through to 8×5090.
+
+Lium inventory snapshot (2026-08-19, do not invent a 2× host): **no**
+exact 2× RTX PRO 6000 Blackwell **Server Edition**. Listed Server Edition:
+1× @ $1.29/gpu-hr; 8× @ $1.01–$1.85/gpu-hr (full host ≈ $8–$15/hr).
+Workstation Edition (also 96 GB, different SKU): 1× @ $1.46; 4× @ $1.35.
+Ada “RTX 6000” is **not** this pin. If 2× Server Edition is missing or the
+8× host exceeds operator balance, **do not** rent 4×5090 as if it were 6000.
+
+`PRISM_POD_GPU_NAME` overrides the pin needles. The eval battery remains on
 GPU 0 for comparable G7 timings. Train/eval children run in a fresh network
 namespace; the wrapper brings `lo` up before `exec` so local
 `torch.distributed` rendezvous works without creating an external route.
 `test_multigpu_netns.py` asserts both shell quoting and actual loopback state.
 
-For a reversible live 1-GPU cutover, set only
-`PRISM_POD_GPU_COUNT=1`, restart the challenge after active pods drain, and
-verify the selected offer reports exactly one RTX 5090. Do not edit production
-Compose topology, scoring mode, anchor version, or emission mode in the same
-change. Roll back by restoring `4`; existing pods keep their rented width.
+For a reversible live 1-GPU 5090 cutover, set
+`PRISM_POD_GPU_COUNT=1` (and optionally `PRISM_POD_GPU_NAME=RTX 5090`),
+restart the challenge after active pods drain, and verify the selected
+offer. Do not edit production Compose topology, scoring mode, anchor
+version, or emission mode in the same change. Do not flip live `:28092`.
+Existing pods keep their rented width.
 
 ## Agentic anti-cheat + AST + metrics gate
 
@@ -1103,7 +1119,7 @@ the harness semantics listed above, and the baseline sources they may reuse.
 
 | Dimension | Real | Fallback |
 |-----------|------|----------|
-| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`). **Hard pin: 1× RTX 5090** (non-5090 / multi-GPU rejected at rent; no silent fallback) | `SimLiumBackend` |
+| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`). **Hard pin: 2× RTX PRO 6000 Blackwell** (default) or **4× RTX 5090** (`PRISM_POD_GPU_COUNT=4`). No silent 8×5090 fallback; non-pin SKUs rejected at rent | `SimLiumBackend` |
 | Reviewer | `/run/base/openrouter/api_key` exists → OpenRouter LLM | `SimReviewer` (deterministic) |
 | Agentic | same OpenRouter key → `OpenRouterAgent` | `SimAgent` (AST + metrics heuristics) |
 | Store | `BASE_DATABASE_URL` set → Postgres w/ migrations | in-memory (dev only) |

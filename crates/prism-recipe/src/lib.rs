@@ -312,7 +312,7 @@ pub const RECIPE_VERSION: &str = "2.1.0";
 
 /// Maximum model parameters allowed after `build_model` (1B).
 ///
-/// Raised 350M → 1B alongside the 4×RTX 5090 pod rental (recipe-v10): the
+/// Raised 350M → 1B alongside multi-GPU recipe-v10 pods (2×6000 / 4×5090): the
 /// wall-clock budget is unchanged (6h), so the cap buys architectural
 /// headroom rather than a longer run. Placeholder anchors and the public
 /// GPT-2 Large reference row MUST be re-measured at this cap before any
@@ -323,7 +323,7 @@ pub const MAX_PARAMS: u64 = 1_000_000_000;
 ///
 /// Recipe 2.1 rejects packs that stay at the old ~215M `LoopMoE` width:
 /// the miner reference is a dense ~975M transformer (`examples/dense-1b`).
-/// `ZeRO`/`FSDP` only pays at this scale on 4×32GB 5090. Count is **total**
+/// `ZeRO`/`FSDP` only pays at this scale on 2×96GB 6000 or 4×32GB 5090. Count is **total**
 /// unique parameters (tied embeddings once) — same convention as
 /// [`MAX_PARAMS`]. Staging (`PRISM_TEST_MAX_PARAMS`) forces the floor to
 /// 0 unless `PRISM_TEST_MIN_PARAMS` is set.

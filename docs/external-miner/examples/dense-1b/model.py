@@ -1,13 +1,13 @@
 """Dense ~975M transformer — Prism recipe 2.1 reference under models/.
 
-submission_nonce: dense-1b-zero1-20260819T1840Z
+submission_nonce: dense-1b-zero1-20260819T2215Z
 
 GQA + RMSNorm + SwiGLU + RoPE + QK-norm. Tied embeddings. No MoE, no
 routed experts, no LoopMoE core. Fine-grained MoE at 1B wastes MFU
 (tiny expert GEMMs, irregular routing, no NVFP4 wgrad).
 
-Linear layers use `nn.Linear` by default (BF16 + activation ckpt on 32 GB).
-`DENSE1B_TE=1` opts into Transformer Engine NVFP4. All mixing is causal SDPA.
+On 32 GB (4×5090) Linear is BF16 + activation ckpt; `DENSE1B_TE=1` opts in.
+On 96 GB-class (2× RTX PRO 6000) TE NVFP4 defaults on and ckpt is off.
 """
 
 from __future__ import annotations
@@ -36,14 +36,42 @@ DEFAULTS = {
     "window": 2048,
     "rope_theta": 50000.0,
     "init_std": 0.02,
-    # Prefer activation ckpt at 1B. TE Linear + checkpoint disagree on
-    # saved-tensor count under NVFP4 — disabled when use_te.
+    # 32 GB: ckpt on. 96 GB-class / TE: ckpt off unless DENSE1B_CKPT=1.
     "grad_checkpoint": True,
 }
 
 _OVERRIDE_KEYS = tuple(DEFAULTS.keys())
 _TE_LINEAR = None
 _TE_PROBED = False
+
+
+def is_96gb_class(ctx=None, gpu_count=None):
+    """True for ~96 GiB cards or the 2× RTX PRO 6000 profile."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+    count = int(gpu_count if gpu_count is not None else ctx.get("gpu_count") or 0)
+    name = str(ctx.get("gpu_type") or os.environ.get("PRISM_GPU_TYPE") or "")
+    upper = name.upper()
+    if "RTX PRO 6000" in upper or "BLACKWELL SERVER" in upper:
+        return True
+    if count == 2 and "6000" in upper:
+        return True
+    try:
+        if torch.cuda.is_available():
+            mem_gib = torch.cuda.get_device_properties(0).total_memory / float(1024**3)
+            if mem_gib >= 90.0:
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _env_flag(name, default=None):
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def unique_n_params(model):
@@ -277,12 +305,11 @@ def _config_from_ctx(ctx):
 def build_dense1b(ctx):
     ctx = ctx if isinstance(ctx, dict) else {}
     torch.manual_seed(int(ctx.get("seed", 0)))
-    env_te = os.environ.get("DENSE1B_TE", "").strip().lower() in {"1", "true", "yes"}
-    ctx_te = bool(ctx.get("te_available", False))
-    # Do not auto-enable TE just because the wheel imports — extra-state
-    # plus a counted parent fwd+bwd pins a 32 GB card.
-    te_flag = (env_te or ctx_te) and _probe_te_linear() is not None
-    # Harness sets te_available when TE imports; ignore unless DENSE1B_TE=1.
-    if not env_te:
-        te_flag = False
-    return DenseTransformer(_config_from_ctx(ctx), use_te=te_flag)
+    wide = is_96gb_class(ctx)
+    # 32 GB: TE off unless DENSE1B_TE=1. 96 GB-class: TE on unless off.
+    env_te = _env_flag("DENSE1B_TE", default=True if wide else False)
+    te_flag = bool(env_te) and _probe_te_linear() is not None
+    cfg = _config_from_ctx(ctx)
+    ckpt = _env_flag("DENSE1B_CKPT", default=False if (wide or te_flag) else True)
+    cfg["grad_checkpoint"] = bool(ckpt) and not te_flag
+    return DenseTransformer(cfg, use_te=te_flag)

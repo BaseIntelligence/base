@@ -1,8 +1,9 @@
 # dense-1b
 
 Reference AutoModel patch for Prism recipe 2.1: a **dense ~975M** transformer
-(GQA + RMSNorm + SwiGLU + RoPE + QK-norm) with **ZeRO-1** (default) on 4×GPU
-and optional Transformer Engine NVFP4.
+(GQA + RMSNorm + SwiGLU + RoPE + QK-norm) with **ZeRO-1** (default) on
+**2× RTX PRO 6000 Blackwell** (~96 GB, TE on, mb≥4) or **4× RTX 5090**
+fallback (32 GB, TE off, mb=1).
 
 Fine-grained **MoE at ~1B is a bad default** (tiny expert GEMMs, irregular
 routing, no NVFP4 wgrad). MoE remains a miner experiment if you want it —
@@ -22,7 +23,7 @@ binary, not a scored organizer baseline, and not a live `:28092` flip.
 | `automodel.base` | Pin id — must match `GET /v1/recipe` (`automodel@v0.5.0`) |
 | `automodel.patch` | Unified diff vs that pin (entry, model, kernels, DDP worker) |
 | `prism.toml` | Optional entry pointer |
-| `requirements.txt` | Comment-only pin so AutoModel `pyproject.toml` is not installed (debian blinker). TE is `DENSE1B_TE=1`. |
+| `requirements.txt` | Comment-only pin so AutoModel `pyproject.toml` is not installed (debian blinker). TE defaults on 96 GB-class. |
 
 Pack the four files at the ZIP root and `POST /v1/submissions` with your
 hotkey + `X-Lium-Api-Key`. See [`../../prism.md`](../../prism.md).
@@ -43,15 +44,15 @@ are the same tree the patch applies under
 - Default `DENSE1B_PARALLEL=zero1` (`ZeroRedundancyOptimizer`). `fsdp`
   selects FSDP2 (`fully_shard`) when available. `ddp` remains a fallback
   (debug only).
-- Activation checkpoint is on when TE Linear is **off**. TE NVFP4 +
-  `torch.utils.checkpoint` disagree on saved-tensor counts — graph stays
-  intact under TE.
-- `ctx["gpu_count"]` / TE `NVFP4BlockScaling` when the class exists
-  (consumer Blackwell: `disable_rht=True`, `disable_stochastic_rounding=True`).
+- 96 GB-class (`gpu_count==2` and name contains 6000, or ≥90 GiB):
+  `DENSE1B_TE=1` default, `DENSE1B_MICRO_BATCH≥4`, activation ckpt **off**
+  (`DENSE1B_CKPT=1` only if you OOM). 32 GB 5090: TE off, mb=1, ckpt on.
+- `ctx["gpu_count"]` / `ctx["gpu_type"]` / TE `NVFP4BlockScaling` when the
+  class exists (consumer Blackwell: `disable_rht=True`,
+  `disable_stochastic_rounding=True`).
 - Optional env (miner-side, not organizer knobs):
-  `DENSE1B_MICRO_BATCH` (default **1** so one 975M step fits 32 GB);
-  `DENSE1B_PARALLEL=zero1|fsdp|ddp`; `DENSE1B_TE=1` to opt into NVFP4
-  (off by default — BF16 + activation checkpoint).
+  `DENSE1B_MICRO_BATCH`; `DENSE1B_PARALLEL=zero1|fsdp|ddp`;
+  `DENSE1B_TE=0|1`; `DENSE1B_CKPT=0|1`.
 - The harness skips `FlopCounterMode` on the full 850M–1B graph (analytic
   6N) so GPU0 is free before `mp.spawn`.
 

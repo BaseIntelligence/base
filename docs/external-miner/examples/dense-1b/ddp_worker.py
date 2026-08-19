@@ -3,7 +3,7 @@
 Rendezvous is tcp://127.0.0.1 (never hostname localhost — AF_INET6 errno 97).
 No socket/subprocess imports (intake static_source NetworkExfil).
 
-submission_nonce: dense-1b-zero1-20260819T1840Z
+submission_nonce: dense-1b-zero1-20260819T2215Z
 """
 
 from __future__ import annotations
