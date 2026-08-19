@@ -107,6 +107,8 @@ def test_b200_profile_microbatch_and_pin():
     entry = (EXAMPLE / "entry.py").read_text(encoding="utf-8")
     assert "B200_MICRO_BATCH = 8" in entry
     assert "PEAK_FLOPS_B200 = 2250.0e12" in entry
+    assert "stream.device = device" in entry
+    assert "input_ids.to(target" in entry
 
 
 if __name__ == "__main__":

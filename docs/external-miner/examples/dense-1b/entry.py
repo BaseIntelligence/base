@@ -5,7 +5,7 @@ stream + prism_telemetry from ctx. Default parallel is single-GPU DDP
 world=1 on 1× NVIDIA B200 (~180 GiB, TE on, mb≥8) with ZeRO-1 on 2×
 RTX PRO 6000 (96 GB) or 4×5090 as explicit env fallbacks.
 
-submission_nonce: dense-1b-b200-20260819T2335Z
+submission_nonce: dense-1b-b200-20260819T1952Z
 """
 
 from __future__ import annotations
@@ -462,6 +462,14 @@ def _train_loop(
         except Exception:  # noqa: BLE001 — harness / budget cap
             break
         input_ids, labels = stream.next_batch() if hasattr(stream, "next_batch") else next(stream)
+        # skip_probe + reclaim_cuda parks SeededTrainStream on CPU so DDP
+        # workers can spawn. Single-GPU B200 trains in-process: tok_emb is
+        # CUDA, so CPU ids trip index_select.
+        target = next(core.parameters()).device
+        if input_ids.device != target:
+            input_ids = input_ids.to(target, non_blocking=True)
+        if labels.device != target:
+            labels = labels.to(target, non_blocking=True)
         tokens_this += int(input_ids.numel())
         # TE recipe MUST wrap backward — closing autocast after forward
         # makes NVFP4 wgrad pick a cublasLt algo that SM120 rejects.
@@ -972,6 +980,8 @@ def train(model, ctx):
         micro = DEFAULT_MICRO_BATCH
     if hasattr(stream, "batch_size"):
         stream.batch_size = max(1, int(micro))
+    if device != "cpu" and hasattr(stream, "device"):
+        stream.device = device
     compiled, did_compile = _maybe_compile(model)
     max_steps = int(ctx.get("max_train_steps", 20000))
     cap_s = float(ctx.get("train_hours_cap", 1.0)) * 3600.0

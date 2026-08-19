@@ -139,12 +139,11 @@ restart. Missing key on live → `400 missing_lium_api_key`. Cost guardrails
 (`max_price_per_hour`, lifetime) still apply so a bad key cannot rent
 unbounded SKUs through the orchestrator.
 
-**Pod lifetime ceiling is 8.5h** (was 7h). You are billed for time actually
-used, not the ceiling, so a run that finishes early costs the same as
-before — the raise exists because the old 7h could **terminate a
-full-budget submission mid-eval** and lose the whole rental. The ceiling has
-to contain build (≤15m) + your 4h train wall + checkpoint (≤30m) + the eval
-phase (≤1.5h) ≈ 8.3h. The eval battery itself runs under one global 1h
+**Pod lifetime ceiling is 7.0h.** You are billed for time actually used, not
+the ceiling. It must contain build (≤15m) + the **4.0 h / 240 min** train
+wall + checkpoint (≤30m) + eval (≤1.5h) ≈ 6.28 h. Isolated proofs set
+`PRISM_TEST_TRAIN_MINUTES=60`; unset or `240` is the operator default (same
+as the recipe constant). The eval battery itself runs under one global 1h
 budget with per-group shares, and if a group hits its ceiling the run
 reports it (`budget.truncated` / `budget.partial_groups` in the battery
 blob) rather than silently scoring fewer items.

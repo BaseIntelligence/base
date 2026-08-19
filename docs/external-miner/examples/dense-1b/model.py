@@ -1,6 +1,6 @@
 """Dense ~975M transformer — Prism recipe 2.1 reference under models/.
 
-submission_nonce: dense-1b-b200-20260819T2335Z
+submission_nonce: dense-1b-b200-20260819T1952Z
 
 GQA + RMSNorm + SwiGLU + RoPE + QK-norm. Tied embeddings. No MoE, no
 routed experts, no LoopMoE core. Fine-grained MoE at 1B wastes MFU

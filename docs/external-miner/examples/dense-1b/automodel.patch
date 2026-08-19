@@ -6,7 +6,7 @@ index 00000000..11111111
 @@ -0,0 +1,4 @@
 +"""Dense ~1B transformer — Prism recipe 2.1 reference under AutoModel models/.
 +
-+submission_nonce: dense-1b-b200-20260819T2335Z
++submission_nonce: dense-1b-b200-20260819T1952Z
 +"""
 diff --git a/nemo_automodel/components/models/dense1b/ddp_worker.py b/nemo_automodel/components/models/dense1b/ddp_worker.py
 new file mode 100644
@@ -19,7 +19,7 @@ index 00000000..11111111
 +Rendezvous is tcp://127.0.0.1 (never hostname localhost — AF_INET6 errno 97).
 +No socket/subprocess imports (intake static_source NetworkExfil).
 +
-+submission_nonce: dense-1b-b200-20260819T2335Z
++submission_nonce: dense-1b-b200-20260819T1952Z
 +"""
 +
 +from __future__ import annotations
@@ -65,7 +65,7 @@ new file mode 100644
 index 00000000..11111111
 --- /dev/null
 +++ b/nemo_automodel/components/models/dense1b/entry.py
-@@ -0,0 +1,1027 @@
+@@ -0,0 +1,1037 @@
 +"""Prism-shaped AutoModel entry for dense 1B (recipe 2.1, ~975M).
 +
 +Exposes build_model / train for the operator harness seams. Uses FineWeb
@@ -73,7 +73,7 @@ index 00000000..11111111
 +world=1 on 1× NVIDIA B200 (~180 GiB, TE on, mb≥8) with ZeRO-1 on 2×
 +RTX PRO 6000 (96 GB) or 4×5090 as explicit env fallbacks.
 +
-+submission_nonce: dense-1b-b200-20260819T2335Z
++submission_nonce: dense-1b-b200-20260819T1952Z
 +"""
 +
 +from __future__ import annotations
@@ -530,6 +530,14 @@ index 00000000..11111111
 +        except Exception:  # noqa: BLE001 — harness / budget cap
 +            break
 +        input_ids, labels = stream.next_batch() if hasattr(stream, "next_batch") else next(stream)
++        # skip_probe + reclaim_cuda parks SeededTrainStream on CPU so DDP
++        # workers can spawn. Single-GPU B200 trains in-process: tok_emb is
++        # CUDA, so CPU ids trip index_select.
++        target = next(core.parameters()).device
++        if input_ids.device != target:
++            input_ids = input_ids.to(target, non_blocking=True)
++        if labels.device != target:
++            labels = labels.to(target, non_blocking=True)
 +        tokens_this += int(input_ids.numel())
 +        # TE recipe MUST wrap backward — closing autocast after forward
 +        # makes NVFP4 wgrad pick a cublasLt algo that SM120 rejects.
@@ -1040,6 +1048,8 @@ index 00000000..11111111
 +        micro = DEFAULT_MICRO_BATCH
 +    if hasattr(stream, "batch_size"):
 +        stream.batch_size = max(1, int(micro))
++    if device != "cpu" and hasattr(stream, "device"):
++        stream.device = device
 +    compiled, did_compile = _maybe_compile(model)
 +    max_steps = int(ctx.get("max_train_steps", 20000))
 +    cap_s = float(ctx.get("train_hours_cap", 1.0)) * 3600.0
@@ -1101,7 +1111,7 @@ index 00000000..11111111
 @@ -0,0 +1,134 @@
 +"""Attention / RMS / RoPE / CE helpers for the dense 1B reference.
 +
-+submission_nonce: dense-1b-b200-20260819T2335Z
++submission_nonce: dense-1b-b200-20260819T1952Z
 +
 +Hot-path train (seq=512) is one Flash/SDPA call — no Python token loop.
 +"""
@@ -1241,7 +1251,7 @@ index 00000000..11111111
 @@ -0,0 +1,336 @@
 +"""Dense ~975M transformer — Prism recipe 2.1 reference under models/.
 +
-+submission_nonce: dense-1b-b200-20260819T2335Z
++submission_nonce: dense-1b-b200-20260819T1952Z
 +
 +GQA + RMSNorm + SwiGLU + RoPE + QK-norm. Tied embeddings. No MoE, no
 +routed experts, no LoopMoE core. Fine-grained MoE at 1B wastes MFU
@@ -1584,4 +1594,4 @@ index 00000000..11111111
 +# 32 GB: BF16 + ckpt. 96 GB-class / 1× B200: TE NVFP4 default (DENSE1B_TE=0 to off).
 +# Do not install AutoModel pyproject (debian blinker has no RECORD).
 +# Do not put pip option lines here.
-+# submission_nonce: dense-1b-b200-20260819T2335Z
++# submission_nonce: dense-1b-b200-20260819T1952Z
