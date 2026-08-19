@@ -671,6 +671,74 @@ def test_probe_oom_at_one_row_falls_back_analytically_and_keeps_cap():
     assert abs(attest["flops_per_token"] - graph) < 1e-6
 
 
+def test_skip_cfg_uses_analytic_without_dispatch():
+    """Parent must not run FlopCounterMode when skip is requested."""
+    calls = {"n": 0}
+
+    class Boom(TinyModel):
+        def forward(self, input_ids):
+            calls["n"] += 1
+            raise AssertionError("dispatch probe must not run")
+
+    attest = _attest_flops(
+        Boom(), make_stream(), {"flops_probe_skip": True}, SEQ, 3.0e18
+    )
+    assert calls["n"] == 0, "skipped probe must not forward"
+    assert attest["estimator"] == "analytic_fallback", attest
+    assert attest["analytic_fallback"] is True
+    graph = F.analytic_flops_per_token(Boom(), SEQ)["flops_per_token"]
+    assert abs(attest["flops_per_token"] - graph) < 1e-6
+
+
+def test_param_ceiling_skips_dispatch_probe():
+    old = F.DISPATCH_PROBE_PARAM_CEILING
+    F.DISPATCH_PROBE_PARAM_CEILING = 1
+    try:
+        skip, reason = F.skip_dispatch_probe(TinyModel())
+        assert skip is True
+        assert "param_ceiling" in reason
+        attest = _attest_flops(TinyModel(), make_stream(), {}, SEQ, 3.0e18)
+        assert attest["estimator"] == "analytic_fallback", attest
+    finally:
+        F.DISPATCH_PROBE_PARAM_CEILING = old
+
+
+def test_parent_reserved_ceiling_is_fail_closed():
+    blown = {
+        "cuda": True,
+        "devices": [
+            {
+                "index": 0,
+                "reserved": 33 * (1 << 30),
+                "free": 100 << 20,
+                "total": 33 * (1 << 30),
+                "allocated": 31 * (1 << 30),
+            }
+        ],
+    }
+    try:
+        F.assert_parent_cuda_released(blown)
+    except RuntimeError as exc:
+        assert "reserved" in str(exc).lower()
+    else:
+        raise AssertionError("33 GiB reserved must abort before spawn")
+    ok = {
+        "cuda": True,
+        "devices": [
+            {
+                "index": 0,
+                "reserved": 64 << 20,
+                "free": 20 * (1 << 30),
+                "total": 32 * (1 << 30),
+                "allocated": 0,
+            }
+        ],
+    }
+    F.assert_parent_cuda_released(ok)
+    assert F.parent_hbm_ready_for_replica(ok) is True
+    assert F.parent_hbm_ready_for_replica(blown) is False
+
+
 def test_analytic_fallback_helper_rejects_empty_graph():
     class Empty(torch.nn.Module):
         def forward(self, input_ids):

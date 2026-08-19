@@ -291,6 +291,15 @@ impl LiumClient {
                 return Ok(id.clone());
             }
         }
+        // Isolated proofs pin the public v9 template (f2f5e84c). Without this,
+        // provision tries to create private v10 and fails closed on missing
+        // PRISM_POD_DOCKER_CREDENTIAL_ID (or walks 8×5090 on CREATION_FAILED).
+        if let Ok(id) = std::env::var("PRISM_POD_TEMPLATE_ID") {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Ok(id.to_owned());
+            }
+        }
         let (image, tag, default_name) = resolved_pod_image()?;
         let docker_credential_id = std::env::var("PRISM_POD_DOCKER_CREDENTIAL_ID")
             .ok()
@@ -854,6 +863,11 @@ impl EvalJobBackend for LiumClient {
             } else {
                 effective.max(spec.gpu_count)
             };
+            if spec.gpu_count == 4 && rent_gpu_count > 4 {
+                return Err(LiumError::Api(format!(
+                    "abort: refusing {rent_gpu_count}× rent when PRISM_POD_GPU_COUNT=4 (no 8×5090 fallback)"
+                )));
+            }
             info!(
                 offer_id = %selected.id,
                 gpu = %selected.gpu_type,

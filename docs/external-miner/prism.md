@@ -102,14 +102,15 @@ frameworks.
 bypass those hooks fail review (`missing_telemetry_hooks`, zero score,
 terminal).
 
-**Example: dense 1B (4-GPU ZeRO-1 + NVFP4).** A reference AutoModel patch
-that honors `ctx["train_stream"]`, rank-0 stream ownership, and optional
-Transformer Engine NVFP4 lives at
+**Example: dense 1B (4-GPU ZeRO-1).** A reference AutoModel patch
+that honors `ctx["train_stream"]`, rank-0 stream ownership, and BF16 +
+activation checkpoint (NVFP4 via `DENSE1B_TE=1`) lives at
 [`examples/dense-1b/`](examples/dense-1b/). It is a **dense** ~975M
-transformer (GQA + SwiGLU). Fine-grained MoE at 1B is a miner experiment,
-not the reference. Pack `automodel.base` + `automodel.patch` (+ optional
-`prism.toml` / `requirements.txt`) as in this document. It is an example,
-not a scored baseline.
+transformer (GQA + SwiGLU). The harness uses analytic 6N for the parent
+FLOPs cap so GPU0 stays free for spawn. Fine-grained MoE at 1B is a miner
+experiment, not the reference. Pack `automodel.base` + `automodel.patch`
+(+ optional `prism.toml` / `requirements.txt`) as in this document. It is
+an example, not a scored baseline.
 
 **Diff visibility.** After intake, inspect your applied delta at
 `GET /v1/submissions/{id}/diff` (full unified diff + diffstat / classification).

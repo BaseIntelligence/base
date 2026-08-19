@@ -49,8 +49,11 @@ are the same tree the patch applies under
 - `ctx["gpu_count"]` / TE `NVFP4BlockScaling` when the class exists
   (consumer Blackwell: `disable_rht=True`, `disable_stochastic_rounding=True`).
 - Optional env (miner-side, not organizer knobs):
-  `DENSE1B_MICRO_BATCH` (default 8);
-  `DENSE1B_PARALLEL=zero1|fsdp|ddp`.
+  `DENSE1B_MICRO_BATCH` (default **1** so one 975M step fits 32 GB);
+  `DENSE1B_PARALLEL=zero1|fsdp|ddp`; `DENSE1B_TE=1` to opt into NVFP4
+  (off by default — BF16 + activation checkpoint).
+- The harness skips `FlopCounterMode` on the full 850M–1B graph (analytic
+  6N) so GPU0 is free before `mp.spawn`.
 
 Do not point this example at live `:28092` to flip scoring. Live defaults
 stay `PRISM_SCORING_MODE=benchmarks` and `PRISM_ANCHOR_VERSION=0`.

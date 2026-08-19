@@ -4,7 +4,7 @@ Exposes build_model / train for the operator harness seams. Uses FineWeb
 stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
 (optimizer state matters at 1B). NVFP4 TE when present. Dense FFN only.
 
-submission_nonce: dense-1b-zero1-20260819T1230Z
+submission_nonce: dense-1b-zero1-20260819T1800Z
 """
 
 from __future__ import annotations
@@ -46,10 +46,9 @@ MIN_LR_FRAC = 0.10
 GRAD_CLIP = 1.0
 REPORT_EVERY = 10
 WALL_MARGIN_S = 90.0
-# Per-GPU microbatch. Harness default is 8 *then DataParallel-sharded*.
-# DDP keeps this whole batch on every rank (× world_size global tokens).
-# mb=8 feeds dense GEMMs (seq stays 512).
-DEFAULT_MICRO_BATCH = 8
+# Per-GPU microbatch. 4× 975M BF16 replicas on 32 GB: mb=8 + TE + no
+# ckpt OOMs. mb=1 + activation ckpt + TE off is what actually steps.
+DEFAULT_MICRO_BATCH = 1
 PEAK_FLOPS_PER_GPU = 209.5e12
 PAYLOAD_NAME = "dense_1b_ddp_payload.pt"
 METRICS_NAME = "dense_1b_ddp_metrics.json"
@@ -283,13 +282,30 @@ def _release_parent_cuda(model, stream=None):
         except Exception:  # noqa: BLE001
             pass
         freed = []
+        reserved0 = 0
+        free0 = 0
+        total0 = 0
         for i in range(torch.cuda.device_count()):
             try:
                 free, total = torch.cuda.mem_get_info(i)
-                freed.append(f"{i}:{free/1e9:.2f}/{total/1e9:.2f}GiB")
+                reserved = int(torch.cuda.memory_reserved(i))
+                freed.append(
+                    f"{i}:res={reserved/1e9:.2f} free={free/1e9:.2f}/{total/1e9:.2f}GiB"
+                )
+                if i == 0:
+                    reserved0, free0, total0 = reserved, int(free), int(total)
             except Exception:  # noqa: BLE001
                 continue
         print(f"[dense1b] parent CUDA released {freed}", flush=True)
+        if reserved0 > (1 << 30):
+            raise RuntimeError(
+                f"parent GPU0 still reserved {reserved0/1e9:.2f} GiB "
+                f"(free {free0/1e9:.2f}/{total0/1e9:.2f}); refusing spawn"
+            )
+        if total0 and free0 < 8 * (1 << 30):
+            raise RuntimeError(
+                f"parent GPU0 free {free0/1e9:.2f} GiB < 8 GiB replica headroom"
+            )
 
 
 class _LocalStream:
@@ -409,13 +425,13 @@ def _train_loop(
 ):
     """Single backward: dense CE. No second backward, no DP gather."""
     core = _unwrap(train_model)
+    use_te = rec is not None
     if hasattr(core, "grad_checkpoint"):
         # TE NVFP4 Linear cannot recompute under torch.utils.checkpoint
-        # (saved-tensor count 94 vs 45). Aux is already in the same loss.
-        core.grad_checkpoint = False
+        # (saved-tensor count 94 vs 45). On 32 GB we train BF16+ckpt.
+        core.grad_checkpoint = not use_te
     opt = _make_adam(core, zero=zero)
     use_amp = device == "cuda"
-    use_te = rec is not None
     t0 = time.time()
     step = 0
     last_loss = 0.0
@@ -565,7 +581,11 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
     ctx = dict(payload["ctx"])
     ctx["device"] = device
-    ctx["te_available"] = True
+    ctx["te_available"] = os.environ.get("DENSE1B_TE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     texts = list(payload.get("texts") or [])
     texts_path = payload.get("texts_path")
     if not texts and texts_path:
@@ -582,7 +602,11 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
     print(f"[dense1b] rank={rank} n_params={n_params} ({n_params/1e6:.1f}M)", flush=True)
     micro = int(payload["micro_batch"])
     seq_len = int(payload["seq_len"])
-    rec, te_mode = _maybe_te_recipe()
+    rec, te_mode = (
+        _maybe_te_recipe()
+        if ctx.get("te_available")
+        else (None, "none")
+    )
     parallel = str(payload.get("parallel") or os.environ.get("DENSE1B_PARALLEL", "zero1")).strip().lower()
     if parallel not in {"ddp", "zero1", "fsdp"}:
         parallel = "zero1"
@@ -657,7 +681,7 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
             "micro_batch": micro,
             "seq_len": seq_len,
             "gpu_count": world,
-            "te_available": True,
+            "te_available": bool(ctx.get("te_available")),
             "n_params": n_params,
             **km,
         }
@@ -770,7 +794,8 @@ def _launch_ddp(model, ctx, gpu_count):
         "ctx": {
             "seed": int(ctx.get("seed", 0)),
             "vocab_size": int(ctx.get("vocab_size") or 50257),
-            "te_available": True,
+            "te_available": os.environ.get("DENSE1B_TE", "").strip().lower()
+            in {"1", "true", "yes"},
             "arch": ctx.get("arch"),
             "prism_width_multiplier": ctx.get("prism_width_multiplier", 1.0),
         },
@@ -835,7 +860,8 @@ def train(model, ctx):
         except Exception:  # noqa: BLE001
             te_available = False
 
-    rec, te_mode = _maybe_te_recipe() if te_available else (None, "none")
+    te_want = os.environ.get("DENSE1B_TE", "").strip().lower() in {"1", "true", "yes"}
+    rec, te_mode = _maybe_te_recipe() if (te_available and te_want) else (None, "none")
     n_params = unique_n_params(model)
     print(
         f"[dense1b] train start n_params={n_params} "
@@ -844,6 +870,7 @@ def train(model, ctx):
         f"te_mode={te_mode} te_version={_te_version()} "
         f"cuda_devices={torch.cuda.device_count() if torch.cuda.is_available() else 0} "
         f"use_te_linear={getattr(model, 'use_te', None)} "
+        f"te_want={te_want} micro_batch={DEFAULT_MICRO_BATCH} "
         f"parallel={os.environ.get('DENSE1B_PARALLEL', 'zero1')}",
         flush=True,
     )
@@ -854,6 +881,8 @@ def train(model, ctx):
     if gpu_count > max_gpus:
         print(f"[dense1b] capping visible GPUs {gpu_count} -> {max_gpus}", flush=True)
         gpu_count = max_gpus
+    if gpu_count <= 1 and device != "cpu" and torch.cuda.is_available():
+        model.to(device)
     if gpu_count > 1 and torch.cuda.is_available():
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(gpu_count))
         metrics = _launch_ddp(model, ctx, gpu_count)

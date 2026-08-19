@@ -621,7 +621,7 @@ into the pod where applicable):
 | `PRISM_TRAIN_FLOPS_CAP` | organizer constant `3.0e18`; first of FLOPs or wall/steps binds |
 | `PRISM_MIN_SPEND_FRACTION` | `0.5`; voluntary under-spend only—`steps`, `wall`, and `flops` protocol stops are exempt |
 | `PRISM_PROBE_EVERY` / `PRISM_PROBE_TIME_BUDGET_S` | organizer batch cadence and per-probe time ceiling |
-| `PRISM_FLOPS_PROBE_SAMPLES` / `PRISM_FLOPS_PROBE_CV_MAX` / `PRISM_FLOPS_ANALYTIC_GAP_MAX` | attestation robustness thresholds. `FlopCounterMode` OOM halves probe rows; if a single row still OOM (LoopMoE), the analytic graph arms the FLOPs cap (`estimator=analytic_fallback`). The dual cap never silently disarms. |
+| `PRISM_FLOPS_PROBE_SAMPLES` / `PRISM_FLOPS_PROBE_CV_MAX` / `PRISM_FLOPS_ANALYTIC_GAP_MAX` / `PRISM_FLOPS_PROBE_SKIP` | attestation robustness thresholds. `FlopCounterMode` OOM halves probe rows; if a single row still OOM (LoopMoE), the analytic graph arms the FLOPs cap (`estimator=analytic_fallback`). Graphs ≥400M unique params skip the full-graph probe *before* it pins GPU0 (~31/32 GiB) so DDP spawn can load. The dual cap never silently disarms. |
 | `PRISM_G6_BPB_THRESHOLD` | G6 bytes-to-bpb target (default `1.5`) |
 | `PRISM_EVAL_G2_TASKS` | v3 only: `lambada,hellaswag,piqa,arc_easy`; do not use with v0–v2 |
 | `PRISM_EVAL_BATTERY_BUDGET_S` | global battery cap (default `3600`) |

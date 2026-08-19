@@ -47,6 +47,7 @@ _ENV_KNOBS = (
     "PRISM_FLOPS_PROBE_SAMPLES",
     "PRISM_FLOPS_PROBE_CV_MAX",
     "PRISM_FLOPS_ANALYTIC_GAP_MAX",
+    "PRISM_FLOPS_PROBE_SKIP",
     "PRISM_G6_BPB_THRESHOLD",
     # Eval budgets: the battery ceiling in force at score time.
     "PRISM_FLOW",

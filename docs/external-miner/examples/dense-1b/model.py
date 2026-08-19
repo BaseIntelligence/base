@@ -1,18 +1,19 @@
 """Dense ~975M transformer — Prism recipe 2.1 reference under models/.
 
-submission_nonce: dense-1b-zero1-20260819T1230Z
+submission_nonce: dense-1b-zero1-20260819T1800Z
 
 GQA + RMSNorm + SwiGLU + RoPE + QK-norm. Tied embeddings. No MoE, no
 routed experts, no LoopMoE core. Fine-grained MoE at 1B wastes MFU
 (tiny expert GEMMs, irregular routing, no NVFP4 wgrad).
 
-Linear layers prefer Transformer Engine (`te.Linear`) when the harness
-sets ctx['te_available'] (or TE imports). All mixing is causal dense SDPA.
+Linear layers use `nn.Linear` by default (BF16 + activation ckpt on 32 GB).
+`DENSE1B_TE=1` opts into Transformer Engine NVFP4. All mixing is causal SDPA.
 """
 
 from __future__ import annotations
 
 import math
+import os
 
 import torch
 import torch.nn as nn
@@ -276,7 +277,12 @@ def _config_from_ctx(ctx):
 def build_dense1b(ctx):
     ctx = ctx if isinstance(ctx, dict) else {}
     torch.manual_seed(int(ctx.get("seed", 0)))
-    te_flag = bool(ctx.get("te_available", False))
-    if not te_flag:
-        te_flag = _probe_te_linear() is not None
+    env_te = os.environ.get("DENSE1B_TE", "").strip().lower() in {"1", "true", "yes"}
+    ctx_te = bool(ctx.get("te_available", False))
+    # Do not auto-enable TE just because the wheel imports — extra-state
+    # plus a counted parent fwd+bwd pins a 32 GB card.
+    te_flag = (env_te or ctx_te) and _probe_te_linear() is not None
+    # Harness sets te_available when TE imports; ignore unless DENSE1B_TE=1.
+    if not env_te:
+        te_flag = False
     return DenseTransformer(_config_from_ctx(ctx), use_te=te_flag)
