@@ -12,7 +12,7 @@
 | `409 schedule` "daily manual run quota exceeded" | Manual anti-spam cap (10/day) — round-loop auto-enqueue does **not** spend it | `GET /v1/quota/{hotkey}` → `manual.remaining`; wait until next UTC day |
 | Active harness but no runs this round | Rare race / restart before auto-enqueue; or eliminated cooldown | Wait for the round tick / ask ops `admin/rounds/current/requeue`; check `eliminated_until_round` |
 | `auto_retry` events, class `install` | Dep won't install (bad name/version, heavy source build) | Design: `GET /v1/runs/{id}/logs`; Prism: `GET /v1/submissions/{id}/logs?since=` |
-| `control_plane_restart` / `harness_detached` | Restart could not reattach (dead pod or unrecoverable BYOK seal) | Stop the Lium pod if still billing; resubmit with `X-Lium-Api-Key`. Healthy pods are resumed automatically — do not kill them on a routine master redeploy. |
+| `control_plane_restart` / `harness_detached` | Restart could not reattach (dead pod or unrecoverable BYOK seal) | If `pod_id` is null, **no Lium pod was rented** — do not hunt a pod. `POST /v1/submissions/{id}/retry` (or re-POST the same ZIP) with `X-Lium-Api-Key`. Healthy pods with a `pod_id` resume automatically. |
 | Run `failed` / Score 0 | Missing pages, timeout, crash | `GET /v1/runs/{id}/events`; ensure three required HTML pages |
 | External call refused (`403`) | Target is internal-blocklisted (metadata IP, loopback, RFC1918/VPC, control plane) | Call public endpoints only; egress is otherwise open |
 | Pages look empty in viewer | Sanitize stripped content | Scripts/`on*` handlers are removed; use static HTML/CSS |
@@ -35,7 +35,7 @@
 | `similar: true` on precheck | Would hit intake copy gate | Change the patch vs prior champions; starting from the operator pin is fine |
 | `429 precheck_quota_exceeded` | 3 prechecks/coldkey/UTC day used | Wait until next UTC day; rotating hotkeys does not reset |
 | `400 missing_lium_api_key` | Live path needs miner-funded Lium | Pass `X-Lium-Api-Key` (your Lium account); see [`prism.md`](prism.md) |
-| `409 not_failed` on `/retry` | Row is not `failed` (queued/running/scored) | `/retry` is only for failed rows. Identical ZIP re-POST → `already-queued` (no-op). After infra failure use `/retry` + `X-Lium-Api-Key` |
+| `409 not_failed` on `/retry` | Row is not `failed` (queued/running/scored) | `/retry` is only for failed rows. In-flight identical ZIP re-POST → `already-queued`. Failed infra: `/retry` or same-ZIP POST recovers the row |
 | `400 missing_lium_api_key` on `/retry` | Failed infra row needs another GPU rent | Send `X-Lium-Api-Key` (hotkey / Bearer alone is not enough) |
 | Stuck `Provisioning` | Lium market / underfunded key / no 1×5090 | Check Lium balance; Prism hard-pins **1× RTX 5090** (non-5090 rejected) |
 | Idempotent replay | Same `submission_id` (pin id + patch bytes) | Expected — returns prior row |
