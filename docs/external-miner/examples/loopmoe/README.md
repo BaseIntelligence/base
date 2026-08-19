@@ -27,6 +27,8 @@ are the same tree the patch applies under
 - `build_model(ctx)` returns an `nn.Module`; train consumes
   `ctx["train_stream"]` only (G6 / dual-cap accounting).
 - Multi-GPU: rank 0 owns the harness stream and scatters each global batch.
+  Rank 0 also writes `loopmoe_ddp/telemetry.json` (loss series + probe
+  curve) so the parent `prism_telemetry` / G6 ingest sees DDP workers.
 - `ctx["gpu_count"]` / TE `NVFP4BlockScaling` when the class exists
   (consumer Blackwell: `disable_rht=True`, `disable_stochastic_rounding=True`).
 - Optional env (miner-side, not organizer knobs):

@@ -28,7 +28,7 @@ from .dataset import load_texts
 from .flops import BudgetExhausted
 from .probes import ProbeRunner, select_probe_texts
 from .stream import SeededTrainStream
-from .telemetry import FinishEvaluation, build_telemetry_module
+from .telemetry import FinishEvaluation, build_telemetry_module, ingest_ddp_sidecar
 
 _HARNESS_CTX_KEYS = ("arch_path", "train_path", "workdir")
 _SHARD_BYTES = 1_500_000_000
@@ -373,6 +373,13 @@ def _run(cfg, st):
         raise TypeError("train must return dict")
     train_s = time.time() - t0
     _log(f"train done in {train_s:.0f}s ({finish_reason})")
+
+    # DDP workers write prism_ddp/ / loopmoe_ddp/telemetry.json because they
+    # never share this process's prism_telemetry shim. Ingest before the
+    # post-train boundary probe so G6 has a real curve when rank-0 probed.
+    n_side = ingest_ddp_sidecar(state, cfg.get("workdir"))
+    if n_side:
+        _log(f"ingested {n_side} DDP telemetry reports (probe_curve={len(state['probe_curve'])})")
 
     probes.force_probe(state, stream.batches_yielded)
     tokens_seen = _accounted_train_tokens(stream)

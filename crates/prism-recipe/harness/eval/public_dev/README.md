@@ -27,6 +27,7 @@ blocks in-process train contamination.
 $PRISM_EVAL_ASSETS_DIR/
   tier.json             # {"tier":"public"} — default
   g1/domains/*.jsonl    # prose/math/code/news from public HF
+                        # (news aliases to prose/fresh if those files are missing)
   g1/fresh.jsonl        # FineWeb CC-MAIN-2025-* (not fineweb-edu train pin)
   g2/<task>.jsonl       # official val splits
   g5/...                # filler + ruler_qa + natural (LongBench-v2 + HELMET)

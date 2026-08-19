@@ -63,7 +63,9 @@ and scatter/shard each accounted global batch to workers over the local
 process group. Do not let each worker create an independent dataset stream:
 v3 rejects a trainer that returns with zero harness-accounted tokens. The
 isolated network namespace brings `127.0.0.1` loopback up for rendezvous but
-has no external route.
+has no external route. Rank 0 should write `loopmoe_ddp/telemetry.json`
+(loss series + probe curve): spawned workers do not share the parent
+`prism_telemetry` hook, and without that sidecar G6/G8 used to omit keys.
 
 **Resubmit at will on your own failures.** If your dependency install fails
 (`install_deps`) or your `training.py` crashes at build/train time
@@ -432,12 +434,16 @@ battery reports is organizer-measured (**Zone A**, `org.*`) and is computed
 inside the harness — your code never emits it.
 
 The v3 metric surface is structurally complete: G1 includes code, prose,
-math, fresh crawl, and key-token bits/byte; G6 includes byte-denominated AUC,
-bytes-to-threshold, and bpb at half of the organizer FLOPs cap; G7 includes
-measured-or-censored 32k TTFT/TPOT/state, board energy, throughput, and
-reasoning throughput; G8 emits loss stability and µP LR-transfer. Unsupported
-32k/OOM/power cases receive explicit worst-case censored values rather than
-silently disappearing. Live emission nevertheless remains G2 benchmarks +
+math, fresh crawl, and key-token bits/byte (news/crawl alias into prose/fresh
+when a pack omitted those files; otherwise a chance-floor bits/byte so the
+org keys are never silently dropped); G6 includes byte-denominated AUC,
+bytes-to-threshold, and bpb at half of the organizer FLOPs cap, plus
+fail-closed `org.g6.auc_log_tokens` / `org.g6.tokens_to_threshold` when the
+probe curve is empty; G7 includes measured-or-censored 32k TTFT/TPOT/state,
+board energy, throughput, and reasoning throughput (32k is skipped without
+allocating when a shorter length OOM'd); G8 emits `org.g8.loss_spike_score`
+and µP LR-transfer. Unsupported 32k/OOM/power cases receive explicit
+worst-case censored values rather than silently disappearing. Live emission nevertheless remains G2 benchmarks +
 WTA until operators announce calibrated v3 anchors and a separate governance
 flip.
 

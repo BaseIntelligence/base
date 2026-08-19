@@ -124,7 +124,20 @@ def run(model, ctx):
     curve.sort(key=lambda pt: pt["tokens_seen"])
     out["g6.points"] = float(len(curve))
     if len(curve) < 2:
+        # DDP workers that never reached the parent shim used to omit every
+        # scored G6 key (`probe_curve=[]` → missing_metric). Fail-closed:
+        # chance-floor AUC + censored tokens-to so completeness stays total.
         out["g6.stub"] = 1.0
+        out["g6.stub_reason_empty_curve"] = 1.0
+        common.emit(out, "g6.auc.log_tokens", 3.6)
+        common.emit(out, "g6.auc.log_bytes", 3.6)
+        common.emit(out, "g6.tokens_to_ce4.0", CENSORED_TOKENS)
+        out["g6.tokens_to_ce4.0.censored"] = 1.0
+        common.emit(out, "g6.bytes_to_bpb_threshold", CENSORED_BYTES)
+        out["g6.bytes_to_bpb_threshold.censored"] = 1.0
+        common.emit(out, "g6.bpb_at_half_budget", 3.6)
+        out["g6.bpb_at_half_budget.censored"] = 1.0
+        common.record(ctx, "g6.tokens_to", "ce4.0", CENSORED_TOKENS)
         return out
 
     # AUC over log10(tokens): trapezoid integral normalized by the log

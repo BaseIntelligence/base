@@ -27,7 +27,7 @@ from .dataset import load_texts
 from .probes import ProbeRunner, select_probe_texts
 from .scoring import val_ce_bpb
 from .stream import SeededTrainStream
-from .telemetry import FinishEvaluation, build_telemetry_module
+from .telemetry import FinishEvaluation, build_telemetry_module, ingest_ddp_sidecar
 
 _HARNESS_CTX_KEYS = ("arch_path", "train_path", "workdir")
 
@@ -203,6 +203,9 @@ def _run(cfg, st):
         raise TypeError("train must return dict")
     train_s = time.time() - t0
     _log(f"train done in {train_s:.0f}s ({finish_reason})")
+    n_side = ingest_ddp_sidecar(state, cfg.get("workdir"))
+    if n_side:
+        _log(f"ingested {n_side} DDP telemetry reports")
 
     st["stage"] = "score"
     _phase("score")

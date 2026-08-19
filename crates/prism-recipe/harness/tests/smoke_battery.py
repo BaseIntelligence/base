@@ -697,6 +697,13 @@ def check_v3_flow(arch_src=STUB_ARCH, tokenizer_source="default", vocab_size=Non
         )
 
 
+def check_v21_eligibility():
+    """G1 aliases / G6 DDP sidecar / G7 32k fail-closed / G8 loss_spike."""
+    path = Path(__file__).resolve().parent / "test_v21_eligibility.py"
+    r = subprocess.run([sys.executable, str(path)], cwd=str(HARNESS_ROOT))
+    assert r.returncode == 0, f"test_v21_eligibility.py failed with {r.returncode}"
+
+
 def check_g8_mup_contracts():
     """µP rollup fail-closed + reduced probe-base geometry (no full GPU sweep)."""
     for script in ("test_g8_mup_rollup.py", "test_g8_mup_probe_base.py"):
@@ -759,6 +766,7 @@ def main():
         return 2
     # Probe-base test builds Transformer++ at tiny width (needs torch).
     check_g8_mup_contracts()
+    check_v21_eligibility()
     check_g7_rollup_contract()
     check_full_battery()
     check_v3_flow()

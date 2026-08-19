@@ -360,6 +360,36 @@ def _enable_fast_matmul():
         pass
 
 
+def _write_parent_sidecar(out_dir, reports, probe_curve):
+    """Rank-0 file the harness parent ingests (`ingest_ddp_sidecar`)."""
+    if not out_dir:
+        return
+    path = Path(out_dir) / "telemetry.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "report_count": len(reports),
+                "reports": reports,
+                "probe_curve": probe_curve,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _worker_probe(model, tok, texts, device, seq_len, fallback_loss):
+    """Teacher-forced CE on payload texts, else the train loss (still a curve)."""
+    if tok is not None and texts:
+        try:
+            from prismlib.probes import teacher_forced_ce
+
+            return float(teacher_forced_ce(model, tok, texts[:8], device, seq_len))
+        except Exception:  # noqa: BLE001
+            pass
+    return float(fallback_loss)
+
+
 def _train_loop(
     train_model,
     stream,
@@ -373,6 +403,10 @@ def _train_loop(
     rank=0,
     world=1,
     zero=False,
+    telemetry_bag=None,
+    probe_tok=None,
+    probe_texts=None,
+    probe_seq_len=512,
 ):
     """Single backward: CE + local MoE aux. No second backward, no DP gather."""
     core = _unwrap(train_model)
@@ -389,6 +423,7 @@ def _train_loop(
     last_aux = 0.0
     grad_norm = 0.0
     tokens_this = 0
+    reports, probes = [], []
     train_model.train()
     while step < max_steps and (time.time() - t0) <= stop_s:
         try:
@@ -449,6 +484,36 @@ def _train_loop(
                 flush=True,
             )
             prism_telemetry.report(loss=last_loss, step=step, grad_norm=grad_norm)
+            tokens_seen = int(getattr(stream, "tokens_seen", 0) or tokens_this)
+            rec_pt = {
+                "step": step,
+                "loss": last_loss,
+                "grad_norm": grad_norm,
+                "tokens_seen": tokens_seen,
+                "at_secs": round(time.time() - t0, 3),
+            }
+            reports.append(rec_pt)
+            probe_loss = _worker_probe(
+                _unwrap(train_model),
+                probe_tok or getattr(stream, "_tok", None),
+                probe_texts or list(getattr(stream, "_texts", []) or [])[:8],
+                device,
+                probe_seq_len or int(getattr(stream, "seq_len", 512) or 512),
+                last_loss,
+            )
+            probes.append(
+                {
+                    "step": step,
+                    "tokens_seen": tokens_seen,
+                    "bytes_seen": max(1, tokens_seen * 4),
+                    "flops_spent": 0.0,
+                    "wall_s": rec_pt["at_secs"],
+                    "probe_loss": probe_loss,
+                }
+            )
+    if telemetry_bag is not None:
+        telemetry_bag["reports"] = reports
+        telemetry_bag["probe_curve"] = probes
     elapsed = time.time() - t0
     tps_local = tokens_this / max(1e-6, elapsed)
     return {
@@ -564,6 +629,7 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
         if time.time() >= t_limit:
             raise RuntimeError("wall")
 
+    telemetry_bag = {"reports": [], "probe_curve": []}
     metrics = _train_loop(
         compiled,
         stream,
@@ -576,6 +642,10 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
         rank=rank,
         world=world,
         zero=use_zero,
+        telemetry_bag=telemetry_bag if rank == 0 else None,
+        probe_tok=payload.get("tokenizer"),
+        probe_texts=texts[:8],
+        probe_seq_len=seq_len,
     )
     km = loopmoe_kernels.kernel_map()
     metrics.update(
@@ -603,6 +673,11 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
         out_dir = Path(payload["out_dir"])
         torch.save({k: v.detach().cpu() for k, v in _unwrap(compiled).state_dict().items()}, out_dir / WEIGHTS_NAME)
         (out_dir / METRICS_NAME).write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        _write_parent_sidecar(
+            out_dir,
+            telemetry_bag.get("reports") or [],
+            telemetry_bag.get("probe_curve") or [],
+        )
         print(
             f"[loopmoe] train done steps={metrics['train_steps']} "
             f"seconds={metrics['train_seconds']:.1f} loss={metrics['train_loss']:.4f} "

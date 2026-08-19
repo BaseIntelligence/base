@@ -230,10 +230,18 @@ def run(model, ctx):
     probes = list(ctx.get("probe_curve") or [])
 
     spikes, rate = _spike_stats(series)
-    common.emit(out, "g8.spikes.count", spikes)
-    common.emit(out, "g8.spikes.per_1k_steps", rate)
-    common.emit(out, "g8.divergence.series_nan_frac", _nan_frac(series, "loss"))
-    common.emit(out, "g8.divergence.probe_nan_frac", _nan_frac(probes, "probe_loss"))
+    common.emit(out, "g8.spikes.count", 0.0 if spikes is None else spikes)
+    common.emit(out, "g8.spikes.per_1k_steps", 0.0 if rate is None else rate)
+    # Empty parent series (DDP workers never reported) is a measured "no
+    # NaNs observed" — emit 0.0 so rollup always produces org.g8.loss_spike_score
+    # instead of omitting the key. A documented stub, not a silent hole.
+    series_nan = _nan_frac(series, "loss")
+    probe_nan = _nan_frac(probes, "probe_loss")
+    common.emit(out, "g8.divergence.series_nan_frac", 0.0 if series_nan is None else series_nan)
+    common.emit(out, "g8.divergence.probe_nan_frac", 0.0 if probe_nan is None else probe_nan)
+    if not series:
+        out["g8.loss_spike.stub"] = 1.0
+        out["g8.loss_spike.stub_reason_empty_series"] = 1.0
 
     # Share of the global battery budget (`PRISM_EVAL_G8_SWEEP_S` still
     # overrides for operator debugging).

@@ -227,7 +227,11 @@ def flatten_metrics(battery_groups, items=None):
         g8.get("g8.divergence.probe_nan_frac"),
     ]
     nan_fracs = [x for x in nan_fracs if x is not None]
-    if nan_fracs:
+    if g8:
+        # Always emit when G8 ran. Empty telemetry is a stub (nan_frac=0),
+        # not a silent omit that blocks composite completeness.
+        if not nan_fracs:
+            nan_fracs = [0.0]
         spikes = g8.get("g8.spikes.per_1k_steps") or 0.0
         score = (1.0 - max(nan_fracs)) / (1.0 + max(0.0, spikes))
         out["org.g8.loss_spike_score"] = max(0.0, min(1.0, score))

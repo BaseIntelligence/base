@@ -367,7 +367,7 @@ Zone A `org.*` metrics):
 
 | Group | Axis | Weight |
 |-------|------|--------|
-| G1 | intrinsic fit (tokenizer-neutral `org.g1.bits_per_byte_*` + debug per-token `g1.bpb.*`) | 0.25 |
+| G1 | intrinsic fit (tokenizer-neutral `org.g1.bits_per_byte_*` including prose/math/fresh-crawl — aliases from news/crawl or chance floor if a pack omitted those slices; debug per-token `g1.bpb.*`) | 0.25 |
 | G2 | commonsense/reading 0-shot core (LAMBADA, HellaSwag, PIQA, ARC, Winogrande, BoolQ, OBQA) | 0.15 |
 | G3 | retrieval/associative recall (MQAR, copying, induction, passkey — procedural, memorization-proof) | 0.10 |
 | G4 | reasoning at small scale (S5 permutations, arithmetic, ProofWriter, Dyck-k, modular, K&K) | 0.15 |
@@ -375,6 +375,12 @@ Zone A `org.*` metrics):
 | G6 | sample efficiency from organizer-owned train probes (v3: AUC over log-bytes, bytes-to-bpb threshold, bpb at half of the FLOPs cap) | 0.075 |
 | G7 | inference efficiency (32k TTFT/TPOT/state, throughput, joules/token, reasoning throughput) | 0.075 |
 | G8 | training stability + µP LR-transfer | 0.05 |
+
+**G8 `org.g8.loss_spike_score`.** Derived from the parent telemetry series
+(NaN fraction + MAD spike rate). Empty series (typical when DDP workers
+never reported) still emits the key as a stub (no observed NaNs / spikes)
+so completeness is not blocked; ingest the worker sidecar to score spikes
+for real. µP keys are independent.
 
 **G8 `org.g8.mup_lr_stability`.** Rollup of the µP width×LR micro-sweep:
 `1/(1+|log2(best_lr_wide/best_lr_base)|)` when the sweep converges; **0.0
@@ -411,12 +417,20 @@ curve. Anchor v3 supersedes it with tokenizer-neutral
 `org.g6.bpb_at_half_budget` at `0.5 × PRISM_TRAIN_FLOPS_CAP`. Probe cadence
 is owned by accounted stream batches, not miner telemetry calls; forced
 pre/post boundaries make the curve total even when an external DDP trainer
-reports tokens itself.
+reports tokens itself. Spawned DDP workers do not share the parent
+`prism_telemetry` shim: rank 0 must write `loopmoe_ddp/telemetry.json` (or
+`prism_ddp/telemetry.json`); `train_v3` ingests it after `train()` so
+`report_count` / `probe_curve` are not left empty. An empty curve still
+emits fail-closed `org.g6.auc_log_tokens` and `org.g6.tokens_to_threshold`
+(chance AUC + censored tokens) instead of omitting the keys.
 
 **G7 completeness is fail-closed.** A model that cannot run the 32k grid,
-OOMs, exhausts the G7 budget, or lacks GPU power telemetry still emits every
-anchored G7 key with an explicit worst-case censored value plus
-`g7.anchor_censored`; it does not become structurally `MissingMetric`.
+OOMs, is predicted to OOM (skip without allocating 16k/32k after a smaller
+length failed — a hard OOM can kill the eval process), exhausts the G7
+budget, or lacks GPU power telemetry still emits every anchored G7 key
+(`org.g7.ttft_ms_32k`, `org.g7.tpot_ms_32k`, …) with an explicit worst-case
+censored value plus `g7.anchor_censored` / `*.skip_oom` / `*.fail_closed`;
+it does not become structurally `MissingMetric`.
 Capable GPU runs replace those sentinels with measured 32k TTFT/TPOT/state,
 board joules/token, saturated throughput, and
 `org.g7.reasoning_throughput`.
