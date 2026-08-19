@@ -70,6 +70,8 @@ pub const ANCHOR_SET_V2_JSON: &str = include_str!("../anchors/v2.json");
 /// - **adds** the compute gates `max_flops` + `min_spend_fraction`, and
 ///   lowers `max_wall_s` 21600 → 18000 because wall-clock is now only the
 ///   anti-DoS bound.
+/// - **adds** `min_params` = 850M (recipe 2.1 floor). v0/v1/v2 stay
+///   byte-frozen without this field. `max_params` stays 1B.
 ///
 /// Every numeric is `placeholder` and must be measured on the E6 baselines
 /// and pre-registered before any governance flip.
@@ -801,20 +803,23 @@ mod tests {
             (v2.gates.max_wall_s - 21_600.0).abs() < f64::EPSILON,
             "v2 frozen at 6h"
         );
-        // max_params is unchanged: under iso-FLOPs it is non-binding (the
-        // 0.02-nat plateau spans ~88–236M body params), so it is a VRAM
-        // parameter, not a scientific one.
+        // max_params stays 1B (v2 already raised it). v3 adds the 850M
+        // inclusive floor so a 215M pack cannot score on the live-intended
+        // set. v0/v1/v2 stay byte-frozen without min_params.
         assert_eq!(v3.gates.max_params, v2.gates.max_params);
         assert_eq!(v3.gates.max_params, 1_000_000_000);
+        assert_eq!(v2.gates.min_params, None, "v2 must stay byte-frozen");
+        assert_eq!(v3.gates.min_params, Some(crate::MIN_PARAMS));
         assert_eq!(
             v2.gates,
             GateThresholds {
                 max_wall_s: 21_600.0,
                 max_flops: None,
                 min_spend_fraction: None,
+                min_params: None,
                 ..v3.gates
             },
-            "wall bound + the two compute gates are the ONLY gate differences"
+            "wall, compute gates, and min_params are the v2→v3 gate diffs"
         );
 
         // Every numeric is still a placeholder awaiting E6 measurement, and

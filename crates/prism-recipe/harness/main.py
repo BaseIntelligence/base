@@ -105,7 +105,16 @@ if _TEST_TRAIN_MINUTES > 0:
 _TEST_TRAIN_FLOPS = float_env("PRISM_TEST_TRAIN_FLOPS", 0.0)
 if _TEST_TRAIN_FLOPS > 0:
     TRAIN_FLOPS_CAP = _TEST_TRAIN_FLOPS
-MAX_PARAMS = int_env("PRISM_TEST_MAX_PARAMS", int_env("PRISM_MAX_PARAMS", 1000000000))
+_TEST_MAX_PARAMS = int_env("PRISM_TEST_MAX_PARAMS", 0)
+MAX_PARAMS = _TEST_MAX_PARAMS if _TEST_MAX_PARAMS > 0 else int_env("PRISM_MAX_PARAMS", 1000000000)
+# Inclusive floor (total unique params). Tiny-cap profile disables it
+# unless PRISM_TEST_MIN_PARAMS is set explicitly.
+if os.environ.get("PRISM_TEST_MIN_PARAMS") is not None:
+    MIN_PARAMS = int_env("PRISM_TEST_MIN_PARAMS", 0)
+elif _TEST_MAX_PARAMS > 0:
+    MIN_PARAMS = 0
+else:
+    MIN_PARAMS = int_env("PRISM_MIN_PARAMS", 850000000)
 # Test-mode row overrides (staging/e2e only): shrink the train slice and the
 # frozen val cut so small procedural fixtures satisfy the harness contract.
 # Production is always the prismlib constants (2048 train / 256 val).
@@ -353,7 +362,11 @@ def _cap_exceeded_out(payload, manifest, t_start):
         "tokens_seen": 0,
         "wall_clock_seconds": time.time() - t_start,
         "gpu_type": os.environ.get("PRISM_GPU_TYPE", "unknown"),
-        "notes": "parameter cap exceeded",
+        "notes": (
+            "parameter floor missed"
+            if payload.get("floor_missed")
+            else "parameter cap exceeded"
+        ),
         "val_rows": 0,
         "n_params": payload.get("n_params"),
         "recipe": RECIPE_VERSION,
@@ -665,6 +678,7 @@ def main():
         "flops_analytic_gap_max": FLOPS_ANALYTIC_GAP_MAX,
         "max_train_steps": MAX_TRAIN_STEPS,
         "max_params": MAX_PARAMS,
+        "min_params": MIN_PARAMS,
         "val_rows": VAL_ROWS,
         "train_rows": TRAIN_ROWS,
         "device": device,

@@ -1,16 +1,16 @@
 diff --git a/nemo_automodel/components/models/loopmoe/__init__.py b/nemo_automodel/components/models/loopmoe/__init__.py
 new file mode 100644
-index 00000000..ce42545f
+index 00000000..11111111
 --- /dev/null
 +++ b/nemo_automodel/components/models/loopmoe/__init__.py
 @@ -0,0 +1,4 @@
 +"""LoopMoE model family — allowed novelty under AutoModel models/.
 +
-+submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
++submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 +"""
 diff --git a/nemo_automodel/components/models/loopmoe/ddp_worker.py b/nemo_automodel/components/models/loopmoe/ddp_worker.py
 new file mode 100644
-index 00000000..41c9e896
+index 00000000..11111111
 --- /dev/null
 +++ b/nemo_automodel/components/models/loopmoe/ddp_worker.py
 @@ -0,0 +1,47 @@
@@ -19,7 +19,7 @@ index 00000000..41c9e896
 +Rendezvous is tcp://127.0.0.1 (never hostname localhost — AF_INET6 errno 97).
 +No socket/subprocess imports (intake static_source NetworkExfil).
 +
-+submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
++submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 +"""
 +
 +from __future__ import annotations
@@ -38,7 +38,7 @@ index 00000000..41c9e896
 +    os.environ["LOOPMOE_PAYLOAD"] = payload_path
 +    # Isolate Triton compile cache per rank (FLA autotune races under spawn).
 +    os.environ["TRITON_CACHE_DIR"] = f"/tmp/loopmoe_triton_r{rank}"
-+    os.environ.setdefault("LOOPMOE_PARALLEL", os.environ.get("LOOPMOE_PARALLEL", "ddp"))
++    os.environ.setdefault("LOOPMOE_PARALLEL", os.environ.get("LOOPMOE_PARALLEL", "zero1"))
 +    os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo")
 +    os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")
 +    os.environ.setdefault("NCCL_IB_DISABLE", "1")
@@ -66,14 +66,14 @@ new file mode 100644
 index 00000000..11111111
 --- /dev/null
 +++ b/nemo_automodel/components/models/loopmoe/entry.py
-@@ -0,0 +1,921 @@
-+"""Prism-shaped AutoModel entry for LoopMoE (recipe 2.0).
+@@ -0,0 +1,932 @@
++"""Prism-shaped AutoModel entry for LoopMoE (recipe 2.1, ~908M).
 +
 +Exposes build_model / train for the operator harness seams. Uses FineWeb
-+stream + prism_telemetry from ctx. Real single-node DDP (one process per
-+GPU) + NVFP4 TE recipe when the class exists.
++stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
++(DDP lost at 215M; optimizer state matters at 1B). NVFP4 TE when present.
 +
-+submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
++submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 +"""
 +
 +from __future__ import annotations
@@ -653,12 +653,14 @@ index 00000000..11111111
 +    # freshly constructed worker module does not declare those keys yet.
 +    model.load_state_dict(payload["state_dict"], strict=False)
 +    model = model.to(device)
++    n_params = int(sum(p.numel() for p in model.parameters()))
++    print(f"[loopmoe] rank={rank} n_params={n_params} ({n_params/1e6:.1f}M)", flush=True)
 +    micro = int(payload["micro_batch"])
 +    seq_len = int(payload["seq_len"])
 +    rec, te_mode = _maybe_te_recipe()
-+    parallel = str(payload.get("parallel") or os.environ.get("LOOPMOE_PARALLEL", "ddp")).strip().lower()
++    parallel = str(payload.get("parallel") or os.environ.get("LOOPMOE_PARALLEL", "zero1")).strip().lower()
 +    if parallel not in {"ddp", "zero1", "fsdp"}:
-+        parallel = "ddp"
++        parallel = "zero1"
 +    print(
 +        f"[loopmoe] worker te_version={_te_version()} te_mode={te_mode} "
 +        f"use_te_linear={getattr(model, 'use_te', None)} parallel={parallel}",
@@ -731,6 +733,7 @@ index 00000000..11111111
 +            "seq_len": seq_len,
 +            "gpu_count": world,
 +            "te_available": True,
++            "n_params": n_params,
 +            **km,
 +        }
 +    )
@@ -748,7 +751,7 @@ index 00000000..11111111
 +            telemetry_bag.get("probe_curve") or [],
 +        )
 +        print(
-+            f"[loopmoe] train done steps={metrics['train_steps']} "
++            f"[loopmoe] train done n_params={n_params} steps={metrics['train_steps']} "
 +            f"seconds={metrics['train_seconds']:.1f} loss={metrics['train_loss']:.4f} "
 +            f"tokens={metrics['tokens_seen']} tok/s={metrics['tokens_per_sec']:.1f} "
 +            f"te_mode={te_mode} parallel={parallel_used} world={world} "
@@ -853,7 +856,7 @@ index 00000000..11111111
 +        "cap_s": cap_s,
 +        "wall_margin_s": WALL_MARGIN_S,
 +        "out_dir": str(out_dir),
-+        "parallel": os.environ.get("LOOPMOE_PARALLEL", "ddp").strip().lower(),
++        "parallel": os.environ.get("LOOPMOE_PARALLEL", "zero1").strip().lower(),
 +    }
 +    payload_path = out_dir / PAYLOAD_NAME
 +    torch.save(payload, payload_path)
@@ -908,11 +911,15 @@ index 00000000..11111111
 +            te_available = False
 +
 +    rec, te_mode = _maybe_te_recipe() if te_available else (None, "none")
++    n_params = int(sum(p.numel() for p in model.parameters()))
 +    print(
-+        f"[loopmoe] train start gpu_count={gpu_count} te_available={te_available} "
++        f"[loopmoe] train start n_params={n_params} "
++        f"({n_params/1e6:.1f}M; floor 850e6 cap 1e9) "
++        f"gpu_count={gpu_count} te_available={te_available} "
 +        f"te_mode={te_mode} te_version={_te_version()} "
 +        f"cuda_devices={torch.cuda.device_count() if torch.cuda.is_available() else 0} "
-+        f"use_te_linear={getattr(model, 'use_te', None)}",
++        f"use_te_linear={getattr(model, 'use_te', None)} "
++        f"parallel={os.environ.get('LOOPMOE_PARALLEL', 'zero1')}",
 +        flush=True,
 +    )
 +
@@ -928,7 +935,7 @@ index 00000000..11111111
 +        fpt = float(ctx.get("flops_per_token_probe") or 0.0)
 +        elapsed = float(metrics.get("train_seconds") or 1.0)
 +        tokens = float(metrics.get("tokens_seen") or 0.0)
-+        n_params = float(sum(p.numel() for p in model.parameters()))
++        n_params = float(n_params)
 +        loop_f = float(getattr(model, "prism_loop_factor", 1.0) or 1.0)
 +        fpt_analytic = 6.0 * n_params * loop_f
 +        fpt_source = "probe"
@@ -940,10 +947,13 @@ index 00000000..11111111
 +        metrics["flops_per_token_probe"] = fpt
 +        metrics["flops_per_token_analytic"] = fpt_analytic
 +        metrics["flops_per_token_source"] = fpt_source
++        metrics["n_params"] = int(n_params)
 +        print(
-+            f"[loopmoe] ddp parent metrics world={metrics.get('world_size')} "
++            f"[loopmoe] ddp parent metrics n_params={int(n_params)} "
++            f"world={metrics.get('world_size')} "
 +            f"te_mode={metrics.get('te_mode')} tok/s={metrics.get('tokens_per_sec')} "
-+            f"mfu_est={mfu*100:.2f}% fpt_src={fpt_source} compile={metrics.get('torch_compile')}",
++            f"mfu_est={mfu*100:.2f}% fpt_src={fpt_source} "
++            f"parallel={metrics.get('parallel_mode')} compile={metrics.get('torch_compile')}",
 +            flush=True,
 +        )
 +        prism_telemetry.finish_evaluation()
@@ -979,10 +989,11 @@ index 00000000..11111111
 +            "backend": "none",
 +            "gpu_count": gpu_count,
 +            "tokens_seen": int(getattr(stream, "tokens_seen", 0)) or int(metrics["tokens_local"]),
++            "n_params": n_params,
 +        }
 +    )
 +    print(
-+        f"[loopmoe] train done steps={metrics['train_steps']} "
++        f"[loopmoe] train done n_params={n_params} steps={metrics['train_steps']} "
 +        f"seconds={metrics['train_seconds']:.1f} te_mode={te_mode} parallel=single",
 +        flush=True,
 +    )
@@ -990,13 +1001,13 @@ index 00000000..11111111
 +    return metrics
 diff --git a/nemo_automodel/components/models/loopmoe/kernels.py b/nemo_automodel/components/models/loopmoe/kernels.py
 new file mode 100644
-index 00000000..61e6ea29
+index 00000000..11111111
 --- /dev/null
 +++ b/nemo_automodel/components/models/loopmoe/kernels.py
 @@ -0,0 +1,867 @@
 +"""Fused kernels for LoopMoE — gated-delta scan, attention, RMS, CE.
 +
-+submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
++submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 +
 +Default delta path is **in-pack factored chunked WY** (batched GEMMs).
 +Never the sequential-T Triton scan. Never auto-select FLA `chunk_kda` —
@@ -1863,13 +1874,13 @@ index 00000000..61e6ea29
 +    )
 diff --git a/nemo_automodel/components/models/loopmoe/model.py b/nemo_automodel/components/models/loopmoe/model.py
 new file mode 100644
-index 00000000..0cbd0da3
+index 00000000..11111111
 --- /dev/null
 +++ b/nemo_automodel/components/models/loopmoe/model.py
-@@ -0,0 +1,521 @@
+@@ -0,0 +1,523 @@
 +"""LoopMoE AutoModel family — Prism recipe 2.0 novelty under models/.
 +
-+submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
++submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 +(unique architecture bytes so prior LoopMoE / hybrid_delta hashes do not
 +trip the copy gate; recurrent core + fine-grained MoE + hybrid
 +delta/attention design is unchanged. Fused delta + ZeRO live in kernels/entry.)
@@ -1905,20 +1916,22 @@ index 00000000..0cbd0da3
 +
 +DEFAULTS = {
 +    "vocab_size": 50257,
-+    "d_model": 1024,
++    # ~908M unique total (tied embeddings once). The 215M width is
++    # invalid for recipe 2.1 (floor 850M / cap 1B).
++    "d_model": 1536,
 +    "n_prelude": 2,
-+    "n_core": 4,
++    "n_core": 6,
 +    "n_coda": 2,
 +    "n_loops": 4,
 +    "max_loops": 4,
-+    "attn_heads": 16,
-+    "delta_heads": 8,
++    "attn_heads": 24,
++    "delta_heads": 12,
 +    "delta_key_dim": 128,
 +    "delta_value_dim": 128,
-+    "mlp_hidden": 2048,
-+    "n_experts": 16,
-+    "expert_hidden": 512,
-+    "shared_expert_hidden": 1024,
++    "mlp_hidden": 4096,
++    "n_experts": 32,
++    "expert_hidden": 768,
++    "shared_expert_hidden": 1536,
 +    "moe_top_k": 2,
 +    "window": 2048,
 +    "chunk": 32,
@@ -1926,9 +1939,9 @@ index 00000000..0cbd0da3
 +    "rope_theta": 50000.0,
 +    "decay_init": 0.02,
 +    "init_std": 0.02,
-+    # TE Linear + torch.utils.checkpoint disagree on saved-tensor count
-+    # (94 vs 45) during NVFP4 recompute. Keep the graph intact instead.
-+    "grad_checkpoint": False,
++    # Prefer activation ckpt at 1B. TE Linear + checkpoint disagree on
++    # saved-tensor count (94 vs 45) under NVFP4 — disabled when use_te.
++    "grad_checkpoint": True,
 +}
 +
 +_OVERRIDE_KEYS = tuple(DEFAULTS.keys())
@@ -2289,7 +2302,7 @@ index 00000000..0cbd0da3
 +        self.head.weight = self.tok_emb.weight
 +        self.logits = None
 +        self.aux_loss = None
-+        self.grad_checkpoint = bool(cfg.get("grad_checkpoint", False))
++        self.grad_checkpoint = bool(cfg.get("grad_checkpoint", False)) and not use_te
 +        # Analytic FLOPs hooks (harness cross-check only; not the budget).
 +        self.prism_loop_factor = float(self.n_loops)
 +        self.prism_active_param_fraction = float(cfg["moe_top_k"]) / max(1.0, float(cfg["n_experts"]))
@@ -2388,21 +2401,3 @@ index 00000000..0cbd0da3
 +    if not te_flag:
 +        te_flag = _probe_te_linear() is not None
 +    return LoopMoE(_config_from_ctx(ctx), use_te=te_flag)
-diff --git a/requirements.txt b/requirements.txt
-new file mode 100644
-index 00000000..f5ccf09f
---- /dev/null
-+++ b/requirements.txt
-@@ -0,0 +1,12 @@
-+# CUDA 13 / cp312. Do not use [pytorch] extra: it pulls the PyPI
-+# transformer_engine_torch==2.16.0 sdist (needs nvcc; Lium has none).
-+# Do not pin the Astral local version: wheels.astral.sh connect-times
-+# out from Lium (seen on 4061a769). Use NVIDIA's GitHub release wheel
-+# (github.com / release-assets.githubusercontent.com) + PyPI core_cu13.
-+# FLA: pin fla-core wheel + einops ONLY. Never flash-linear-attention or
-+# fla-core[cuda] — those extras pull torch rebuilds / TE sdist.
-+# Do not put pip option lines here.
-+transformer-engine[core_cu13]==2.16.0
-+transformer_engine_torch @ https://github.com/NVIDIA/TransformerEngine/releases/download/v2.16/transformer_engine_torch-2.16.0+cu13torch26.05cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
-+einops
-+fla-core==0.5.2

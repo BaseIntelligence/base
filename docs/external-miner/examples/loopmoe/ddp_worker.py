@@ -3,7 +3,7 @@
 Rendezvous is tcp://127.0.0.1 (never hostname localhost — AF_INET6 errno 97).
 No socket/subprocess imports (intake static_source NetworkExfil).
 
-submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
+submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def _entry(rank, world, port, payload_path):
     os.environ["LOOPMOE_PAYLOAD"] = payload_path
     # Isolate Triton compile cache per rank (FLA autotune races under spawn).
     os.environ["TRITON_CACHE_DIR"] = f"/tmp/loopmoe_triton_r{rank}"
-    os.environ.setdefault("LOOPMOE_PARALLEL", os.environ.get("LOOPMOE_PARALLEL", "ddp"))
+    os.environ.setdefault("LOOPMOE_PARALLEL", os.environ.get("LOOPMOE_PARALLEL", "zero1"))
     os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo")
     os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")
     os.environ.setdefault("NCCL_IB_DISABLE", "1")

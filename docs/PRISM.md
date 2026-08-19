@@ -554,11 +554,17 @@ kernel deltas. The plans are returned as JSON (operator-triggered
 execution via the normal intake); swapped cells are gated on the
 hidden-shape correctness suite before scoring.
 
-**Parameter cap (v3 semantics).** A model over `max_params` is a
-miner-attributable breach machine-verified at build: the harness emits a
-terminal `CAP_EXCEEDED` payload and the orchestrator finalizes
-`Score(0)` / `rejected` — never a measured score, no review/agentic spend,
-no auto-retry.
+**Parameter range (v3 / recipe 2.1 semantics).** Total unique parameters
+(tied embeddings counted once) must satisfy
+`850_000_000 ≤ n_params ≤ 1_000_000_000` (`MIN_PARAMS` / `MAX_PARAMS`).
+A model over the cap **or** under the floor is a miner-attributable
+breach machine-verified at build: the harness emits a terminal
+`CAP_EXCEEDED` payload (`floor_missed` when under the floor) and the
+orchestrator finalizes `Score(0)` / `rejected` — never a measured score,
+no review/agentic spend, no auto-retry. v0/v1/v2 anchor JSON stays
+byte-frozen without `min_params`; the 850M floor lives on **v3** only
+(and on the recipe descriptor). The 215M LoopMoE example is invalid for
+v2.1 submit.
 
 **Migration note.** No chain-facing change in `shadow`: scoring stays
 `scoring_version 2` and the v2 number is bit-identical. The flip to

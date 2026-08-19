@@ -34,7 +34,8 @@ prism.toml              # optional — entry / model-config knobs
 5. Write `automodel.base` as a single line equal to `automodel_pin_id`, pack
    the ZIP, and `POST /v1/submissions` with your hotkey + **`X-Lium-Api-Key`**.
 
-Models must stay **≤ 1B parameters**. Miner **model code** (build/train/
+Models must stay in **850M–1B parameters** (total unique; tied embeddings
+once). A 215M pack is **invalid** for recipe 2.1. Miner **model code** (build/train/
 eval) runs with **no network** (`unshare --net`) beyond the operator-owned
 dataset pull — do not call Hub downloads from `build_model` / `train`.
 
@@ -58,9 +59,9 @@ both. Check `GET /v1/recipe` for `pod_image_ref`, `miner_install_supported`,
 default through `ctx["gpu_count"]`; the organizer eval stays on GPU 0.
 Training must consume global batches from the harness-owned
 `ctx["train_stream"]`, because that stream enforces step/wall/FLOPs caps and
-owns token/byte accounting for G6. For DDP, keep rank 0 as the stream owner
-and scatter/shard each accounted global batch to workers over the local
-process group. Do not let each worker create an independent dataset stream:
+owns token/byte accounting for G6. For DDP/ZeRO/FSDP, keep rank 0 as the
+stream owner and scatter/shard each accounted global batch to workers over
+the local process group. At 850M–1B, default the example pack to ZeRO-1. Do not let each worker create an independent dataset stream:
 v3 rejects a trainer that returns with zero harness-accounted tokens. The
 isolated network namespace brings `127.0.0.1` loopback up for rendezvous but
 has no external route. Rank 0 should write `loopmoe_ddp/telemetry.json`
@@ -186,7 +187,7 @@ Live recipe **2.1.0** advertises `version: "2.1.0"` and AutoModel pin fields
 plus caps such as `train_flops_cap: 3.0e18` (the budget currency),
 `train_hours_cap: 5.0` (anti-DoS wall), `min_spend_fraction: 0.5`
 (voluntary-stop floor; a step/wall/FLOPs-bound run stays eligible),
-`max_train_steps: 20000`, `max_params: 1000000000`, FineWeb dataset pin,
+`max_train_steps: 20000`, `min_params: 850000000`, `max_params: 1000000000`, FineWeb dataset pin,
 and `pin_hex` (sha over the versioned descriptor). Trust `/v1/recipe`,
 not marketing chart labels.
 
@@ -497,7 +498,7 @@ registry and pre-registration commits at `GET /v1/anchors` and
 `GET /v1/submissions/{id}/metrics?zone=a|b`.
 
 **G8 µP probe.** The stability sweep builds 1× and 4× width from a **fixed
-small** width/depth base (not your full ≤1B scored model), then scales with
+small** width/depth base (not your full 850M–1B scored model), then scales with
 `ctx["prism_width_multiplier"]`. Honor top-level / `arch` geometry overrides
 and that multiplier in `build_model` (reference baselines do) or the sweep
 fail-closes `org.g8.mup_lr_stability = 0.0`.
@@ -560,7 +561,7 @@ pre-registered and byte-frozen, so their scoring is unchanged.
 ### G2 item counts raised on the tasks that discriminate
 
 LAMBADA, HellaSwag, PIQA and ARC-easy are now scored over **~1000 items**
-each instead of 200. At ≤1B params / 6h, Winogrande and OpenBookQA sit at
+each instead of 200. At 850M–1B params / 6h, Winogrande and OpenBookQA sit at
 chance and ARC-challenge / BoolQ at or below their floors, so those keep 200
 items — more items there would not separate two submissions. **No group or
 task weights changed.** Practical consequence: a 2–3 point difference on a

@@ -30,7 +30,7 @@
 | Wrong / unknown pin id | `automodel.base` ≠ recipe `automodel_pin_id` | Copy `automodel_pin_id` (live: `automodel@v0.5.0`) byte-identical from `/v1/recipe` |
 | Binary / path-escape / oversized patch | Fail-closed apply rules | Text-only unified diff; no path escape outside allowlisted roots; keep diff within intake budgets |
 | Tokenizer / hub errors on pod | No network; Hub download from miner code | Stay offline; use pin/harness tokenizer paths — do not `from_pretrained("<hub id>")` |
-| `CAP_EXCEEDED` / Score 0 | Model > 1B params | Terminal — resize model config in your patch; not auto-retried |
+| `CAP_EXCEEDED` / Score 0 | Model outside 850M–1B params | Terminal — widen or shrink; 215M packs fail the floor; not auto-retried |
 | Score 0 after review | `Copied` / high-confidence `Suspicious` (≥0.9, non-trope) | Similarity on **your delta**; rewrite unique hunks; tropes alone are not plagiarism |
 | `similar: true` on precheck | Would hit intake copy gate | Change the patch vs prior champions; starting from the operator pin is fine |
 | `429 precheck_quota_exceeded` | 3 prechecks/coldkey/UTC day used | Wait until next UTC day; rotating hotkeys does not reset |

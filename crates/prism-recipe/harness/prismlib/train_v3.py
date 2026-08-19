@@ -26,6 +26,8 @@ from . import RECIPE_SEED, TRAIN_ROWS, VAL_ROWS, tokenizer as tok_contract
 from . import flops as flops_mod
 from .dataset import load_texts
 from .flops import BudgetExhausted
+from .params import ParamRangeError as _ParamCapExceeded
+from .params import enforce_param_range
 from .probes import ProbeRunner, select_probe_texts
 from .stream import SeededTrainStream
 from .telemetry import FinishEvaluation, build_telemetry_module, ingest_ddp_sidecar
@@ -65,17 +67,6 @@ def _load_mod(name, path):
 
 class _CapExceeded(Exception):
     pass
-
-
-class _ParamCapExceeded(Exception):
-    """Miner-attributable parameter-cap breach (n_params > max_params).
-
-    Carries the measured count so the fail payload can flag it
-    machine-readably (`cap_exceeded`) for the parent's terminal path."""
-
-    def __init__(self, n_params, max_params):
-        super().__init__(f"model exceeds parameter cap: {n_params} > {max_params}")
-        self.n_params = n_params
 
 
 def _save_checkpoint(model, workdir, meta):
@@ -306,11 +297,10 @@ def _run(cfg, st):
     if not isinstance(model, torch.nn.Module):
         raise TypeError("build_model must return nn.Module")
     n_params = sum(p.numel() for p in model.parameters())
-    _log(f"model params: {n_params/1e6:.1f}M")
+    _log(f"model params: {n_params/1e6:.1f}M n_params={int(n_params)}")
     max_params = int(cfg.get("max_params", 1000000000))
-    if n_params > max_params:
-        # Product hard cap: fail before CUDA / train (machine-readable).
-        raise _ParamCapExceeded(n_params, max_params)
+    min_params = int(cfg.get("min_params", 0) or 0)
+    enforce_param_range(n_params, min_params, max_params)
     model = model.to(device)
 
     # ------------------------------------------------- FLOPs attestation
@@ -463,6 +453,7 @@ def main():
                 "stage": st["stage"],
                 "error": str(exc)[:400],
                 "cap_exceeded": True,
+                "floor_missed": bool(exc.under),
                 "n_params": int(exc.n_params),
             }
         )

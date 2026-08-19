@@ -248,7 +248,7 @@ Master applies `automodel.patch` onto a clean pin checkout. Reject when:
 | Pod lifetime | **7.5 h** (derived; see *Budget currency* below) |
 | Eval battery | **3600 s** global, per-group ceilings are fractional shares |
 | Hard step cap | 20 000 (config may only lower) |
-| Model parameters | ≤ **1 000 000 000** (`MAX_PARAMS`) |
+| Model parameters | **850 000 000–1 000 000 000** total unique (`MIN_PARAMS`–`MAX_PARAMS`) |
 | Dataset pin | FineWeb-Edu shard below (*Pinned dataset*) |
 | GPU funding | Miner `X-Lium-Api-Key` on live |
 
@@ -567,7 +567,7 @@ code inside an `unshare --net` subprocess) runs two fresh phases:
 
 | Phase | Env | What happens |
 |-------|-----|--------------|
-| `train` | `PRISM_PHASE=train` | contract checks → `build_model` (**1B param cap**: breach → terminal `CAP_EXCEEDED` payload, `Score(0)`) → seeded train stream (authoritative token counter) → G6 probe curve → checkpoint |
+| `train` | `PRISM_PHASE=train` | contract checks → `build_model` (**850M–1B param range**: breach → terminal `CAP_EXCEEDED` payload, `Score(0)`) → seeded train stream (authoritative token counter) → G6 probe curve → checkpoint |
 | (gate) | — | parent prints `PHASE_TRAIN_DONE`, then holds on `$PRISM_EVAL_ASSETS_DIR/.ready`; the operator stages the public HF held-out pack (default `eval_tier=public`) + generator seed **post-train only** (fail-closed: no `.ready` → error, never a silent downgrade to embedded `public_dev`) |
 | `eval` | `PRISM_PHASE=eval`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED` (env only, never on disk) | fresh subprocess → frozen-val bpb + the **G1–G8 battery** (`eval/` package: intrinsic, downstream, recall, reasoning, long-context, curve, inference, stability) → `METRICS_JSON` v2 |
 
@@ -652,7 +652,7 @@ score.
 | Pod lifetime | **7.5 h** (derived from the phase ceilings) |
 | Hard step cap | 20 000 (config may only lower) |
 | Source size | 128 KiB per script (two-script intake); tree budgets per `zip_submit` |
-| Model parameters | ≤ **1 000 000 000** after `build_model` (`MAX_PARAMS`) |
+| Model parameters | **850 000 000–1 000 000 000** after `build_model` (`MIN_PARAMS`–`MAX_PARAMS`) |
 | `train_rows` (descriptor) | **2048** — baseline / default cut advertised on `GET /v1/recipe` |
 | `val_rows` | **256** — frozen val cut scored by the harness (not miner-chosen) |
 
@@ -681,17 +681,17 @@ currently echoes `TRAIN_ROWS` (2048) even when telemetry `layer_stats.tokens`
 shows billions. Changing that field would alter the recipe pin (harness bytes
 are hashed) — coordinate a version bump if/when fixing it.
 
-The **parameter cap is 1B** (raised from 350M alongside the 4×RTX 5090
-recipe-v10 pod). Under the iso-FLOPs currency that cap is **non-binding**: at
-`C_MAX` the compute optimum is around `N_body ≈ 143 M`, and the 0.02-nat
-plateau spans ~88–236 M body params (a 2.7× range), so *compute* binds and the
-cap is a VRAM/checkpoint parameter rather than a scientific one. Placeholder
-anchors and the public GPT-2 Large reference row MUST be re-measured under the
-dual cap before any `PRISM_ANCHOR_VERSION` / composite governance flip
-(v0/v1/v2 anchors stay byte-frozen with their own pre-registration hashes, so
-neither the raise nor the currency change silently invalidates them).
-The parameter-cap breach semantics changed in 1.3.0: it is a terminal
-`Score(0)` (`CAP_EXCEEDED`), not an infra retry.
+The **parameter range is 850M–1B** total unique params (recipe 2.1). The
+1B cap was raised from 350M alongside the 4×RTX 5090 recipe-v10 pod; the
+850M **floor** is new on **anchor v3** + the recipe descriptor so a 215M
+pack cannot score (ZeRO/FSDP only pays at this scale on 4×32GB). v0/v1/v2
+anchor bytes stay frozen without `min_params`. Under the iso-FLOPs
+currency the *cap* is still a VRAM/checkpoint parameter; the *floor* is
+an eligibility rule. Placeholder anchors and the public GPT-2 Large
+reference row MUST be re-measured under the dual cap before any
+`PRISM_ANCHOR_VERSION` / composite governance flip.
+The parameter-range breach semantics: terminal `Score(0)` (`CAP_EXCEEDED`),
+not an infra retry.
 
 ## Recipe pin (1.x descriptor)
 

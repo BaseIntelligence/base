@@ -105,6 +105,10 @@ pub struct GateThresholds {
     pub ci_half_width_delta: f64,
     /// Fixed-recipe parameter budget.
     pub max_params: u64,
+    /// Inclusive parameter floor. `None` ⇒ ungated (byte-frozen v0/v1/v2).
+    /// v3 (recipe 2.1) sets this to 850M so a 215M pack cannot score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_params: Option<u64>,
     /// Wall-clock safety bound (seconds). Not the currency — see module docs.
     pub max_wall_s: f64,
     /// Attested-FLOPs budget (the currency). `None` ⇒ ungated (v0/v1/v2).
@@ -171,6 +175,13 @@ pub enum GateFailure {
         /// Budget.
         max: u64,
     },
+    /// Parameter count below the inclusive floor.
+    ParamsUnderBudget {
+        /// Observed params.
+        params: u64,
+        /// Inclusive floor.
+        min: u64,
+    },
     /// Wall-clock safety bound exceeded.
     WallClockOverBudget {
         /// Observed seconds.
@@ -213,6 +224,7 @@ impl GateFailure {
         matches!(
             self,
             Self::ParamsOverBudget { .. }
+                | Self::ParamsUnderBudget { .. }
                 | Self::WallClockOverBudget { .. }
                 | Self::FlopsOverBudget { .. }
                 | Self::SpendBelowFloor { .. }
@@ -273,6 +285,14 @@ pub fn check(facts: &BudgetFacts, gates: &GateThresholds, out: &mut Vec<GateFail
             max: gates.max_params,
         });
     }
+    if let Some(min_params) = gates.min_params {
+        if min_params > 0 && facts.params < min_params {
+            out.push(GateFailure::ParamsUnderBudget {
+                params: facts.params,
+                min: min_params,
+            });
+        }
+    }
     if facts.wall_s > gates.max_wall_s {
         out.push(GateFailure::WallClockOverBudget {
             wall_s: facts.wall_s,
@@ -323,6 +343,7 @@ mod tests {
             g8_min: 0.5,
             ci_half_width_delta: 0.05,
             max_params: 1_000_000_000,
+            min_params: Some(850_000_000),
             max_wall_s: 18_000.0,
             max_flops: Some(3.0e18),
             min_spend_fraction: Some(0.5),
@@ -334,13 +355,14 @@ mod tests {
         GateThresholds {
             max_flops: None,
             min_spend_fraction: None,
+            min_params: None,
             ..v3_gates()
         }
     }
 
     fn facts(flops: Option<f64>) -> BudgetFacts {
         BudgetFacts {
-            params: 300_000_000,
+            params: 900_000_000,
             wall_s: 15_000.0,
             tokens: 2_500_000_000,
             flops_attested: flops,
@@ -447,6 +469,47 @@ mod tests {
     }
 
     #[test]
+    fn param_floor_and_cap_are_inclusive() {
+        let g = v3_gates();
+        for (n, ok) in [
+            (849_000_000_u64, false),
+            (850_000_000, true),
+            (1_000_000_000, true),
+            (1_010_000_000, false),
+        ] {
+            let mut f = facts(Some(2.0e18));
+            f.params = n;
+            f.wall_s = 1_000.0;
+            let out = check_vec(&f, &g);
+            if ok {
+                assert!(out.is_empty(), "{n} should pass: {out:?}");
+            } else if n < 850_000_000 {
+                assert!(
+                    out.iter().any(|x| matches!(
+                        x,
+                        GateFailure::ParamsUnderBudget {
+                            min: 850_000_000,
+                            ..
+                        }
+                    )),
+                    "{n} should miss floor: {out:?}"
+                );
+            } else {
+                assert!(
+                    out.iter().any(|x| matches!(
+                        x,
+                        GateFailure::ParamsOverBudget {
+                            max: 1_000_000_000,
+                            ..
+                        }
+                    )),
+                    "{n} should exceed cap: {out:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn param_and_wall_gates_still_fire() {
         let mut f = facts(Some(2.0e18));
         f.params = 2_000_000_000;
@@ -487,12 +550,15 @@ mod tests {
         let g: GateThresholds = serde_json::from_str(legacy).unwrap();
         assert_eq!(g.max_flops, None);
         assert_eq!(g.min_spend_fraction, None);
+        assert_eq!(g.min_params, None);
         let round = serde_json::to_string(&g).unwrap();
         assert!(!round.contains("max_flops"), "{round}");
         assert!(!round.contains("min_spend_fraction"), "{round}");
+        assert!(!round.contains("min_params"), "{round}");
         // And a v3-shaped set round-trips its compute gates.
         let v3 = serde_json::to_string(&v3_gates()).unwrap();
         assert!(v3.contains("max_flops"));
+        assert!(v3.contains("min_params"));
         assert_eq!(
             serde_json::from_str::<GateThresholds>(&v3).unwrap(),
             v3_gates()
@@ -512,6 +578,7 @@ mod tests {
             },
             GateFailure::G8BelowFloor { g: 0.1, floor: 0.5 },
             GateFailure::ParamsOverBudget { params: 2, max: 1 },
+            GateFailure::ParamsUnderBudget { params: 1, min: 2 },
             GateFailure::WallClockOverBudget {
                 wall_s: 2.0,
                 max_s: 1.0,
@@ -533,7 +600,7 @@ mod tests {
         ];
         let report = GateReport::from_failures(&all);
         assert_eq!(report, GateReport::default(), "every flag must be false");
-        assert_eq!(all.iter().filter(|f| f.is_budget()).count(), 4);
+        assert_eq!(all.iter().filter(|f| f.is_budget()).count(), 5);
         assert_eq!(all.iter().filter(|f| f.is_completeness()).count(), 2);
         // Serialized tag names are the audit contract.
         let json = serde_json::to_string(&all).unwrap();
@@ -542,6 +609,7 @@ mod tests {
             "spend_below_floor",
             "wall_clock_over_budget",
             "params_over_budget",
+            "params_under_budget",
         ] {
             assert!(json.contains(tag), "missing tag {tag}");
         }

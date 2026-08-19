@@ -255,6 +255,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/prismlib/miner_entry.py"),
     ),
     (
+        "prismlib/params.py",
+        include_str!("../harness/prismlib/params.py"),
+    ),
+    (
         "prismlib/probes.py",
         include_str!("../harness/prismlib/probes.py"),
     ),
@@ -314,6 +318,15 @@ pub const RECIPE_VERSION: &str = "2.1.0";
 /// GPT-2 Large reference row MUST be re-measured at this cap before any
 /// `PRISM_ANCHOR_VERSION=2` / composite governance flip.
 pub const MAX_PARAMS: u64 = 1_000_000_000;
+
+/// Inclusive parameter floor after `build_model` (850M).
+///
+/// Recipe 2.1 rejects packs that stay at the old ~215M `LoopMoE` width:
+/// `ZeRO`/`FSDP` only pays at this scale on 4×32GB 5090. Count is **total**
+/// unique parameters (tied embeddings once) — same convention as
+/// [`MAX_PARAMS`]. Staging (`PRISM_TEST_MAX_PARAMS`) forces the floor to
+/// 0 unless `PRISM_TEST_MIN_PARAMS` is set.
+pub const MIN_PARAMS: u64 = 850_000_000;
 
 /// Assets-dir–relative home of the G5 natural-document packs
 /// (LongBench-v2 MCQ + HELMET RAG pools, their disjoint `public_dev`
@@ -523,6 +536,27 @@ pub fn max_params() -> u64 {
         .unwrap_or(MAX_PARAMS)
 }
 
+/// Effective parameter floor. Production is always [`MIN_PARAMS`].
+/// `PRISM_TEST_MIN_PARAMS` wins when set; a tiny-model
+/// `PRISM_TEST_MAX_PARAMS` otherwise disables the floor (0).
+#[must_use]
+pub fn min_params() -> u64 {
+    if let Some(p) = std::env::var("PRISM_TEST_MIN_PARAMS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        return p;
+    }
+    if std::env::var("PRISM_TEST_MAX_PARAMS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .is_some_and(|p| p > 0)
+    {
+        return 0;
+    }
+    MIN_PARAMS
+}
+
 /// Steps hard stop inside `train` (belt + clock). Config overrides only down.
 pub const MAX_TRAIN_STEPS: u32 = 20_000;
 
@@ -605,6 +639,7 @@ pub fn recipe_pin_hex() -> String {
     let mut h = Sha256::new();
     h.update(RECIPE_VERSION.as_bytes());
     h.update(MAX_PARAMS.to_le_bytes());
+    h.update(MIN_PARAMS.to_le_bytes());
     h.update(DATASET_URL.as_bytes());
     h.update(dataset_sha256().as_bytes());
     h.update(harness_files_sha256().as_bytes());
@@ -655,6 +690,8 @@ pub struct RecipeDescriptor {
     pub max_source_bytes: usize,
     /// Maximum model parameters after `build_model`.
     pub max_params: u64,
+    /// Inclusive parameter floor after `build_model`.
+    pub min_params: u64,
     /// Recipe contract pin (sha256 hex over the tuple).
     pub pin_hex: String,
     /// `AutoModel` pin id miners must echo in `automodel.base`.
@@ -704,6 +741,7 @@ pub fn descriptor() -> RecipeDescriptor {
         train_rows: TRAIN_ROWS,
         max_source_bytes: MAX_SOURCE_BYTES,
         max_params: MAX_PARAMS,
+        min_params: MIN_PARAMS,
         pin_hex: recipe_pin_hex(),
         automodel_pin_id: pin.id,
         automodel_repo_url: pin.git_url,
@@ -930,6 +968,8 @@ mod tests {
             "report(",
             "PRISM_TEST_TRAIN_MINUTES",
             "PRISM_TEST_MAX_PARAMS",
+            "PRISM_MIN_PARAMS",
+            "PRISM_TEST_MIN_PARAMS",
             "PRISM_PROBE_EVERY",
             "PRISM_PROBE_TIME_BUDGET_S",
             "unshare",
@@ -979,6 +1019,7 @@ mod tests {
             assert!(all.contains(marker), "harness package missing {marker}");
         }
         assert!(all.contains("1000000000") || all.contains("PRISM_MAX_PARAMS"));
+        assert!(all.contains("850000000") || all.contains("PRISM_MIN_PARAMS"));
     }
 
     #[test]
@@ -1171,8 +1212,10 @@ mod tests {
         let b = TRAIN_HOURS_CAP;
         assert!(a > b);
         assert_eq!(MAX_PARAMS, 1_000_000_000);
+        assert_eq!(MIN_PARAMS, 850_000_000);
         let all = harness_concat();
         assert!(all.contains("1000000000") || all.contains("PRISM_MAX_PARAMS"));
+        assert!(all.contains("850000000") || all.contains("PRISM_MIN_PARAMS"));
         assert!(all.contains("parameter cap"));
     }
 
@@ -1182,12 +1225,17 @@ mod tests {
         // this binary reads them, so there is no parallel-test race.
         assert!((train_hours_cap() - TRAIN_HOURS_CAP).abs() < f64::EPSILON);
         assert_eq!(max_params(), MAX_PARAMS);
+        assert_eq!(min_params(), MIN_PARAMS);
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15");
         std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
         assert!((train_hours_cap() - 0.25).abs() < f64::EPSILON);
         assert_eq!(max_params(), 2_000_000);
+        assert_eq!(min_params(), 0, "tiny-model profile disables the floor");
+        std::env::set_var("PRISM_TEST_MIN_PARAMS", "850000000");
+        assert_eq!(min_params(), 850_000_000);
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "nope");
         std::env::set_var("PRISM_TEST_MAX_PARAMS", "-5");
+        std::env::remove_var("PRISM_TEST_MIN_PARAMS");
         assert!((train_hours_cap() - TRAIN_HOURS_CAP).abs() < f64::EPSILON);
         assert_eq!(max_params(), MAX_PARAMS);
         std::env::remove_var("PRISM_TEST_TRAIN_MINUTES");

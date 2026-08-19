@@ -1,6 +1,6 @@
 """Fused kernels for LoopMoE — gated-delta scan, attention, RMS, CE.
 
-submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
+submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 
 Default delta path is **in-pack factored chunked WY** (batched GEMMs).
 Never the sequential-T Triton scan. Never auto-select FLA `chunk_kda` —

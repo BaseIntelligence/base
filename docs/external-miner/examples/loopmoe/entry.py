@@ -1,10 +1,10 @@
-"""Prism-shaped AutoModel entry for LoopMoE (recipe 2.0).
+"""Prism-shaped AutoModel entry for LoopMoE (recipe 2.1, ~908M).
 
 Exposes build_model / train for the operator harness seams. Uses FineWeb
-stream + prism_telemetry from ctx. Real single-node DDP (one process per
-GPU) + NVFP4 TE recipe when the class exists.
+stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
+(DDP lost at 215M; optimizer state matters at 1B). NVFP4 TE when present.
 
-submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
+submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 """
 
 from __future__ import annotations
@@ -584,12 +584,14 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
     # freshly constructed worker module does not declare those keys yet.
     model.load_state_dict(payload["state_dict"], strict=False)
     model = model.to(device)
+    n_params = int(sum(p.numel() for p in model.parameters()))
+    print(f"[loopmoe] rank={rank} n_params={n_params} ({n_params/1e6:.1f}M)", flush=True)
     micro = int(payload["micro_batch"])
     seq_len = int(payload["seq_len"])
     rec, te_mode = _maybe_te_recipe()
-    parallel = str(payload.get("parallel") or os.environ.get("LOOPMOE_PARALLEL", "ddp")).strip().lower()
+    parallel = str(payload.get("parallel") or os.environ.get("LOOPMOE_PARALLEL", "zero1")).strip().lower()
     if parallel not in {"ddp", "zero1", "fsdp"}:
-        parallel = "ddp"
+        parallel = "zero1"
     print(
         f"[loopmoe] worker te_version={_te_version()} te_mode={te_mode} "
         f"use_te_linear={getattr(model, 'use_te', None)} parallel={parallel}",
@@ -662,6 +664,7 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
             "seq_len": seq_len,
             "gpu_count": world,
             "te_available": True,
+            "n_params": n_params,
             **km,
         }
     )
@@ -679,7 +682,7 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
             telemetry_bag.get("probe_curve") or [],
         )
         print(
-            f"[loopmoe] train done steps={metrics['train_steps']} "
+            f"[loopmoe] train done n_params={n_params} steps={metrics['train_steps']} "
             f"seconds={metrics['train_seconds']:.1f} loss={metrics['train_loss']:.4f} "
             f"tokens={metrics['tokens_seen']} tok/s={metrics['tokens_per_sec']:.1f} "
             f"te_mode={te_mode} parallel={parallel_used} world={world} "
@@ -784,7 +787,7 @@ def _launch_ddp(model, ctx, gpu_count):
         "cap_s": cap_s,
         "wall_margin_s": WALL_MARGIN_S,
         "out_dir": str(out_dir),
-        "parallel": os.environ.get("LOOPMOE_PARALLEL", "ddp").strip().lower(),
+        "parallel": os.environ.get("LOOPMOE_PARALLEL", "zero1").strip().lower(),
     }
     payload_path = out_dir / PAYLOAD_NAME
     torch.save(payload, payload_path)
@@ -839,11 +842,15 @@ def train(model, ctx):
             te_available = False
 
     rec, te_mode = _maybe_te_recipe() if te_available else (None, "none")
+    n_params = int(sum(p.numel() for p in model.parameters()))
     print(
-        f"[loopmoe] train start gpu_count={gpu_count} te_available={te_available} "
+        f"[loopmoe] train start n_params={n_params} "
+        f"({n_params/1e6:.1f}M; floor 850e6 cap 1e9) "
+        f"gpu_count={gpu_count} te_available={te_available} "
         f"te_mode={te_mode} te_version={_te_version()} "
         f"cuda_devices={torch.cuda.device_count() if torch.cuda.is_available() else 0} "
-        f"use_te_linear={getattr(model, 'use_te', None)}",
+        f"use_te_linear={getattr(model, 'use_te', None)} "
+        f"parallel={os.environ.get('LOOPMOE_PARALLEL', 'zero1')}",
         flush=True,
     )
 
@@ -859,7 +866,7 @@ def train(model, ctx):
         fpt = float(ctx.get("flops_per_token_probe") or 0.0)
         elapsed = float(metrics.get("train_seconds") or 1.0)
         tokens = float(metrics.get("tokens_seen") or 0.0)
-        n_params = float(sum(p.numel() for p in model.parameters()))
+        n_params = float(n_params)
         loop_f = float(getattr(model, "prism_loop_factor", 1.0) or 1.0)
         fpt_analytic = 6.0 * n_params * loop_f
         fpt_source = "probe"
@@ -871,10 +878,13 @@ def train(model, ctx):
         metrics["flops_per_token_probe"] = fpt
         metrics["flops_per_token_analytic"] = fpt_analytic
         metrics["flops_per_token_source"] = fpt_source
+        metrics["n_params"] = int(n_params)
         print(
-            f"[loopmoe] ddp parent metrics world={metrics.get('world_size')} "
+            f"[loopmoe] ddp parent metrics n_params={int(n_params)} "
+            f"world={metrics.get('world_size')} "
             f"te_mode={metrics.get('te_mode')} tok/s={metrics.get('tokens_per_sec')} "
-            f"mfu_est={mfu*100:.2f}% fpt_src={fpt_source} compile={metrics.get('torch_compile')}",
+            f"mfu_est={mfu*100:.2f}% fpt_src={fpt_source} "
+            f"parallel={metrics.get('parallel_mode')} compile={metrics.get('torch_compile')}",
             flush=True,
         )
         prism_telemetry.finish_evaluation()
@@ -910,10 +920,11 @@ def train(model, ctx):
             "backend": "none",
             "gpu_count": gpu_count,
             "tokens_seen": int(getattr(stream, "tokens_seen", 0)) or int(metrics["tokens_local"]),
+            "n_params": n_params,
         }
     )
     print(
-        f"[loopmoe] train done steps={metrics['train_steps']} "
+        f"[loopmoe] train done n_params={n_params} steps={metrics['train_steps']} "
         f"seconds={metrics['train_seconds']:.1f} te_mode={te_mode} parallel=single",
         flush=True,
     )

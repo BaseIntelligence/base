@@ -1,6 +1,6 @@
 """LoopMoE AutoModel family — Prism recipe 2.0 novelty under models/.
 
-submission_nonce: loopmoe-chunkwy-1h-4x5090-20260818T0530Z
+submission_nonce: loopmoe-1b-zero1-20260819T1200Z
 (unique architecture bytes so prior LoopMoE / hybrid_delta hashes do not
 trip the copy gate; recurrent core + fine-grained MoE + hybrid
 delta/attention design is unchanged. Fused delta + ZeRO live in kernels/entry.)
@@ -36,20 +36,22 @@ INJECT_RESIDUAL_INIT = 0.883
 
 DEFAULTS = {
     "vocab_size": 50257,
-    "d_model": 1024,
+    # ~908M unique total (tied embeddings once). The 215M width is
+    # invalid for recipe 2.1 (floor 850M / cap 1B).
+    "d_model": 1536,
     "n_prelude": 2,
-    "n_core": 4,
+    "n_core": 6,
     "n_coda": 2,
     "n_loops": 4,
     "max_loops": 4,
-    "attn_heads": 16,
-    "delta_heads": 8,
+    "attn_heads": 24,
+    "delta_heads": 12,
     "delta_key_dim": 128,
     "delta_value_dim": 128,
-    "mlp_hidden": 2048,
-    "n_experts": 16,
-    "expert_hidden": 512,
-    "shared_expert_hidden": 1024,
+    "mlp_hidden": 4096,
+    "n_experts": 32,
+    "expert_hidden": 768,
+    "shared_expert_hidden": 1536,
     "moe_top_k": 2,
     "window": 2048,
     "chunk": 32,
@@ -57,9 +59,9 @@ DEFAULTS = {
     "rope_theta": 50000.0,
     "decay_init": 0.02,
     "init_std": 0.02,
-    # TE Linear + torch.utils.checkpoint disagree on saved-tensor count
-    # (94 vs 45) during NVFP4 recompute. Keep the graph intact instead.
-    "grad_checkpoint": False,
+    # Prefer activation ckpt at 1B. TE Linear + checkpoint disagree on
+    # saved-tensor count (94 vs 45) under NVFP4 — disabled when use_te.
+    "grad_checkpoint": True,
 }
 
 _OVERRIDE_KEYS = tuple(DEFAULTS.keys())
@@ -420,7 +422,7 @@ class LoopMoE(nn.Module):
         self.head.weight = self.tok_emb.weight
         self.logits = None
         self.aux_loss = None
-        self.grad_checkpoint = bool(cfg.get("grad_checkpoint", False))
+        self.grad_checkpoint = bool(cfg.get("grad_checkpoint", False)) and not use_te
         # Analytic FLOPs hooks (harness cross-check only; not the budget).
         self.prism_loop_factor = float(self.n_loops)
         self.prism_active_param_fraction = float(cfg["moe_top_k"]) / max(1.0, float(cfg["n_experts"]))
