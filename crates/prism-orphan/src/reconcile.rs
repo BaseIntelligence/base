@@ -111,7 +111,16 @@ pub async fn reconcile_once(
                 }
             }
         }
-        // Unreattachable mid-pod or pre-measure without pod: fail + best-effort stop.
+        // Pre-pod (screens / claim / not yet rented): never fail-orphan.
+        // A restart here has no Lium instance; fail-closed with `pod (none)`
+        // burned the miner slot and asked them to stop a pod that does not exist.
+        if row.pod_id.is_none() {
+            if requeue_pre_pod(store, &row, reason).await {
+                report.requeued = report.requeued.saturating_add(1);
+            }
+            continue;
+        }
+        // Unreattachable mid-pod: fail + best-effort stop.
         let mut terminated = false;
         let key_present = payer.is_some_and(|p| p.vault.get(&row.id).is_some());
         if let Some(pod) = row.pod_id.as_deref() {
@@ -139,6 +148,32 @@ pub async fn reconcile_once(
         info!(submission_id = %row.id, reason, %terminated, "orphan marked failed");
     }
     Ok(report)
+}
+
+async fn requeue_pre_pod(store: &dyn PrismStore, row: &SubmissionState, reason: &str) -> bool {
+    let ok = store
+        .apply(
+            &row.id,
+            &StatePatch {
+                status: Some(Stage::Queued),
+                error_detail: None,
+                ..StatePatch::default()
+            },
+            Some(&StageEvent {
+                stage: Stage::Queued,
+                detail: Some(serde_json::json!({
+                    "pre_pod_requeue": true,
+                    "reason": reason,
+                })),
+                at_ms: 0,
+            }),
+        )
+        .await
+        .is_ok();
+    if ok {
+        info!(submission_id = %row.id, reason, "pre-pod mid-flight requeued");
+    }
+    ok
 }
 
 /// Probe pod + vault; on success requeue to `queued` keeping `pod_id`.

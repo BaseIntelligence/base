@@ -243,6 +243,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn boot_reconcile_requeues_pre_pod_review_without_failing() {
+        let store: Arc<dyn PrismStore> = Arc::new(MemoryPrismStore::default());
+        let r = row("feedfacefeedface", Stage::LlmReview, None);
+        store.insert_queued(&r).await.unwrap();
+        store
+            .apply(
+                &r.id,
+                &prism_store::StatePatch {
+                    status: Some(Stage::LlmReview),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let active = Arc::new(ActiveJobs::new());
+        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend::dead());
+        let report = reconcile_once(store.as_ref(), &active, None, be, 0, true, None)
+            .await
+            .unwrap();
+        assert_eq!(report.requeued, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.terminate_attempts, 0);
+        let got = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(got.status, Stage::Queued);
+        assert!(got.pod_id.is_none());
+        assert!(got.final_score.is_none());
+    }
+
+    #[tokio::test]
     async fn boot_reconcile_resumes_alive_pod_without_terminate() {
         let store: Arc<dyn PrismStore> = Arc::new(MemoryPrismStore::default());
         let r = row("cafebabecafebabe", Stage::Running, Some("pod-live"));

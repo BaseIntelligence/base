@@ -126,18 +126,21 @@ special: each miner `X-Lium-Api-Key` has its **own** Lium budget (no shared
 process-wide rent serialize queue). The orchestrator **requeues without
 burning** `retry_count` / gating attempts. A background tick re-queues
 failed 429 rows from the last **6 hours**. After an infra `blocked`, the
-miner may **resubmit for up to 30 minutes** (new `POST /v1/submissions` or
-`POST /v1/submissions/{id}/retry` for `ChallengeInternal`); after the window
-the slot stays blocked until the metagraph watcher reopens it (hotkey left /
-replaced).
+miner may **`/retry` or re-POST the same bytes** for `ChallengeInternal`
+without a time cutoff. A *different* ZIP is only accepted inside the
+**30-minute** infra window; after that the slot stays blocked until the
+metagraph watcher reopens it (hotkey left / replaced).
 
 **Training-only entries** gate separately under the composite challenge key
 `prism:train:<arch_id>`: one accepted entry per `(hotkey, arch_id)`, with
 the same auto-retry classes, the same terminal `rejected`/`blocked` states,
 and the same watcher resets (reconciliation is prefix-scoped, so `prism`
 covers every `prism:train:*` row). Idempotency stays the contract-bytes
-`submission_id`: resubmitting identical bytes is an `already-queued` no-op,
-never a gate conflict.
+`submission_id`: resubmitting identical in-flight / successful bytes is an
+`already-queued` no-op (never a gate conflict). A failed `ChallengeInternal`
+row is recovered by that same POST or `/retry`. Pre-pod mid-flight rows
+(`llm_review` / `similarity` / `provisioning` with no `pod_id`) requeue on
+control-plane restart instead of fail-orphan with `pod (none)`.
 
 ## Architecture registry + competition
 
