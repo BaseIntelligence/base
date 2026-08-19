@@ -81,10 +81,14 @@ not SIGHUP GPU work. On boot (and every ~30s) orphan reconcile is
 still alive and whose BYOK key can be restored from the sealed vault
 (`PRISM_PAYER_VAULT_DIR`, default TTL ≥**36h** / train+eval+skew; heartbeats
 re-seal; measure start refreshes the seal and **measure Err keeps the vault
-entry** so auto-/miner-retry can re-rent) are requeued with `pod_id` kept — the
+entry** so auto-/miner-retry can re-rent) are requeued with `pod_id` kept. `claim_next` prefers those resume rows over
+new submits so they do not wait behind the FIFO (and so workers call
+`resume_eval` instead of a second `lium rent`). The
 orchestrator reattaches
 (log/event poll → wait terminal → harvest → score) without terminating the
-pod. Only unreattachable rows fail-closed (`control_plane_restart` /
+pod. `GET /v1/submissions` lists omit source trees / telemetry series so the
+control plane cannot OOM the master host by hydrating hundreds of `tree_blob`
+columns. Only unreattachable rows fail-closed (`control_plane_restart` /
 `harness_detached`) with best-effort terminate. Post-measure review stages
 still requeue. Residual gap: expired seal + no operator fallback ⇒ cannot
 call Lium API ⇒ fail-orphan (miner must stop the pod and resubmit). The stuck
