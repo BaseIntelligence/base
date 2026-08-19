@@ -22,7 +22,7 @@ binary, not a scored organizer baseline, and not a live `:28092` flip.
 | `automodel.base` | Pin id — must match `GET /v1/recipe` (`automodel@v0.5.0`) |
 | `automodel.patch` | Unified diff vs that pin (entry, model, kernels, DDP worker) |
 | `prism.toml` | Optional entry pointer |
-| `requirements.txt` | Optional TE wheels (installed network-on, then train goes offline) |
+| `requirements.txt` | Comment-only pin so AutoModel `pyproject.toml` is not installed (debian blinker). TE is `DENSE1B_TE=1`. |
 
 Pack the four files at the ZIP root and `POST /v1/submissions` with your
 hotkey + `X-Lium-Api-Key`. See [`../../prism.md`](../../prism.md).

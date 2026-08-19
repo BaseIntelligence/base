@@ -6,7 +6,7 @@ index 00000000..11111111
 @@ -0,0 +1,4 @@
 +"""Dense ~1B transformer — Prism recipe 2.1 reference under AutoModel models/.
 +
-+submission_nonce: dense-1b-zero1-20260819T1800Z
++submission_nonce: dense-1b-zero1-20260819T1822Z
 +"""
 diff --git a/nemo_automodel/components/models/dense1b/ddp_worker.py b/nemo_automodel/components/models/dense1b/ddp_worker.py
 new file mode 100644
@@ -19,7 +19,7 @@ index 00000000..11111111
 +Rendezvous is tcp://127.0.0.1 (never hostname localhost — AF_INET6 errno 97).
 +No socket/subprocess imports (intake static_source NetworkExfil).
 +
-+submission_nonce: dense-1b-zero1-20260819T1800Z
++submission_nonce: dense-1b-zero1-20260819T1822Z
 +"""
 +
 +from __future__ import annotations
@@ -72,7 +72,7 @@ index 00000000..11111111
 +stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
 +(optimizer state matters at 1B). NVFP4 TE when present. Dense FFN only.
 +
-+submission_nonce: dense-1b-zero1-20260819T1800Z
++submission_nonce: dense-1b-zero1-20260819T1822Z
 +"""
 +
 +from __future__ import annotations
@@ -1029,7 +1029,7 @@ index 00000000..11111111
 @@ -0,0 +1,134 @@
 +"""Attention / RMS / RoPE / CE helpers for the dense 1B reference.
 +
-+submission_nonce: dense-1b-zero1-20260819T1800Z
++submission_nonce: dense-1b-zero1-20260819T1822Z
 +
 +Hot-path train (seq=512) is one Flash/SDPA call — no Python token loop.
 +"""
@@ -1169,7 +1169,7 @@ index 00000000..11111111
 @@ -0,0 +1,288 @@
 +"""Dense ~975M transformer — Prism recipe 2.1 reference under models/.
 +
-+submission_nonce: dense-1b-zero1-20260819T1800Z
++submission_nonce: dense-1b-zero1-20260819T1822Z
 +
 +GQA + RMSNorm + SwiGLU + RoPE + QK-norm. Tied embeddings. No MoE, no
 +routed experts, no LoopMoE core. Fine-grained MoE at 1B wastes MFU
@@ -1455,3 +1455,13 @@ index 00000000..11111111
 +    if not env_te:
 +        te_flag = False
 +    return DenseTransformer(_config_from_ctx(ctx), use_te=te_flag)
+diff --git a/requirements.txt b/requirements.txt
+new file mode 100644
+index 00000000..11111111
+--- /dev/null
++++ b/requirements.txt
+@@ -0,0 +1,4 @@
++# BF16 + activation checkpoint. Do not install AutoModel pyproject
++# (debian blinker has no RECORD). TE wheels are opt-in via DENSE1B_TE=1.
++# Do not put pip option lines here.
++# submission_nonce: dense-1b-zero1-20260819T1822Z

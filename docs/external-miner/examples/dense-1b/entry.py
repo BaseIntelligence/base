@@ -4,7 +4,7 @@ Exposes build_model / train for the operator harness seams. Uses FineWeb
 stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
 (optimizer state matters at 1B). NVFP4 TE when present. Dense FFN only.
 
-submission_nonce: dense-1b-zero1-20260819T1800Z
+submission_nonce: dense-1b-zero1-20260819T1822Z
 """
 
 from __future__ import annotations
