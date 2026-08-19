@@ -4,7 +4,7 @@ Exposes build_model / train for the operator harness seams. Uses FineWeb
 stream + prism_telemetry from ctx. Default parallel is ZeRO-1 on 4 GPU
 (optimizer state matters at 1B). NVFP4 TE when present. Dense FFN only.
 
-submission_nonce: dense-1b-zero1-20260819T1822Z
+submission_nonce: dense-1b-zero1-20260819T1840Z
 """
 
 from __future__ import annotations
@@ -592,12 +592,19 @@ def ddp_worker_main(payload_path=None, rank=None, world=None, port=None):
         texts = [json.loads(line) for line in open(texts_path, encoding="utf-8") if line.strip()]
     if not texts:
         raise RuntimeError("DDP worker missing train texts")
-    print(f"[dense1b] rank={rank} texts={len(texts)} building model", flush=True)
-    model = build_dense1b(ctx)
-    # TE Linear writes `_extra_state` during the parent FLOPs probe; a
-    # freshly constructed worker module does not declare those keys yet.
-    model.load_state_dict(payload["state_dict"], strict=False)
-    model = model.to(device)
+    # One rank at a time: 4× CPU 975M + pickled state_dict SIGKILL host RAM.
+    print(f"[dense1b] rank={rank} texts={len(texts)} building model (serial)", flush=True)
+    for r in range(world):
+        if rank == r:
+            model = build_dense1b(ctx)
+            weights_path = payload.get("init_weights_path")
+            if weights_path:
+                sd = torch.load(weights_path, map_location="cpu", weights_only=False)
+                model.load_state_dict(sd, strict=False)
+                del sd
+            model = model.to(device)
+            print(f"[dense1b] rank={rank} model on {device}", flush=True)
+        torch.distributed.barrier()
     n_params = unique_n_params(model)
     print(f"[dense1b] rank={rank} n_params={n_params} ({n_params/1e6:.1f}M)", flush=True)
     micro = int(payload["micro_batch"])
@@ -769,8 +776,10 @@ def _launch_ddp(model, ctx, gpu_count):
     tok = ctx.get("tokenizer") or getattr(stream, "_tok", None)
     if not texts or tok is None:
         raise RuntimeError("DDP payload needs stream texts + tokenizer")
-    # Free parent CUDA so workers own the devices (probe left ~30GiB on GPU 0).
-    cpu_sd = {k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}
+    # Free parent CUDA so workers own the devices. Weights go to a sidecar
+    # file — do not pickle a 975M state_dict into every spawned process.
+    init_weights = out_dir / "dense_1b_init.pt"
+    torch.save({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, init_weights)
     _release_parent_cuda(model, stream)
     seq_len = int(ctx.get("seq_len") or getattr(stream, "seq_len", 512) or 512)
     harness_bs = int(ctx.get("batch_size") or getattr(stream, "batch_size", 8) or 8)
@@ -787,7 +796,7 @@ def _launch_ddp(model, ctx, gpu_count):
         for text in texts[:4096]:
             fh.write(json.dumps(text, ensure_ascii=False) + "\n")
     payload = {
-        "state_dict": cpu_sd,
+        "init_weights_path": str(init_weights),
         "texts": [],
         "texts_path": str(texts_path),
         "tokenizer": tok,

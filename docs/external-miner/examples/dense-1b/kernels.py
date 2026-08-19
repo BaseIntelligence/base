@@ -1,6 +1,6 @@
 """Attention / RMS / RoPE / CE helpers for the dense 1B reference.
 
-submission_nonce: dense-1b-zero1-20260819T1822Z
+submission_nonce: dense-1b-zero1-20260819T1840Z
 
 Hot-path train (seq=512) is one Flash/SDPA call — no Python token loop.
 """
