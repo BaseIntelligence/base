@@ -24,6 +24,7 @@ services:
       # Staging-only trust root: mirrors prod emission (design/prism 0/10000).
       - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
       - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro
+      - base-validator-lkg:/var/lib/base
   gateway:
     environment:
       BASE_NETUID: "541"

@@ -11,6 +11,7 @@ services:
       BASE_COORDINATION_INTERVAL_SECS: "3"
     volumes:
       - ./config:/etc/base/config:ro
+      - base-validator-lkg:/var/lib/base
   # Gateway must not run on the validator host.
   gateway:
     profiles: ["never"]

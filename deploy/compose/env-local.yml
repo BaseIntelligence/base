@@ -59,6 +59,7 @@ services:
       BASE_TRUST_ROOT_DIR: /etc/base/config
     volumes:
       - ./.local/trust-root:/etc/base/config:ro
+      - base-validator-lkg:/var/lib/base
 
   prism-challenge:
     ports:

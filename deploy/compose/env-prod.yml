@@ -29,6 +29,7 @@ services:
       BASE_VALIDATOR_WALLET: base-validator
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
+      - base-validator-lkg:/var/lib/base
   gateway:
     environment:
       BASE_NETUID: "100"

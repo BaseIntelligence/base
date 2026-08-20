@@ -4,7 +4,9 @@
 //! graceful shutdown.
 //! Task 29: bundle fetch, verify against **local** trust root, independent
 //! aggregate, dual final-vector comparison (`Match` / `VectorMismatch` /
-//! `InputInvalid` / `NoSubmission`). No last-known-good; no extrinsic submit.
+//! `InputInvalid` / `NoSubmission`). Fetch/verify never substitutes another
+//! epoch. Extrinsic submit is task 33; the coordination loop may persist a
+//! verified seal for burn-fallback resubmit after a gateway restart.
 //! Task 30: verified-bundle mirror store, `GET /v1/bundle/root/{root}`, peer
 //! fetch by root when the gateway is unreachable (content-addressed).
 //! Task 31: peer root cross-check — `GET /v1/consensus/root/{epoch}` signed
@@ -22,6 +24,7 @@ pub mod attest;
 pub mod epoch;
 mod epoch_loop;
 pub mod error;
+mod lkg;
 pub mod registration;
 
 // Verification stack (coordination / crosscheck / mirror / peers / recompute)
@@ -55,6 +58,7 @@ pub use epoch_loop::{
     spawn_coordination_loop, CoordinationSubmitConfig, EpochSubmitDedupe,
 };
 pub use error::ValidatorError;
+pub use lkg::SealedBundleLkg;
 pub use mirror::{
     bundle_identity, mirror_router, parse_root_hex, root_hex, MemoryMirrorStore, SharedMirrorStore,
 };
@@ -62,8 +66,8 @@ pub use peers::{PeerBook, PeerEndpoint};
 pub use recompute::{
     compare_bundle, compare_bundle_bytes, fetch_and_compare, fetch_and_compare_with_mirror,
     fetch_compare_and_crosscheck, independent_aggregate, independent_python_weights,
-    maybe_persist_verified, vector_sha256, ComparisonOutcome, ExpectedBundle, NoSubmissionReason,
-    RecomputeError,
+    maybe_persist_verified, no_submission_from_fetch, vector_sha256, ComparisonOutcome,
+    ExpectedBundle, NoSubmissionReason, RecomputeError,
 };
 pub use registration::{RegistrationStatus, RegistrationStub};
 pub use submit::{
