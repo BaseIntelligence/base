@@ -295,7 +295,7 @@ async fn cmd_republish_topmodel(id: String) -> Result<(), String> {
     };
     if !row.weight_eligible() {
         return Err(format!(
-            "submission {id} is not weight-eligible (AutoModel 2.0)"
+            "submission {id} is not weight-eligible (prism-v2.1)"
         ));
     }
     let gh = build_topmodel();

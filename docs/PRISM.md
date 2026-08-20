@@ -1,6 +1,7 @@
 # PRISM challenge (Base)
 
 **challenge_id:** `prism`  
+**competition_id:** `prism-v2.1` (`scoring_generation` `21`) — **new contest**. Recipe `2.0.0` / 1.x harvests are a different competition: they are **not** rescored and **cannot** win or carry leaves. `GET /v1/weights/latest` stays fail-closed **burn** (uid 0 = 100%, `sealed: false`) until the first terminated, weight-eligible v2.1 submission exists, then normal WTA/benchmarks emission.  
 **scoring_version:** `4` live (equal-weight **G2 public-suite accuracies** → lattice; tokenizer length no longer farms the leaf). Legacy: `2` = pure bits/token bpb (`PRISM_SCORING_MODE=shadow`); `3` = full G1–G8 composite (`composite`, anchors required). Default mode is `benchmarks`. See **v4 G2 benchmark scoring** and **v3 composite scoring** below. **v2.1 additions (opt-in, default-off):** emission economics (`PRISM_EMISSION_MODE`, `PRISM_OWNER_ARCH_CREDIT_BPS`) + versioned battery anchors (`PRISM_ANCHOR_VERSION`, sets v0–v3). See **v2.1 innovation-scoring additions** below.
 
 **recipe_version:** `2.1.0` (pinned NeMo AutoModel diff + 4-GPU CUDA 13/TE pod + attested dual cap + complete v3 battery; legacy **1.x** layouts rejected — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))
@@ -221,17 +222,20 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
 - *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
   Prism's emission share (50% of the subnet) goes entirely to that **submitter**
   (best BPB → that submission's miner UID).
-- *Recipe 2.0 / AutoModel weight eligibility* (fail-closed): only submissions
-  with recipe major ≥ 2, an `automodel@…` pin signal, or a packed tree
-  containing `.prism/automodel.patch` may carry into the competition set or
-  win WTA. Legacy 1.x positives remain in Postgres / site FE history but are
-  treated as `Score(0)` for emission; if every positive score is ineligible,
-  the epoch projects all-zero (burn / hold) — never emit Prism share to 1.x.
+- *Recipe 2.1 / `prism-v2.1` weight eligibility* (fail-closed): only harvests
+  whose metrics carry recipe `2.1.x`, `competition_id=prism-v2.1`, or
+  `scoring_generation=21` may enter `emission_leaves` as winners or carry.
+  Recipe `2.0.0`, AutoModel-pin-only rows, and 1.x trees are the **previous
+  contest** — they stay in Postgres / site history as `Score(0)` for
+  emission and are never retroactively rescored. Empty registry or
+  old-generation-only positives project all-zero (gateway burn / hold)
+  until the first eligible v2.1 termination. See **v2.1 competition
+  cutover** in [`runbooks/prism-enable-lium-and-emission.md`](runbooks/prism-enable-lium-and-emission.md).
 
 **Top-model publish + secure receive.** The master tracks the global best
 **lattice score** (G2 equal-weight accuracies under `scoring_version` 4 —
-never min-bpb alone) across **weight-eligible** (recipe 2.0 / AutoModel)
-scored submissions. After a successful Lium eval it
+never min-bpb alone) across **weight-eligible** (recipe 2.1 / `prism-v2.1`)
+  scored submissions. After a successful Lium eval it
 **pulls** `checkpoint.pt` from the pod over SSH (master-initiated; the pod
 never pushes) and stages it through the secure receive hook into
 `$PRISM_ARTIFACT_DIR/<submission_id>/` **before** terminate. Staging

@@ -3,6 +3,7 @@
 # Prism challenge — HTTP AutoModel patch submit
 
 **challenge_id:** `prism`  
+**competition_id:** `prism-v2.1` (`scoring_generation` `21`) — **new competition**. Old recipe `2.0.0` / 1.x scores are dead: they are not rescored and cannot win weights. Until the first eligible 2.1 submission terminates, subnet weights stay **burn** (uid 0 = 100%).  
 **scoring_version:** `4` live (equal-weight G2 public-suite accuracies → lattice; LLM review is an anti-cheat gate, not a grader). **v3 harness (default):** every scored run executes the **G1–G8 battery**; the leaf uses G2 benches while `PRISM_SCORING_MODE=benchmarks` (default). Legacy `shadow` = bits/token bpb; `composite` = full G1–G8 lattice when anchors are ready.  
 **recipe_version:** `2.1.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) diff + 4-GPU CUDA 13/TE pod + attested dual cap; legacy 1.x layouts rejected)
 **Path:** HTTP only — **no Phala/CVM**
@@ -298,6 +299,12 @@ baseline — not every past submission — and still exclude your own prior art
 LayerNorm, gated/parallel residual, …) are **not** plagiarism signals. LLM
 quality is coherence-only, not a grader.
 Public gallery/leaderboard show champions only.
+**New competition (`prism-v2.1`).** Only harvests finalized under recipe
+**2.1.0** / `scoring_generation` **21** can receive leaves. A prior 2.0
+AutoModel run — even a high lattice score — is a different contest and
+does not carry, win WTA, or get paid. Re-submit under 2.1 if you want to
+compete. Until someone finishes an eligible 2.1 run, weights burn.
+
 **Competition (temporary):** emission uses **your own best training score
 only** — architecture-owner credit (rewarding arch owners when others train
 well on their code) is **disabled** for now so the best-scoring trainer keeps

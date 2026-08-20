@@ -543,7 +543,7 @@ async fn get_jobs(State(st): State<Arc<AppState>>) -> Response {
 }
 
 async fn get_recipe() -> impl IntoResponse {
-    Json(prism_recipe::descriptor())
+    Json(prism_pipeline::recipe_descriptor_json())
 }
 
 async fn get_recipe_baseline() -> impl IntoResponse {
@@ -1084,6 +1084,11 @@ mod tests {
             "the underspend floor is miner-facing: it must be advertised"
         );
         assert_eq!(v["automodel_pin_id"], prism_automodel::AUTOMODEL_PIN_ID);
+        assert_eq!(v["competition_id"], prism_store::PRISM_COMPETITION_ID);
+        assert_eq!(
+            v["scoring_generation"],
+            prism_store::PRISM_SCORING_GENERATION
+        );
         let (s, v) = call(
             app,
             Request::get("/v1/recipe/baseline")

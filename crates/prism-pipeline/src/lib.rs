@@ -24,8 +24,8 @@ pub use composite::{
 };
 pub use config::PrismConfig;
 pub use pipeline::{
-    measurement_patch, mid_pod_resume, resume_measurement, run_eval_pipeline, run_sim_pipeline,
-    PipelineError, PipelineInput, PipelineResult,
+    measurement_patch, mid_pod_resume, recipe_descriptor_json, resume_measurement,
+    run_eval_pipeline, run_sim_pipeline, PipelineError, PipelineInput, PipelineResult,
 };
 pub use precheck::{
     corpus_from_rows, ephemeral_candidate, evaluate_copy_precheck, gate_corpus_from_rows,

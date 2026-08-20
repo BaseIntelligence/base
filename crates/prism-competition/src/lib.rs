@@ -42,10 +42,10 @@
 //! - **WTA leaf emission**: [`apply_wta`] keeps a single positive `Score`
 //!   (argmax; lexicographically smallest hotkey on ties). Prism's emission
 //!   share goes to that submitter.
-//! - **Recipe 2.0 / AutoModel only**: rows with `weight_eligible == false`
-//!   (legacy 1.x) contribute `Score(0)` only — never win WTA. If every
-//!   positive score is ineligible, emission fail-closes to an all-zero /
-//!   burn projection (no 1.x winner).
+//! - **Recipe 2.1 / generation 21 only**: rows with `weight_eligible == false`
+//!   (1.x, recipe 2.0, old contest id) contribute `Score(0)` only — never
+//!   win WTA. If every positive score is ineligible, emission fail-closes
+//!   to an all-zero / burn projection (no pre-v2.1 winner).
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -548,13 +548,43 @@ mod tests {
 
     #[test]
     fn only_legacy_tops_fail_closed_to_burn() {
-        // No AutoModel-eligible positive → no WTA winner (burn / hold).
+        // No v2.1-eligible positive → no WTA winner (burn / hold).
         let rows = vec![legacy_row("aa", 900_000), legacy_row("bb", 800_000)];
         let out = competition_scores(&rows, &BTreeMap::new());
         assert_eq!(out.get("aa"), Some(&FinalScore::Score(0)));
         assert_eq!(out.get("bb"), Some(&FinalScore::Score(0)));
         let wta = apply_wta(out);
         assert!(wta.values().all(|s| matches!(s, FinalScore::Score(0))));
+    }
+
+    #[test]
+    fn empty_registry_burns() {
+        let out = emission_leaves(&[], &BTreeMap::new(), EmissionMode::Wta, 0);
+        assert!(out
+            .values()
+            .all(|s| !matches!(s, FinalScore::Score(v) if *v > 0)));
+    }
+
+    #[test]
+    fn only_old_gen_scores_burn() {
+        let rows = vec![legacy_row("old-a", 900_000), legacy_row("old-b", 800_000)];
+        let out = emission_leaves(&rows, &BTreeMap::new(), EmissionMode::Wta, 0);
+        assert!(out.values().all(|s| matches!(s, FinalScore::Score(0))));
+    }
+
+    #[test]
+    fn first_new_gen_eligible_can_win() {
+        let rows = vec![row("new-hk", None, 111_000)];
+        let out = emission_leaves(&rows, &BTreeMap::new(), EmissionMode::Wta, 0);
+        assert_eq!(out.get("new-hk"), Some(&FinalScore::Score(111_000)));
+    }
+
+    #[test]
+    fn old_plus_new_only_new_counts() {
+        let rows = vec![legacy_row("old-hk", 999_000), row("new-hk", None, 50_000)];
+        let out = emission_leaves(&rows, &BTreeMap::new(), EmissionMode::Wta, 0);
+        assert_eq!(out.get("new-hk"), Some(&FinalScore::Score(50_000)));
+        assert_eq!(out.get("old-hk"), Some(&FinalScore::Score(0)));
     }
 
     // ---- v2.1: emission modes ----

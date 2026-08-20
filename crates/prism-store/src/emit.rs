@@ -23,12 +23,14 @@ fn backend(e: sqlx::Error) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
-/// SQL predicate: recipe 2.0 / `AutoModel` pin / `.prism/automodel.patch` in tree.
+/// SQL predicate: recipe **2.1.x** / live contest id / scoring generation 21.
+/// Recipe 2.0 and AutoModel-pin-only rows are the previous competition.
 pub(crate) const WEIGHT_ELIGIBLE_SQL: &str = "(\
-COALESCE(metrics_json->>'recipe','') LIKE '2.%' \
-OR COALESCE(metrics_json#>>'{pod_manifest,automodel_base}','') LIKE 'automodel@%' \
-OR COALESCE(metrics_json#>>'{pod_manifest,pin_id}','') LIKE 'automodel@%' \
-OR (tree_blob IS NOT NULL AND position('\\x2e707269736d2f6175746f6d6f64656c2e7061746368'::bytea in tree_blob) > 0)\
+COALESCE(metrics_json->>'recipe','') LIKE '2.1.%' \
+OR COALESCE(metrics_json#>>'{pod_manifest,recipe}','') LIKE '2.1.%' \
+OR COALESCE(metrics_json->>'competition_id','') = 'prism-v2.1' \
+OR COALESCE(metrics_json#>>'{pod_manifest,competition_id}','') = 'prism-v2.1' \
+OR COALESCE(metrics_json->>'scoring_generation','') = '21'\
 )";
 
 type EmitSqlRow = (
@@ -102,7 +104,7 @@ pub(crate) async fn emit_batch(
 
 /// Positive lattice scores still eligible for epoch-close competition carry.
 ///
-/// `Score(0)` rejects, `NoScore` absences, and legacy 1.x positives are
+/// `Score(0)` rejects, `NoScore` absences, and pre-v2.1 positives are
 /// excluded. Competition aggregation takes `max` over the union of the fresh
 /// batch and this set, so a better later score supersedes naturally.
 pub(crate) async fn active_score_rows(
@@ -173,4 +175,17 @@ pub(crate) async fn pending_emit_epochs(
         .into_iter()
         .map(|(e,)| e.max(0).cast_unsigned())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use prism_store_types::{PRISM_COMPETITION_ID, PRISM_SCORING_GENERATION};
+
+    #[test]
+    fn eligible_sql_matches_live_contest() {
+        assert!(super::WEIGHT_ELIGIBLE_SQL.contains("2.1.%"));
+        assert!(super::WEIGHT_ELIGIBLE_SQL.contains(PRISM_COMPETITION_ID));
+        assert!(super::WEIGHT_ELIGIBLE_SQL.contains(&PRISM_SCORING_GENERATION.to_string()));
+        assert!(!super::WEIGHT_ELIGIBLE_SQL.contains("automodel@"));
+    }
 }

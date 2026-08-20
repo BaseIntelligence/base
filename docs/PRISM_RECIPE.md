@@ -1,6 +1,10 @@
 # PRISM recipe v2.1.0 — AutoModel + attested 4-GPU training
 
-**Live contract:** recipe **`2.1.0`**. Miners submit a **unified diff against a
+**Live contract:** recipe **`2.1.0`**, competition **`prism-v2.1`**
+(`scoring_generation` **21**). This is a **new contest**: recipe `2.0.0`
+and earlier harvests are not scored or paid under v2.1. Weights **burn**
+(uid 0 = 100%, `sealed: false`) until the first terminated eligible 2.1
+submission. Miners submit a **unified diff against a
 pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) checkout** —
 not a free-form `architecture.py` / `training.py` project. Megatron-Bridge is
 **out of scope**. Legacy recipe **1.x** two-script / source-tree / training-only

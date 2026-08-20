@@ -400,6 +400,12 @@ mod tests {
         }
     }
 
+    fn old_gen(hk: [u8; KEY_LEN], score: u64) -> EpochScoreRow {
+        let mut r = row(hk, None, score);
+        r.weight_eligible = false;
+        r
+    }
+
     fn soa_of(leaves: &BTreeMap<Hotkey, LeafV1>, hk: &[u8; KEY_LEN]) -> ScoreOrAbsence {
         leaves.get(hk).map(|l| l.score_or_absence.clone()).unwrap()
     }
@@ -432,6 +438,48 @@ mod tests {
             }
         ));
         assert!(leaves.values().all(|l| l.epoch == 9));
+    }
+
+    #[test]
+    fn old_gen_only_projects_burn_zeros() {
+        let (a, b) = ([0xAA; 32], [0xBB; 32]);
+        let leaves = build_epoch_leaves(
+            &sk(),
+            9,
+            &expected(&[a, b]),
+            &[old_gen(a, 900_000), old_gen(b, 800_000)],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(matches!(
+            soa_of(&leaves, &a),
+            ScoreOrAbsence::Score { value: 0 }
+        ));
+        assert!(matches!(
+            soa_of(&leaves, &b),
+            ScoreOrAbsence::Score { value: 0 }
+        ));
+    }
+
+    #[test]
+    fn old_plus_new_only_new_gen_wins() {
+        let (old, new) = ([0xAA; 32], [0xBB; 32]);
+        let leaves = build_epoch_leaves(
+            &sk(),
+            9,
+            &expected(&[old, new]),
+            &[old_gen(old, 999_000), row(new, None, 40_000)],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(matches!(
+            soa_of(&leaves, &old),
+            ScoreOrAbsence::Score { value: 0 }
+        ));
+        assert!(matches!(
+            soa_of(&leaves, &new),
+            ScoreOrAbsence::Score { value: 40_000 }
+        ));
     }
 
     #[test]

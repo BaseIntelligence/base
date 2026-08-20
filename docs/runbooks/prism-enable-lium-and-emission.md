@@ -146,3 +146,29 @@ To rebalance shares:
    [`design-enable-and-emission.md`](./design-enable-and-emission.md).
 
 Current committed default: **prism = 5000 bps**, **design = 5000 bps**.
+
+## v2.1 competition cutover (new contest — old scores do not pay)
+
+Recipe **2.1.0** is a **new competition** (`competition_id=prism-v2.1`,
+`scoring_generation=21`). Code ignores pre-v2.1 harvests for
+`emission_leaves` / carry / top-model. Do **not** flip live `:28092`
+`PRISM_SCORING_MODE` / `PRISM_EMISSION_MODE` as part of this cutover
+(keep `benchmarks` + `wta` unless a separate governance flip).
+
+1. **Store.** Prefer a **fresh** Prism harvest volume / Postgres for
+   `prism_submission`. Reusing the old store is safe for *emission* (2.0
+   rows stay `weight_eligible=false`) but do **not** rematerialize or
+   admin-retry old 2.0 rows if that would rewrite metrics to 2.1 and
+   leak a prior winner into the new contest. Site history can keep the
+   old table read-only.
+2. **Burn until first 2.1 score.** With no terminated eligible v2.1 row,
+   leaves are all-zero. Leave the gateway **unsealed** so
+   `GET /v1/weights/latest` stays fail-closed **burn** (uid 0 = 100%,
+   `sealed: false`). Do **not** reseal the previous 2.0 champion. If an
+   old sealed bundle is still served, drop / expire it so burn applies.
+3. **First winner.** After the first v2.1 eligible termination, emit
+   WTA as usual (`POST /v1/weights/raw` → `POST /v1/admin/seal` →
+   `GET /v1/weights/latest` with `sealed: true` and the new hotkey).
+4. **Env.** Same safe defaults as **Prism v2.1 safe operator environment**
+   above. `GET /v1/recipe` advertises `competition_id` and
+   `scoring_generation` so miners can see they are on the new contest.

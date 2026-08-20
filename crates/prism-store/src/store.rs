@@ -600,8 +600,8 @@ mod tests {
             pod_id: None,
             pod_provider: None,
             receipt: None,
-            // Default test rows are recipe 2.0 eligible (emission carry / WTA).
-            metrics_json: Some(serde_json::json!({"recipe": "2.0.0"})),
+            // Default test rows are recipe 2.1 eligible (emission carry / WTA).
+            metrics_json: Some(serde_json::json!({"recipe": "2.1.0"})),
             bpb: None,
             arch_id: None,
             review: None,
