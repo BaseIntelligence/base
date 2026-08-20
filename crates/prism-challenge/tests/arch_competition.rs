@@ -296,6 +296,7 @@ async fn competition_credits_owner_and_challenger() {
     owner_row.status = Stage::Terminated;
     owner_row.final_score = Some(FinalScore::Score(400_000));
     owner_row.bpb = Some(2.0);
+    owner_row.metrics_json = Some(serde_json::json!({"recipe": "2.1.0"}));
     store.insert_queued(&owner_row).await.unwrap();
     let mut chall_row = row(
         "challenger-0001",
@@ -308,6 +309,7 @@ async fn competition_credits_owner_and_challenger() {
     chall_row.status = Stage::Terminated;
     chall_row.final_score = Some(FinalScore::Score(900_000));
     chall_row.bpb = Some(1.5);
+    chall_row.metrics_json = Some(serde_json::json!({"recipe": "2.1.0"}));
     store.insert_queued(&chall_row).await.unwrap();
 
     let rows = store.assign_emit_batch(541, 7).await.unwrap();
