@@ -589,7 +589,7 @@ PY
   # Prism WTA is the live seal path. Burn-seal posts NoScore at a block-scale
   # epoch and hid the 2.1 winner until a real chain-epoch seal existed.
   if [[ -f /opt/base/deploy/scripts/prod-real-seal.sh ]]; then
-    install -m 0755 /opt/base/deploy/scripts/prod-real-seal.sh /opt/base/deploy/scripts/prod-real-seal.sh
+    chmod 0755 /opt/base/deploy/scripts/prod-real-seal.sh
     install -m 0644 /opt/base/deploy/systemd/base-real-seal.service /etc/systemd/system/base-real-seal.service
     install -m 0644 /opt/base/deploy/systemd/base-real-seal.timer /etc/systemd/system/base-real-seal.timer
     systemctl disable --now base-burn-seal.timer >/dev/null 2>&1 || true
