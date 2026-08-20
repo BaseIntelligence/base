@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chain::{AxonInfo, ChainError, Metagraph, WeightsTlockPayload};
 use chain::{ChainClient, FakeChain, FakeChainConfig};
 use challenge_agentic::SimAgent;
@@ -15,7 +16,10 @@ use prism_challenge::{
     example_valid_request, submission_id, GatewayClient, GatewayClientConfig, MemoryPrismStore,
     Orchestrator, OrchestratorConfig, PrismStore, ScoringMode, Stage, StatePatch, SubmissionState,
 };
-use prism_lium::{EvalJobBackend, SimLiumBackend};
+use prism_lium::{
+    CostGuardrailError, EvalJobBackend, Instance, InstanceSpec, LiumError, Offer, RemoteExecResult,
+    SimLiumBackend,
+};
 use prism_review::SimReviewer;
 use std::sync::Mutex;
 
@@ -336,4 +340,163 @@ async fn emit_and_submit_covers_expected_set() {
         .expect("tip refresh");
     assert_eq!(tip.epoch, 7);
     assert_eq!(store.emit_cursor(541).await.unwrap(), Some(7));
+}
+
+/// Provision always fails with a fixed Lium error (no rent).
+struct ProvisionFail(&'static str);
+
+#[async_trait]
+impl EvalJobBackend for ProvisionFail {
+    async fn list_offers(&self, _: Option<f64>) -> Result<Vec<Offer>, LiumError> {
+        Ok(Vec::new())
+    }
+    async fn provision(&self, _: &InstanceSpec) -> Result<Instance, LiumError> {
+        if self.0 == "capacity" {
+            return Err(CostGuardrailError::NoCapacity.into());
+        }
+        Err(LiumError::Api(
+            "POST /executors/x/rent -> 400 You don't have permission to rent this template.".into(),
+        ))
+    }
+    async fn terminate(&self, _: &str) -> Result<(), LiumError> {
+        Ok(())
+    }
+    async fn verify_terminated(&self, _: &str) -> Result<bool, LiumError> {
+        Ok(true)
+    }
+    async fn exec_eval(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: Option<&[u8]>,
+    ) -> Result<RemoteExecResult, LiumError> {
+        Err(LiumError::Exec("unreachable".into()))
+    }
+}
+
+fn row_from_example(id: &str, req: &prism_challenge::SubmissionRequest) -> SubmissionState {
+    SubmissionState {
+        id: id.to_owned(),
+        miner_hotkey: req.miner_hotkey.clone(),
+        miner_coldkey: None,
+        epoch: 7,
+        netuid: 541,
+        status: Stage::Queued,
+        architecture_py: req.architecture_py.clone(),
+        training_py: req.training_py.clone(),
+        tree_blob: None,
+        label: req.label.clone(),
+        pod_id: None,
+        pod_provider: None,
+        receipt: None,
+        metrics_json: None,
+        bpb: None,
+        arch_id: None,
+        review: None,
+        similarity: None,
+        final_score: None,
+        retry_count: 0,
+        error_detail: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    }
+}
+
+fn orch_with_backend(
+    store: &Arc<MemoryPrismStore>,
+    chain: &Arc<LockedFake>,
+    backend: Arc<dyn EvalJobBackend>,
+) -> Orchestrator<LockedFake> {
+    let gateway = Arc::new(
+        GatewayClient::new(GatewayClientConfig {
+            base_url: "dry-run".into(),
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
+        })
+        .unwrap(),
+    );
+    Orchestrator::new(
+        OrchestratorConfig {
+            netuid: 541,
+            scoring_mode: ScoringMode::Shadow,
+            auto_retry_max: 0,
+            claim_poll: std::time::Duration::from_millis(10),
+            ..Default::default()
+        },
+        Arc::clone(store) as Arc<dyn PrismStore>,
+        backend,
+        Arc::new(SimReviewer::new()),
+        Arc::new(SimAgent::new()),
+        &gateway,
+        Arc::clone(chain),
+        sk(),
+    )
+}
+
+#[tokio::test]
+async fn no_capacity_requeues_with_b200_note() {
+    let store = Arc::new(MemoryPrismStore::new());
+    let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
+    let orch = orch_with_backend(
+        &store,
+        &chain,
+        Arc::new(ProvisionFail("capacity")) as Arc<dyn EvalJobBackend>,
+    );
+    let req = example_valid_request();
+    let id = submission_id(&req);
+    store
+        .insert_queued(&row_from_example(&id, &req))
+        .await
+        .unwrap();
+
+    assert!(orch.cycle_once().await.unwrap());
+    let row = store.get(&id).await.unwrap().expect("row");
+    assert_eq!(row.status, Stage::Queued, "{row:?}");
+    assert_eq!(row.retry_count, 0, "sold-out must not burn retry_count");
+    assert!(row.final_score.is_none());
+    let detail = row.error_detail.unwrap_or_default();
+    assert!(
+        detail.contains("B200s are currently out of capacity on Lium"),
+        "{detail}"
+    );
+    let events = store.events(&id).await.unwrap();
+    let queued_note = events.iter().any(|e| {
+        e.stage == Stage::Queued
+            && e.detail.as_ref().is_some_and(|d| {
+                d.get("no_capacity") == Some(&serde_json::json!(true))
+                    && d.get("note")
+                        .and_then(|n| n.as_str())
+                        .is_some_and(|n| n.contains("B200s are currently out of capacity"))
+            })
+    });
+    assert!(queued_note, "events={events:?}");
+
+    assert!(orch.cycle_once().await.unwrap());
+    let row = store.get(&id).await.unwrap().expect("row");
+    assert_eq!(row.status, Stage::Queued, "next tick still queued");
+}
+
+#[tokio::test]
+async fn template_permission_stays_failed() {
+    let store = Arc::new(MemoryPrismStore::new());
+    let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
+    let orch = orch_with_backend(
+        &store,
+        &chain,
+        Arc::new(ProvisionFail("permission")) as Arc<dyn EvalJobBackend>,
+    );
+    let req = example_valid_request();
+    let id = submission_id(&req);
+    store
+        .insert_queued(&row_from_example(&id, &req))
+        .await
+        .unwrap();
+
+    assert!(orch.cycle_once().await.unwrap());
+    let row = store.get(&id).await.unwrap().expect("row");
+    assert_eq!(row.status, Stage::Failed, "{row:?}");
+    let detail = row.error_detail.unwrap_or_default();
+    assert!(detail.contains("permission"), "{detail}");
+    assert!(!detail.contains("B200s are currently out of capacity"));
 }

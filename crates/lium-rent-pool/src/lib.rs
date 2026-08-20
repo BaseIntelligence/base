@@ -2,7 +2,7 @@
 //!
 //! Live Prism eval is miner-funded (`X-Lium-Api-Key`). Each miner key has its
 //! own Lium rate budget — there is **no** process-wide rent serialize queue.
-//! This crate only classifies 429 bodies and decides autonomous recovery.
+//! This crate classifies 429 / no-capacity rent failures and recovery.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -10,7 +10,14 @@
 /// Autonomous recovery looks back this far for failed 429 submissions.
 pub const RECOVERY_WINDOW_MS: u64 = 6 * 60 * 60 * 1000;
 
-/// True when a failed row should re-enter the rent queue (429 within window).
+/// Miner-facing text when Lium has no matching 1× B200 offer.
+pub const CAPACITY_NOTE: &str =
+    "B200s are currently out of capacity on Lium; this job is queued until an offer appears.";
+
+/// Always-on policy (intake / recipe / `/v1/status`).
+pub const CAPACITY_POLICY: &str = "When Lium has no matching 1× B200 offer, the job stays queued and retries until an offer appears (sold out is not Score(0)). Bad ZIP, auth, and template-permission errors still fail.";
+
+/// True when a failed row should re-enter the rent queue.
 #[must_use]
 pub fn should_recover(error_detail: &str, updated_at_ms: u64, now_ms: u64) -> bool {
     let l = error_detail.to_ascii_lowercase();
@@ -18,6 +25,9 @@ pub fn should_recover(error_detail: &str, updated_at_ms: u64, now_ms: u64) -> bo
     // 8×5090 pod does not fix a dataset CDN throttle.
     if l.contains("huggingface") || l.contains("fineweb") || l.contains("\"stage\": \"dataset\"") {
         return false;
+    }
+    if is_no_capacity(error_detail) {
+        return true;
     }
     is_rate_limited(error_detail) && now_ms.saturating_sub(updated_at_ms) <= RECOVERY_WINDOW_MS
 }
@@ -58,6 +68,36 @@ pub fn is_rate_limited(msg: &str) -> bool {
     l.contains("429") || l.contains("too many requests") || l.contains("rate limit")
 }
 
+/// Auth / template-permission / missing BYOK — never treat as sold-out.
+#[must_use]
+pub fn is_auth_or_permission(msg: &str) -> bool {
+    let l = msg.to_ascii_lowercase();
+    l.contains("permission")
+        || l.contains("unauthorized")
+        || l.contains("forbidden")
+        || l.contains("401")
+        || l.contains("invalid api key")
+        || l.contains("missing_lium_api_key")
+        || l.contains("api key missing")
+}
+
+/// No matching Lium offer / B200 sold out (not miner ZIP, not auth).
+#[must_use]
+pub fn is_no_capacity(msg: &str) -> bool {
+    if is_auth_or_permission(msg) {
+        return false;
+    }
+    let l = msg.to_ascii_lowercase();
+    l.contains("no_capacity")
+        || l.contains("no lium offer")
+        || l.contains("no offer matches")
+        || l.contains("no matching offer")
+        || l.contains("sold out")
+        || l.contains("out of capacity")
+        || l.contains("lack of b200")
+        || (l.contains("b200") && (l.contains("unavailable") || l.contains("no offer")))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -78,6 +118,23 @@ mod tests {
         assert!(!should_recover("provision: 429", 0, RECOVERY_WINDOW_MS + 1));
         assert!(!should_recover(
             "measure: exec: HTTP Error 429: huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+            100,
+            100 + 1
+        ));
+        assert!(is_no_capacity(
+            "measure: provision: no Lium offer matches GPU preference and price caps (no_capacity)"
+        ));
+        assert!(is_no_capacity("lium rent sold out: no matching offer"));
+        assert!(!is_no_capacity(
+            "lium api: POST /rent -> 400 permission to rent this template"
+        ));
+        assert!(should_recover(
+            "provision: no_capacity (no matching B200 offer)",
+            0,
+            RECOVERY_WINDOW_MS + 1
+        ));
+        assert!(!should_recover(
+            "lium api: 400 permission to rent this template",
             100,
             100 + 1
         ));

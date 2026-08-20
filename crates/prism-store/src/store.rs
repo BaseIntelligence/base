@@ -40,7 +40,7 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// post-run infra retry resumes without another GPU run; an incomplete
     /// measure attempt is cleared so provisioning starts cleanly.
     /// `bump_retry` increments `retry_count` (manual/auto infra). Pass
-    /// `false` for Lium 429 autonomous requeue (do not burn attempt budget).
+    /// `false` for Lium 429 / `no_capacity` requeue (do not burn attempt budget).
     async fn reset_for_retry(
         &self,
         id: &str,

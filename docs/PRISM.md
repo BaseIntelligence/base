@@ -61,6 +61,7 @@ stateDiagram-v2
     Queued --> Rejected: pre-pod screens (copy gate / static cheat / similarity)
     Queued --> Provisioning: worker claims + pre-pod screens + LLM/agentic pass
     Provisioning --> Running: pod SSH + harness up
+    Provisioning --> Queued: Lium no_capacity / B200 sold out
     Running --> Reviewing: METRICS_JSON collected
     Reviewing --> AgenticReview: quality + post-pod agentic
     AgenticReview --> Scoring: submit_verdict
@@ -127,7 +128,13 @@ review failure; only `install` retries re-provision. Lium **HTTP 429** on rent i
 special: each miner `X-Lium-Api-Key` has its **own** Lium budget (no shared
 process-wide rent serialize queue). The orchestrator **requeues without
 burning** `retry_count` / gating attempts. A background tick re-queues
-failed 429 rows from the last **6 hours**. After an infra `blocked`, the
+failed 429 rows from the last **6 hours**. **No matching 1× B200 offer**
+(`no_capacity` / sold out) is the same class: the row stays **`queued`**
+(not `failed` / Score(0)), events and `error_detail` carry
+`B200s are currently out of capacity on Lium; this job is queued until an offer appears.`,
+and the next `claim_next` tick retries rent on the miner BYOK key. Template
+permission / auth / bad ZIP stay fails (Lium already retries a rentable
+template once). After an infra `blocked`, the
 miner may **`/retry` or re-POST the same bytes** for `ChallengeInternal`
 without a time cutoff. A *different* ZIP is only accepted inside the
 **30-minute** infra window; after that the slot stays blocked until the
@@ -1089,7 +1096,7 @@ for the bpb score (coherence gate, never a grader).
 | `GET /v1/anchors` | **v3:** anchor-set registry with status (`placeholder` / `active`) |
 | `GET /v1/preregistration` | **v3:** anchor pre-registration hash-commits |
 | `GET /v1/architectures` | Published architecture registry (owner, digest, per-arch best bpb) |
-| `GET /v1/status` | Backend mode, epoch, queue depths, recipe pin |
+| `GET /v1/status` | Backend mode, epoch, queue depths, recipe pin, `lium_capacity_note` (queue when B200s are sold out) |
 | `GET /v1/jobs` | One row per active/recent pod (ops) |
 | `GET /v1/recipe` | Recipe descriptor (AutoModel pin fields, FineWeb URL/sha, budget, caps, `pin_hex`) |
 | `GET /v1/recipe/baseline` | Historical 1.x baseline scripts (not the 2.0 AutoModel pin archive) |

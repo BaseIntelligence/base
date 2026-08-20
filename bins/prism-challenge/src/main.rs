@@ -782,7 +782,7 @@ fn spawn_orchestrator(
     spawn_rate_limit_recovery(store, gating);
 }
 
-/// Re-queue last-6h failed rows that died on Lium HTTP 429 (no `retry_count` burn).
+/// Re-queue failed Lium 429 (6h window) and no_capacity / B200 sold-out rows.
 async fn recover_rate_limited(
     store: &Arc<dyn PrismStore>,
     gating: Option<&Arc<dyn GatingStore>>,
