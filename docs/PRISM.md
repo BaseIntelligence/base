@@ -640,7 +640,8 @@ into the pod where applicable):
 | `PRISM_POD_GPU_NAME` | optional comma-separated offer needles (default `NVIDIA B200`/`B200`; fallbacks `RTX 5090` or `RTX PRO 6000`) |
 | `PRISM_POD_IMAGE_REF` | optional staged pod image, required form `repository@sha256:<64 lowercase hex>` |
 | `PRISM_POD_IMAGE_TAG` | Lium pull locator (default `v10-cuda13-te`); never accepted without the separate digest pin |
-| `PRISM_POD_DOCKER_CREDENTIAL_ID` | non-secret Lium reference required only when creating the private DigitalOcean registry template |
+| `PRISM_POD_DOCKER_CREDENTIAL_ID` | non-secret Lium reference required only when **creating** a new private DigitalOcean registry template. Unset is fine when `PRISM_POD_TEMPLATE_ID` is set or public `prism-recipe-v9`/`v10` already exists on Lium |
+| `PRISM_POD_TEMPLATE_ID` | optional existing Lium template id (public v9 `f2f5e84c…` is the known-good B200/5090 boot path) |
 
 **Anchor set v1 battery keys** (emitted by the harness on every real run;
 inert under v0 since unknown `org.*` keys are ignored):
@@ -931,7 +932,11 @@ the digest and credential ID, preventing stale image or credential reuse.
 Unset uses the same immutable recipe-v10 pin advertised by `/v1/recipe`. A
 new private-registry template requires the non-secret
 `PRISM_POD_DOCKER_CREDENTIAL_ID` reference; registry credentials themselves
-remain stored in Lium. Lium's startup bootstrap substitutes
+remain stored in Lium. Missing credential must **not** fail miner provision
+when a public allowlisted template already exists (`prism-recipe-v9` /
+`prism-recipe-v10`, or `PRISM_POD_TEMPLATE_ID`). The integrity error is
+operator-facing and only applies to *creating* a new private template.
+Lium's startup bootstrap substitutes
 `USER_PUBLIC_KEY` into a metacharacter-free command; the image script writes
 `authorized_keys` and touches `/root/container_ready`. The image uses
 overridable Docker `CMD` so the provider bootstrap can run.
