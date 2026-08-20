@@ -277,36 +277,124 @@ pub fn design_arena_from_dashboard(dash: Option<&Value>) -> Arena {
 }
 
 /// Prism arena from status + submissions list.
+///
+/// Counters are **v2.1 only** (recipe `2.1.x` / `prism-v2.1` / gen 21). Closed
+/// 2.0 harvests do not inflate `agents` or `bestScore`. Empty + `—` is honest
+/// while the live contest waits (uid-0 burn is a weights fact, not a score).
 #[must_use]
 pub fn prism_arena_from_live(status: Option<&Value>, subs: Option<&Value>) -> Arena {
     let mut a = prism_frame();
     let mut miners = BTreeSet::new();
-    let mut best_bpb: Option<f64> = None;
+    let mut best_g2: Option<f64> = None;
     if let Some(arr) = subs
         .and_then(|v| v.get("submissions"))
         .and_then(Value::as_array)
     {
         for s in arr {
+            if !prism_list_row_is_v21(s) {
+                continue;
+            }
             if let Some(hk) = s.get("miner_hotkey").and_then(Value::as_str) {
                 miners.insert(hk.to_owned());
             }
             if s.get("status").and_then(Value::as_str) == Some("terminated") {
-                if let Some(bpb) = s.get("bpb").and_then(Value::as_f64) {
-                    best_bpb = Some(match best_bpb {
-                        Some(b) => b.min(bpb),
-                        None => bpb,
+                if let Some(g2) = prism_list_row_g2(s) {
+                    best_g2 = Some(match best_g2 {
+                        Some(b) => b.max(g2),
+                        None => g2,
                     });
                 }
             }
         }
     }
     a.agents = u32::try_from(miners.len()).unwrap_or(u32::MAX);
-    if let Some(b) = best_bpb {
-        a.best_score = format!("{b:.4}");
+    if let Some(g2) = best_g2 {
+        a.best_score = format_g2_score(g2);
     } else if status.is_some() {
         a.best_score = "—".into();
     }
     a
+}
+
+/// Fail-closed v2.1 marker on a raw challenge list/detail row.
+fn prism_list_row_is_v21(row: &Value) -> bool {
+    let root = row.get("submission").unwrap_or(row);
+    let metrics = root.get("metrics").unwrap_or(root);
+    contest_id_is_v21(root)
+        || contest_id_is_v21(metrics)
+        || scoring_gen_is_21(root)
+        || scoring_gen_is_21(metrics)
+        || recipe_is_v21(root)
+        || recipe_is_v21(metrics)
+}
+
+fn contest_id_is_v21(v: &Value) -> bool {
+    for path in [
+        "/competition_id",
+        "/pod_manifest/competition_id",
+        "/metrics/competition_id",
+        "/metrics/pod_manifest/competition_id",
+    ] {
+        if v.pointer(path)
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.trim() == "prism-v2.1")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn scoring_gen_is_21(v: &Value) -> bool {
+    num_u32(v.get("scoring_generation"))
+        .or_else(|| num_u32(v.pointer("/pod_manifest/scoring_generation")))
+        .or_else(|| num_u32(v.pointer("/metrics/scoring_generation")))
+        == Some(21)
+}
+
+fn recipe_is_v21(v: &Value) -> bool {
+    for path in [
+        "/recipe",
+        "/recipe_version",
+        "/version",
+        "/pod_manifest/recipe",
+        "/metrics/recipe",
+    ] {
+        if v.pointer(path)
+            .and_then(Value::as_str)
+            .is_some_and(recipe_semver_is_v21)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn recipe_semver_is_v21(s: &str) -> bool {
+    let t = s.trim().trim_start_matches('v');
+    let mut parts = t.split('.');
+    parts.next() == Some("2") && parts.next() == Some("1")
+}
+
+fn prism_list_row_g2(row: &Value) -> Option<f64> {
+    let score = row.get("score")?;
+    if score.get("kind").and_then(Value::as_str) != Some("score") {
+        return None;
+    }
+    let v = score.get("value").and_then(num_f64_val)?;
+    if v > 0.0 {
+        Some(v)
+    } else {
+        None
+    }
+}
+
+fn format_g2_score(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-6 {
+        format!("{}", v.round())
+    } else {
+        format!("{v:.1}")
+    }
 }
 
 /// All three arenas (coding always paused).
@@ -1246,6 +1334,49 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn prism_arena_ignores_legacy_rows_and_uses_g2() {
+        let legacy = json!({
+            "submissions": [{
+                "id": "old",
+                "miner_hotkey": "aa",
+                "status": "terminated",
+                "bpb": 0.9,
+                "score": {"kind": "score", "value": 800}
+            }]
+        });
+        let empty = prism_arena_from_live(Some(&json!({"epoch": 1})), Some(&legacy));
+        assert_eq!(empty.agents, 0);
+        assert_eq!(empty.best_score, "—");
+        assert_eq!(empty.best_score_label, "BEST G2");
+
+        let live = json!({
+            "submissions": [{
+                "id": "old",
+                "miner_hotkey": "aa",
+                "status": "terminated",
+                "bpb": 0.4,
+                "score": {"kind": "score", "value": 11}
+            }, {
+                "id": "v21",
+                "miner_hotkey": "bb",
+                "status": "terminated",
+                "bpb": 3.2,
+                "score": {"kind": "score", "value": 42},
+                "metrics": {"recipe": "2.1.0", "competition_id": "prism-v2.1"}
+            }, {
+                "id": "inflight",
+                "miner_hotkey": "cc",
+                "status": "running",
+                "metrics": {"scoring_generation": 21}
+            }]
+        });
+        let a = prism_arena_from_live(Some(&json!({"epoch": 1})), Some(&live));
+        assert_eq!(a.agents, 2);
+        assert_eq!(a.best_score, "42");
+        assert_eq!(a.best_score_label, "BEST G2");
+    }
 
     #[test]
     fn design_screenshot_url_shape() {
