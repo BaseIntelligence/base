@@ -1324,6 +1324,11 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v.as_array().unwrap().len(), 3);
         assert_eq!(v[0]["slug"], "coding");
+        // List rows without v2.1 markers must not inflate Prism agents / BPB.
+        assert_eq!(v[2]["slug"], "prism");
+        assert_eq!(v[2]["bestScoreLabel"], "BEST G2");
+        assert_eq!(v[2]["agents"], 0);
+        assert_eq!(v[2]["bestScore"], "—");
         assert_eq!(v[1]["bestScore"], "1,300");
         assert_eq!(v[1]["roundId"], 9);
         assert_eq!(v[1]["secondsRemaining"], 120);
