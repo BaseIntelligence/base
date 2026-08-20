@@ -855,33 +855,45 @@ mod tests {
 
     #[tokio::test]
     async fn tick_burn_after_restart_matches_lkg_and_submits() {
-        let epoch = 77u64;
-        let (sealed_client, chain, trust, merkle_root, _, _) = sealed_match_fixture(epoch).await;
-        let dir =
-            std::env::temp_dir().join(format!("base-lkg-tick-{}-{}", std::process::id(), epoch));
+        let epoch = 9_010_077u64;
+        let (sealed_client, chain, trust, merkle_root, _, bundle_bytes) =
+            sealed_match_fixture(epoch).await;
+        let dir = std::env::temp_dir().join(format!(
+            "base-lkg-tick-{}-{}-{}",
+            std::process::id(),
+            epoch,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
         let lkg = SealedBundleLkg::at(dir.join("last-sealed.bundle"));
-        let submit = CoordinationSubmitConfig {
-            netuid: 1,
-            hotkey: vec![0xBBu8; 32],
-            version_key: 3,
-            epoch_length: 360,
-        };
-        let first_dedupe = EpochSubmitDedupe::new();
-        let first = coordination_compare_once_with_drand(
+        let persist_dedupe = EpochSubmitDedupe::new();
+        let persisted = coordination_compare_once_with_drand(
             &sealed_client,
             &chain,
             &trust,
-            Some(&submit),
-            &first_dedupe,
+            None,
+            &persist_dedupe,
             &ReadyDrand,
             &lkg,
         )
         .await
         .expect("ok")
-        .expect("some");
-        assert!(matches!(first, ComparisonOutcome::Match { epoch: e, .. } if e == epoch));
-        assert!(lkg.load().is_some(), "Match must persist SCALE bytes");
-        assert_eq!(chain.call_log().len(), 1, "first sealed tick submits");
+        .expect("sealed some");
+        match &persisted {
+            ComparisonOutcome::Match { epoch: e, .. } if *e == epoch => {}
+            other => panic!("expected sealed Match, got {other:?}"),
+        }
+        assert_eq!(
+            lkg.load().as_deref(),
+            Some(bundle_bytes.as_slice()),
+            "Match must persist SCALE bytes"
+        );
+        assert!(
+            chain.call_log().is_empty(),
+            "persist tick has no submit cfg"
+        );
 
         let burn = MockServer::start().await;
         Mock::given(method("GET"))
@@ -896,6 +908,12 @@ mod tests {
             .mount(&burn)
             .await;
         let burn_client = CoordinationClient::new(Some(burn.uri())).unwrap();
+        let submit = CoordinationSubmitConfig {
+            netuid: 1,
+            hotkey: vec![0xBBu8; 32],
+            version_key: 3,
+            epoch_length: 360,
+        };
         // Process restart drops in-memory submit dedupe.
         let restart_dedupe = EpochSubmitDedupe::new();
         let out = coordination_compare_once_with_drand(
@@ -923,8 +941,8 @@ mod tests {
         }
         assert_eq!(
             chain.call_log().len(),
-            2,
-            "restart + burn latest must resubmit last verified weights"
+            1,
+            "restart + burn latest must submit last verified weights"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
