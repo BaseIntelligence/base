@@ -53,7 +53,11 @@ pub async fn get_json(
         .map_err(|e| UpstreamError::Transport(e.to_string()))?;
     let status = resp.status();
     if !status.is_success() {
-        st.registry.record_failure(backend.id);
+        // Optional fan-out (diff / zone-A) often 404s; do not mark the
+        // challenge backend unhealthy or later list/leaderboard reads go dark.
+        if status.as_u16() != 404 {
+            st.registry.record_failure(backend.id);
+        }
         return Err(UpstreamError::Transport(format!(
             "upstream {challenge_id} {path} → {status}"
         )));

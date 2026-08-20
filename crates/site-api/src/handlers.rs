@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 
 use crate::prism_enrich::{
     enrich_leaderboard_row_from_detail_with_zone, enrich_submission_from_detail_with_zone,
-    map_benchmarks, pin_id_from_payload, prism_reference_baselines,
-    prism_submission_detail_with_zone,
+    infer_recipe_era_with_live, map_benchmarks, payload_is_v21_contest, pin_id_from_payload,
+    prism_reference_baselines, prism_submission_detail_with_zone,
 };
 use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
@@ -454,10 +454,21 @@ async fn prism_leaderboard_json(
         .collect();
     ids.truncate(PRISM_CHAMPION_DETAIL_FANOUT);
     let details = fetch_prism_details(st, &ids).await;
+    let live_recipe = fetch_prism_recipe(st)
+        .await
+        .as_ref()
+        .and_then(|r| r.get("version"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let live = live_recipe.as_deref();
     for row in &mut board {
         if let Some(id) = row.submission_id.as_ref() {
             if let Some(fan) = details.get(id) {
                 enrich_leaderboard_row_from_detail_with_zone(row, &fan.detail, fan.zone_a.as_ref());
+                row.recipe_era = Some(infer_recipe_era_with_live(&fan.detail, live));
+                if row.recipe_era == Some(RecipeEra::V21) {
+                    row.run.weight_eligible = Some(true);
+                }
             }
         }
         if row.recipe_era.is_none() {
@@ -465,6 +476,8 @@ async fn prism_leaderboard_json(
             row.recipe_era = Some(RecipeEra::Legacy);
         }
     }
+    // Public board is the live v2.1 contest only. Empty + burn is honest.
+    board.retain(|r| r.recipe_era == Some(RecipeEra::V21));
     decorate_leaderboard(st, &mut board);
     if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
         board.retain(|r| leaderboard_matches_query(r, needle));
@@ -478,6 +491,10 @@ async fn prism_leaderboard_json(
         "pageCount": page_out.page_count,
         "epoch": epoch,
         "metric": "score",
+        "competitionId": "prism-v2.1",
+        "scoringGeneration": 21,
+        "recipeVersion": live_recipe.as_deref().unwrap_or("2.1.0"),
+        "waitingForFirst": page_out.total == 0,
         "updatedAt": now_iso(),
     })
 }
@@ -597,9 +614,20 @@ async fn get_submissions(
             let mut ids: Vec<String> = items.iter().map(|s| s.id.clone()).collect();
             ids.truncate(PRISM_CHAMPION_DETAIL_FANOUT);
             let details = fetch_prism_details(&st, &ids).await;
+            let live_recipe = fetch_prism_recipe(&st)
+                .await
+                .as_ref()
+                .and_then(|r| r.get("version"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let live = live_recipe.as_deref();
             for item in &mut items {
                 if let Some(fan) = details.get(&item.id) {
                     enrich_submission_from_detail_with_zone(item, &fan.detail, fan.zone_a.as_ref());
+                    item.recipe_era = Some(infer_recipe_era_with_live(&fan.detail, live));
+                    if item.recipe_era == Some(RecipeEra::V21) {
+                        item.run.weight_eligible = Some(true);
+                    }
                 } else if item.recipe_era.is_none() {
                     // Pre-2.0 / unknown → legacy so era tabs are not empty.
                     item.recipe_era = Some(RecipeEra::Legacy);
@@ -739,19 +767,39 @@ async fn get_prism_window(State(st): State<SiteState>) -> impl IntoResponse {
     ids.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     ids.truncate(PRISM_WINDOW_TELEMETRY_FANOUT);
     let mut telemetry = HashMap::new();
+    let mut v21_ids = std::collections::HashSet::new();
+    for row in &rows {
+        if payload_is_v21_contest(row) {
+            if let Some(id) = row.get("id").and_then(Value::as_str) {
+                v21_ids.insert(id.to_owned());
+            }
+        }
+    }
     for (_, id) in ids {
         if let Some(detail) =
             upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await
         {
+            if payload_is_v21_contest(&detail) {
+                v21_ids.insert(id.clone());
+            }
             if let Some(t) = prism_telemetry(&detail) {
                 telemetry.insert(id, t);
             }
         }
     }
+    let v21_rows: Vec<Value> = rows
+        .into_iter()
+        .filter(|r| {
+            r.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| v21_ids.contains(id))
+                || payload_is_v21_contest(r)
+        })
+        .collect();
     Json(prism_window(
         recipe.as_ref(),
         status.as_ref(),
-        &rows,
+        &v21_rows,
         &telemetry,
     ))
 }
@@ -1033,6 +1081,9 @@ mod tests {
         mount_design_site_mocks(design).await;
         mount_prism_list_mocks(prism).await;
         mount_prism_detail_mock(prism).await;
+        // Re-mount the list after per-id stubs so later GETs (`?limit=`) still
+        // hit the collection (wiremock first-match can steal `/v1/submissions*`).
+        mount_prism_list_collection(prism).await;
     }
 
     async fn mount_design_site_mocks(design: &MockServer) {
@@ -1098,6 +1149,22 @@ mod tests {
             .mount(prism)
             .await;
         Mock::given(method("GET"))
+            .and(path("/v1/recipe"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": "2.1.0",
+                "competition_id": "prism-v2.1",
+                "scoring_generation": 21,
+                "dataset_ref": "HuggingFaceFW/fineweb-edu@sample/10BT",
+                "max_params": 1_000_000_000_u64,
+                "train_hours_cap": 4.0
+            })))
+            .mount(prism)
+            .await;
+        mount_prism_list_collection(prism).await;
+    }
+
+    async fn mount_prism_list_collection(prism: &MockServer) {
+        Mock::given(method("GET"))
             .and(path("/v1/submissions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "submissions": [{
@@ -1109,6 +1176,17 @@ mod tests {
                     "bpb": 1.25,
                     "n_params": 12_000_000_u64,
                     "score": {"kind":"score","value": 900},
+                    "created_at_ms": 1_700_000_000_000_u64,
+                    "updated_at_ms": 1_700_000_000_000_u64
+                }, {
+                    "id": "sub-old20",
+                    "miner_hotkey": "dd".repeat(32),
+                    "epoch": 2,
+                    "status": "terminated",
+                    "label": "old-2.0",
+                    "bpb": 0.9,
+                    "n_params": 350_000_000_u64,
+                    "score": {"kind":"score","value": 800},
                     "created_at_ms": 1_700_000_000_000_u64,
                     "updated_at_ms": 1_700_000_000_000_u64
                 }, {
@@ -1157,9 +1235,15 @@ mod tests {
                     "n_params": 12_000_000_u64,
                     "score": {"kind":"score","value": 900},
                     "metrics": {
-                        "recipe": "2.0.0",
+                        "recipe": "2.1.0",
+                        "competition_id": "prism-v2.1",
+                        "scoring_generation": 21,
                         "bpb": 1.25,
                         "tokens_seen": 2048,
+                        "org.g7.throughput_toks_s": {"value": 1200.0},
+                        "org.diag.mfu_achieved": {"value": 0.23},
+                        "org.diag.flops_attested": {"value": 1.5e18},
+                        "bits_per_byte": {"value": 0.88},
                         "wall_clock_seconds": 12.0,
                         "gpu_type": "SIM",
                         "n_params": 12_000_000_u64,
@@ -1202,6 +1286,29 @@ mod tests {
                 "patch": "diff --git a/x b/x\n",
                 "diffstat": {"files": [{"path":"x","added":1,"deleted":0,"class":"arch"}],
                              "total_added": 1, "total_deleted": 0}
+            })))
+            .mount(prism)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/submissions/sub-old20"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "submission": {
+                    "id": "sub-old20",
+                    "miner_hotkey": "dd".repeat(32),
+                    "epoch": 2,
+                    "status": "terminated",
+                    "label": "old-2.0",
+                    "bpb": 0.9,
+                    "n_params": 350_000_000_u64,
+                    "score": {"kind":"score","value": 800},
+                    "created_at_ms": 1_700_000_000_000_u64,
+                    "metrics": {
+                        "recipe": "2.0.0",
+                        "bpb": 0.9,
+                        "org.g2.hellaswag_acc": {"value": 0.99}
+                    }
+                },
+                "events": []
             })))
             .mount(prism)
             .await;
@@ -1328,14 +1435,25 @@ mod tests {
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/submissions").await;
         assert_eq!(s, StatusCode::OK, "{v}");
-        assert_eq!(v["total"], 2, "default scope=all includes in-flight: {v}");
-        assert_eq!(v["items"][0]["recipeEra"], "automodel");
+        assert_eq!(
+            v["total"], 3,
+            "default scope=all includes in-flight + closed 2.0: {v}"
+        );
+        assert_eq!(v["items"][0]["recipeEra"], "v21");
         assert_eq!(v["items"][0]["pinId"], "automodel@v0.5.0");
+        assert_eq!(v["items"][0]["weightEligible"], true);
+        assert_eq!(v["items"][0]["competitionId"], "prism-v2.1");
+        assert_eq!(v["items"][0]["tokens"], 2048.0);
+        assert_eq!(v["items"][0]["tokensPerSec"], 1200.0);
+        assert_eq!(v["items"][0]["mfu"], 0.23);
         assert_eq!(v["items"][0]["benchmarks"]["hellaswag"], 0.31);
         assert_eq!(v["items"][0]["evalGroups"].as_array().unwrap().len(), 2);
-        assert_eq!(v["items"][1]["id"], "sub-running");
-        assert_eq!(v["items"][1]["status"], "pending");
-        assert_eq!(v["items"][1]["recipeEra"], "legacy");
+        assert_eq!(v["items"][1]["id"], "sub-old20");
+        assert_eq!(v["items"][1]["recipeEra"], "automodel");
+        assert_eq!(v["items"][1]["weightEligible"], false);
+        assert_eq!(v["items"][2]["id"], "sub-running");
+        assert_eq!(v["items"][2]["status"], "pending");
+        assert_eq!(v["items"][2]["recipeEra"], "legacy");
 
         // scope=champions keeps Score>0 gallery; default scope=all includes in-flight.
         let (s, v) = call(
@@ -1344,18 +1462,26 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
-        assert_eq!(v["total"], 1, "{v}");
+        assert_eq!(
+            v["total"], 2,
+            "scope=champions should keep Score>0 rows (v21 + closed 2.0): {v}"
+        );
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
         assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["competitionId"], "prism-v2.1");
+        assert_eq!(v["scoringGeneration"], 21);
+        assert_eq!(v["waitingForFirst"], false);
+        assert_eq!(v["total"], 1, "closed 2.0 champion must not rank: {v}");
         assert_eq!(v["items"][0]["submissionId"], "sub1");
-        assert_eq!(v["items"][0]["recipeEra"], "automodel");
+        assert_eq!(v["items"][0]["recipeEra"], "v21");
+        assert_eq!(v["items"][0]["weightEligible"], true);
         assert_eq!(v["items"][0]["benchmarks"]["piqa"], 0.62);
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/submissions/sub1").await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["id"], "sub1");
-        assert_eq!(v["recipeEra"], "automodel");
+        assert_eq!(v["recipeEra"], "v21");
         assert_eq!(v["pinId"], "automodel@v0.5.0");
         assert_eq!(v["eval"]["status"], "scored");
         assert_eq!(v["eval"]["groups"].as_array().unwrap().len(), 2);
@@ -1523,7 +1649,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/v1/recipe"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "version": "1.0.1",
+                "version": "2.1.0",
                 "dataset_ref": "ds@pin",
                 "pin_hex": "abc"
             })))
@@ -1540,8 +1666,8 @@ mod tests {
             .and(path("/v1/submissions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "submissions": [
-                    {"id":"x1","status":"terminated","bpb":2.0,"label":"a"},
-                    {"id":"x2","status":"terminated","bpb":1.0,"label":"b"}
+                    {"id":"x1","status":"terminated","bpb":2.0,"label":"a","metrics":{"recipe":"2.1.0"}},
+                    {"id":"x2","status":"terminated","bpb":1.0,"label":"b","metrics":{"recipe":"2.1.0"}}
                 ]
             })))
             .mount(&prism)
@@ -1553,6 +1679,8 @@ mod tests {
                     "id": "x2",
                     "bpb": 1.0,
                     "metrics": {
+                        "recipe": "2.1.0",
+                        "competition_id": "prism-v2.1",
                         "bpb": 1.0,
                         "n_params": 12_000_000_u64,
                         "telemetry": {

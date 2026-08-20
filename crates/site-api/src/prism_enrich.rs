@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use site_types::{
     EvalGroupScore, PrismBenchmarks, PrismEvalSummary, PrismGateSummary, PrismPublicReview,
-    PrismPublicSimilarity, PrismReferenceBaseline, PrismSubmissionDetail, PrismTelemetry,
-    RecipeEra, Submission,
+    PrismPublicSimilarity, PrismReferenceBaseline, PrismRunStats, PrismSubmissionDetail,
+    PrismTelemetry, RecipeEra, Submission,
 };
 
 use site_data::map::{prism_submission, prism_telemetry};
@@ -95,29 +95,131 @@ pub fn prism_reference_baselines() -> Vec<PrismReferenceBaseline> {
     ]
 }
 
-/// Infer AutoModel vs legacy from a detail or list-shaped payload.
+/// Infer contest era from a detail or list-shaped payload.
 ///
-/// Signals (first match wins as automodel): explicit `pin_id`, AutoModel pin
-/// id string, recipe major ≥ 2 in metrics / pod manifest, or `.prism`
-/// automodel artifact paths. Otherwise legacy (incl. unknown / pre-2.0).
+/// Fail-closed for **v2.1**: recipe `2.1.x`, `competition_id=prism-v2.1`, or
+/// `scoring_generation=21`. Pin id alone is **not** v2.1 (2.0 used the same
+/// AutoModel pin). Recipe `2.0.x` / pin / automodel paths → closed Automodel
+/// contest. Otherwise legacy.
 #[must_use]
 pub fn infer_recipe_era(payload: &Value) -> RecipeEra {
+    infer_recipe_era_with_live(payload, None)
+}
+
+/// Same as [`infer_recipe_era`], but a live recipe `2.1.x` lets pin-only
+/// in-flight rows (no harvest metrics yet) count as v2.1.
+#[must_use]
+pub fn infer_recipe_era_with_live(payload: &Value, live_recipe: Option<&str>) -> RecipeEra {
+    if payload_is_v21_contest(payload) {
+        return RecipeEra::V21;
+    }
     let sub = payload.get("submission").unwrap_or(payload);
+    if recipe_is_major_minor(sub, 2, 0) {
+        return RecipeEra::Automodel;
+    }
     if pin_id_from_payload(payload).is_some() {
+        if live_recipe.is_some_and(recipe_semver_is_v21) {
+            return RecipeEra::V21;
+        }
         return RecipeEra::Automodel;
     }
     if recipe_major(sub).is_some_and(|m| m >= 2) {
         return RecipeEra::Automodel;
     }
-    // Diff / tree hints when present on a fan-in blob.
     if payload
         .pointer("/diffstat/files")
         .and_then(Value::as_array)
         .is_some_and(|a| !a.is_empty())
     {
+        if live_recipe.is_some_and(recipe_semver_is_v21) {
+            return RecipeEra::V21;
+        }
         return RecipeEra::Automodel;
     }
     RecipeEra::Legacy
+}
+
+/// True when the payload is the live Prism v2.1 contest (fail-closed).
+#[must_use]
+pub fn payload_is_v21_contest(payload: &Value) -> bool {
+    let root = payload.get("submission").unwrap_or(payload);
+    let metrics = root.get("metrics").unwrap_or(root);
+    contest_id_is_v21(metrics)
+        || scoring_generation_is_21(metrics)
+        || recipe_is_major_minor(root, 2, 1)
+        || recipe_is_major_minor(metrics, 2, 1)
+}
+
+fn contest_id_is_v21(metrics: &Value) -> bool {
+    for path in [
+        "/competition_id",
+        "/pod_manifest/competition_id",
+        "/metrics/competition_id",
+        "/metrics/pod_manifest/competition_id",
+    ] {
+        if metrics
+            .pointer(path)
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.trim() == "prism-v2.1")
+        {
+            return true;
+        }
+        if metrics
+            .get("competition_id")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.trim() == "prism-v2.1")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn scoring_generation_is_21(metrics: &Value) -> bool {
+    for node in [
+        metrics.get("scoring_generation"),
+        metrics.pointer("/pod_manifest/scoring_generation"),
+        metrics.pointer("/metrics/scoring_generation"),
+    ] {
+        let Some(v) = node else { continue };
+        if v.as_u64() == Some(21) {
+            return true;
+        }
+        if v.as_str()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .is_some_and(|n| n == 21)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn recipe_semver_is_v21(raw: &str) -> bool {
+    let mut parts = raw.trim().split('.');
+    parts.next() == Some("2") && parts.next() == Some("1")
+}
+
+fn recipe_is_major_minor(sub: &Value, major: u32, minor: u32) -> bool {
+    recipe_version_str(sub).is_some_and(|s| {
+        let mut parts = s.trim().split('.');
+        parts.next().and_then(|p| p.parse::<u32>().ok()) == Some(major)
+            && parts.next().and_then(|p| p.parse::<u32>().ok()) == Some(minor)
+    })
+}
+
+fn recipe_version_str(sub: &Value) -> Option<&str> {
+    sub.pointer("/metrics/recipe")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            sub.pointer("/metrics/pod_manifest/recipe_version")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            sub.pointer("/metrics/pod_manifest/recipe")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| sub.get("recipe").and_then(Value::as_str))
 }
 
 /// AutoModel pin id from detail, `/diff`, or metrics pod manifest.
@@ -287,7 +389,7 @@ pub fn enrich_leaderboard_row_from_detail_with_zone(
     let root = detail.get("submission").unwrap_or(detail);
     let era = infer_recipe_era(detail);
     row.recipe_era = Some(era);
-    if era == RecipeEra::Automodel {
+    if era == RecipeEra::Automodel || era == RecipeEra::V21 {
         row.pin_id = pin_id_from_payload(detail);
     }
     if let Some(groups) = map_eval_groups(root.get("eval").filter(|e| !e.is_null())) {
@@ -297,6 +399,7 @@ pub fn enrich_leaderboard_row_from_detail_with_zone(
     if !benches.is_empty() {
         row.benchmarks = Some(benches);
     }
+    row.run = map_run_stats(detail, era);
 }
 
 /// Apply detail fan-out fields onto a list [`Submission`].
@@ -309,7 +412,7 @@ pub fn enrich_submission_from_detail_with_zone(
     let era = infer_recipe_era(detail);
     sub.recipe_era = Some(era);
     let pin = pin_id_from_payload(detail);
-    if era == RecipeEra::Automodel {
+    if era == RecipeEra::Automodel || era == RecipeEra::V21 {
         sub.pin_id = pin;
     }
     let eval = root.get("eval").filter(|e| !e.is_null());
@@ -338,6 +441,83 @@ pub fn enrich_submission_from_detail_with_zone(
                     .and_then(Value::as_u64)
             })
             .map(|p| p as f64 / 1e6);
+    }
+    sub.run = map_run_stats(detail, era);
+}
+
+/// Map documented harness keys onto public run stats. Missing keys stay `None`.
+fn map_run_stats(detail: &Value, era: RecipeEra) -> PrismRunStats {
+    let root = detail.get("submission").unwrap_or(detail);
+    let metrics = root.get("metrics").filter(|m| !m.is_null());
+    let recipe = recipe_version_str(root).map(str::to_owned);
+    let competition_id = metrics
+        .and_then(|m| {
+            m.get("competition_id").and_then(Value::as_str).or_else(|| {
+                m.pointer("/pod_manifest/competition_id")
+                    .and_then(Value::as_str)
+            })
+        })
+        .map(str::to_owned);
+    let scoring_generation = metrics.and_then(|m| {
+        m.get("scoring_generation")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                m.get("scoring_generation")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+            })
+            .or_else(|| {
+                m.pointer("/pod_manifest/scoring_generation")
+                    .and_then(Value::as_u64)
+            })
+            .and_then(|n| u16::try_from(n).ok())
+    });
+    let eval = root.get("eval").filter(|e| !e.is_null());
+    PrismRunStats {
+        competition_id,
+        scoring_generation,
+        recipe_version: recipe,
+        weight_eligible: Some(era == RecipeEra::V21),
+        bits_per_byte: metrics.and_then(|m| {
+            metric_f64(
+                m,
+                &[
+                    "bits_per_byte",
+                    "org.g1.bits_per_byte_val",
+                    "g1.bits_per_byte.val",
+                ],
+            )
+        }),
+        tokens: metrics
+            .and_then(|m| metric_f64(m, &["tokens_seen", "org.diag.tokens_seen", "tokens"])),
+        tokens_per_sec: metrics.and_then(|m| {
+            metric_f64(
+                m,
+                &[
+                    "org.g7.throughput_toks_s",
+                    "g7.throughput_toks_s",
+                    "org.g7.throughput_toks_s_per_gparam",
+                ],
+            )
+        }),
+        mfu: metrics.and_then(|m| metric_f64(m, &["org.diag.mfu_achieved", "mfu"])),
+        flops: metrics.and_then(|m| {
+            metric_f64(
+                m,
+                &[
+                    "org.diag.flops_attested",
+                    "flops_spent",
+                    "org.diag.flops_spent",
+                ],
+            )
+        }),
+        gpu_type: metrics
+            .and_then(|m| m.get("gpu_type"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        gates_complete: eval
+            .and_then(|e| e.pointer("/gates/complete"))
+            .and_then(Value::as_bool),
     }
 }
 
@@ -423,14 +603,7 @@ fn map_eval_summary(eval: &Value) -> PrismEvalSummary {
 }
 
 fn recipe_major(sub: &Value) -> Option<u32> {
-    let raw = sub
-        .pointer("/metrics/recipe")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            sub.pointer("/metrics/pod_manifest/recipe_version")
-                .and_then(Value::as_str)
-        })?;
-    raw.split('.').next()?.parse().ok()
+    recipe_version_str(sub)?.split('.').next()?.parse().ok()
 }
 
 fn metric_f64(metrics: &Value, keys: &[&str]) -> Option<f64> {
@@ -481,8 +654,16 @@ mod tests {
         assert_eq!(infer_recipe_era(&legacy), RecipeEra::Legacy);
         let auto = json!({"metrics": {"recipe": "2.0.0"}});
         assert_eq!(infer_recipe_era(&auto), RecipeEra::Automodel);
+        let v21 = json!({"metrics": {"recipe": "2.1.0", "competition_id": "prism-v2.1"}});
+        assert_eq!(infer_recipe_era(&v21), RecipeEra::V21);
+        let gen = json!({"metrics": {"scoring_generation": 21}});
+        assert_eq!(infer_recipe_era(&gen), RecipeEra::V21);
         let pin = json!({"pin_id": "automodel@v0.5.0"});
         assert_eq!(infer_recipe_era(&pin), RecipeEra::Automodel);
+        assert_eq!(
+            infer_recipe_era_with_live(&pin, Some("2.1.0")),
+            RecipeEra::V21
+        );
         assert_eq!(
             pin_id_from_payload(&pin).as_deref(),
             Some("automodel@v0.5.0")
