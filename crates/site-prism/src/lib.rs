@@ -113,7 +113,8 @@ pub fn infer_recipe_era(payload: &Value) -> RecipeEra {
 }
 
 /// Same as [`infer_recipe_era`], but a live recipe `2.1.x` lets pin-only
-/// in-flight rows (no harvest metrics yet) count as v2.1.
+/// or unlabeled in-flight rows (no harvest metrics yet) count as v2.1.
+/// Explicit `1.x` / `2.0.x` stay archived even while 2.1 is live.
 #[must_use]
 pub fn infer_recipe_era_with_live(payload: &Value, live_recipe: Option<&str>) -> RecipeEra {
     if payload_is_v21_contest(payload) {
@@ -122,6 +123,9 @@ pub fn infer_recipe_era_with_live(payload: &Value, live_recipe: Option<&str>) ->
     let sub = payload.get("submission").unwrap_or(payload);
     if recipe_is_major_minor(sub, 2, 0) {
         return RecipeEra::Automodel;
+    }
+    if recipe_major(sub).is_some_and(|m| m < 2) {
+        return RecipeEra::Legacy;
     }
     if pin_id_from_payload(payload).is_some() {
         if live_recipe.is_some_and(recipe_semver_is_v21) {
@@ -142,7 +146,35 @@ pub fn infer_recipe_era_with_live(payload: &Value, live_recipe: Option<&str>) ->
         }
         return RecipeEra::Automodel;
     }
+    if live_recipe.is_some_and(recipe_semver_is_v21) {
+        return RecipeEra::V21;
+    }
     RecipeEra::Legacy
+}
+
+/// Copy live contest identity onto a v2.1 row that has no harvest metrics yet.
+pub fn fill_v21_run_from_live(run: &mut PrismRunStats, live: Option<&Value>, era: RecipeEra) {
+    if era != RecipeEra::V21 {
+        return;
+    }
+    if run.competition_id.is_none() {
+        run.competition_id = live
+            .and_then(|r| r.get("competition_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+    if run.scoring_generation.is_none() {
+        run.scoring_generation = live
+            .and_then(|r| r.get("scoring_generation"))
+            .and_then(Value::as_u64)
+            .and_then(|n| u16::try_from(n).ok());
+    }
+    if run.recipe_version.is_none() {
+        run.recipe_version = live
+            .and_then(|r| r.get("version"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
 }
 
 /// True when the payload is the live Prism v2.1 contest (fail-closed).
@@ -463,27 +495,41 @@ fn map_run_stats(detail: &Value, era: RecipeEra) -> PrismRunStats {
                     .and_then(Value::as_str)
             })
         })
+        .or_else(|| root.get("competition_id").and_then(Value::as_str))
         .map(str::to_owned);
-    let scoring_generation = metrics.and_then(|m| {
-        m.get("scoring_generation")
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                m.get("scoring_generation")
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-            })
-            .or_else(|| {
-                m.pointer("/pod_manifest/scoring_generation")
-                    .and_then(Value::as_u64)
-            })
-            .and_then(|n| u16::try_from(n).ok())
-    });
+    let scoring_generation = metrics
+        .and_then(|m| {
+            m.get("scoring_generation")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    m.get("scoring_generation")
+                        .and_then(Value::as_str)
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                })
+                .or_else(|| {
+                    m.pointer("/pod_manifest/scoring_generation")
+                        .and_then(Value::as_u64)
+                })
+                .and_then(|n| u16::try_from(n).ok())
+        })
+        .or_else(|| {
+            root.get("scoring_generation")
+                .and_then(Value::as_u64)
+                .and_then(|n| u16::try_from(n).ok())
+        });
     let eval = root.get("eval").filter(|e| !e.is_null());
+    let eval_ineligible = eval
+        .and_then(|e| e.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|s| s.eq_ignore_ascii_case("ineligible"));
+    let gates_complete = eval
+        .and_then(|e| e.pointer("/gates/complete"))
+        .and_then(Value::as_bool);
     PrismRunStats {
         competition_id,
         scoring_generation,
         recipe_version: recipe,
-        weight_eligible: Some(era == RecipeEra::V21),
+        weight_eligible: Some(era == RecipeEra::V21 && !eval_ineligible),
         bits_per_byte: metrics.and_then(|m| {
             metric_f64(
                 m,
@@ -521,9 +567,7 @@ fn map_run_stats(detail: &Value, era: RecipeEra) -> PrismRunStats {
             .and_then(|m| m.get("gpu_type"))
             .and_then(Value::as_str)
             .map(str::to_owned),
-        gates_complete: eval
-            .and_then(|e| e.pointer("/gates/complete"))
-            .and_then(Value::as_bool),
+        gates_complete,
     }
 }
 
@@ -670,6 +714,33 @@ mod tests {
             infer_recipe_era_with_live(&pin, Some("2.1.0")),
             RecipeEra::V21
         );
+        let inflight = json!({"id": "run", "status": "running", "label": "inflight"});
+        assert_eq!(infer_recipe_era(&inflight), RecipeEra::Legacy);
+        assert_eq!(
+            infer_recipe_era_with_live(&inflight, Some("2.1.0")),
+            RecipeEra::V21
+        );
+        assert_eq!(
+            infer_recipe_era_with_live(&auto, Some("2.1.0")),
+            RecipeEra::Automodel
+        );
+        assert_eq!(
+            infer_recipe_era_with_live(&legacy, Some("2.1.0")),
+            RecipeEra::Legacy
+        );
+        let mut run = PrismRunStats::default();
+        fill_v21_run_from_live(
+            &mut run,
+            Some(&json!({
+                "version": "2.1.0",
+                "competition_id": "prism-v2.1",
+                "scoring_generation": 21
+            })),
+            RecipeEra::V21,
+        );
+        assert_eq!(run.competition_id.as_deref(), Some("prism-v2.1"));
+        assert_eq!(run.scoring_generation, Some(21));
+        assert_eq!(run.recipe_version.as_deref(), Some("2.1.0"));
         assert_eq!(
             pin_id_from_payload(&pin).as_deref(),
             Some("automodel@v0.5.0")
