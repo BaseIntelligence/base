@@ -284,30 +284,39 @@ impl<C: ChainClient + Send> Orchestrator<C> {
 
     async fn maybe_auto_retry(&self, row: &SubmissionState, class: &str, msg: &str) -> bool {
         let rate = lium_rent_pool::is_rate_limited(msg);
-        if !rate && row.retry_count >= self.cfg.auto_retry_max {
+        let capacity = lium_rent_pool::is_no_capacity(msg);
+        let skip_burn = rate || capacity;
+        if !skip_burn && row.retry_count >= self.cfg.auto_retry_max {
             return false;
         }
         warn!(
             submission_id = %row.id,
             class,
             rate_limited = rate,
+            no_capacity = capacity,
             attempt = row.retry_count + 1,
             max = self.cfg.auto_retry_max,
             error = %msg,
             "auto-retrying submission after infra failure"
         );
-        let _ = self.store.reset_for_retry(&row.id, !rate).await;
+        let _ = self.store.reset_for_retry(&row.id, !skip_burn).await;
+        let note = capacity.then_some(lium_rent_pool::CAPACITY_NOTE);
         let _ = self
             .store
             .apply(
                 &row.id,
-                &StatePatch::default(),
+                &StatePatch {
+                    error_detail: note.map(str::to_owned),
+                    ..StatePatch::default()
+                },
                 Some(&StageEvent {
                     stage: Stage::Queued,
                     detail: Some(serde_json::json!({
                         "auto_retry": true,
                         "class": class,
                         "rate_limited": rate,
+                        "no_capacity": capacity,
+                        "note": note,
                         "attempt": row.retry_count + 1,
                         "error": msg,
                     })),
@@ -315,7 +324,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 }),
             )
             .await;
-        if !rate {
+        if !skip_burn {
             if let Some(g) = &self.gating {
                 let _ = g
                     .bump_attempt(
@@ -376,8 +385,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         // `train_script` training crash) additionally fail terminal under
         // their own class, which grants unbounded resubmit. Every other
         // EVAL_FAIL phase (eval / battery / score) stays the historical
-        // windowed `install` class. Non-EVAL_FAIL failures are Lium infra and
-        // keep `install` + operator-paid auto-retry.
+        // windowed `install` class. Non-EVAL_FAIL failures are Lium infra:
+        // 429 / `no_capacity` requeue without burn; other infra uses auto-retry.
         if msg.contains("EVAL_FAIL") {
             let class = classify_eval_fail(&msg);
             fail_terminal(self.store.as_ref(), self.gating.as_ref(), row, class, &msg).await;

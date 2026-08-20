@@ -304,14 +304,7 @@ async fn post_submission(
                     }
                 }
             }
-            (
-                StatusCode::ACCEPTED,
-                Json(prism_pipeline::SubmissionAccepted {
-                    submission_id: id,
-                    status: "accepted".into(),
-                }),
-            )
-                .into_response()
+            (StatusCode::ACCEPTED, Json(json!({"submission_id": id, "status": "accepted", "note": lium_rent_pool::CAPACITY_POLICY}))).into_response()
         }
         Err(StoreError::Backend(e)) if e.contains("duplicate") || e.contains("unique") => {
             if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key.as_ref()) {
@@ -529,6 +522,7 @@ async fn get_status(State(st): State<Arc<AppState>>) -> Response {
         "queues": {"queued": queued, "active": active},
         "recent_terminal": done_24h,
         "recipe_pin": prism_recipe::recipe_pin_hex(),
+        "lium_capacity_note": lium_rent_pool::CAPACITY_POLICY,
     }))
     .into_response()
 }
@@ -1040,6 +1034,7 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(v["note"], lium_rent_pool::CAPACITY_POLICY);
         let id = v["submission_id"].as_str().unwrap().to_owned();
 
         let (s2, v2) = call(
@@ -1073,6 +1068,7 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["backend"], "sim");
+        assert_eq!(v["lium_capacity_note"], lium_rent_pool::CAPACITY_POLICY);
         let (s, v) = call(
             app.clone(),
             Request::get("/v1/recipe").body(Body::empty()).unwrap(),

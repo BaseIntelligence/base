@@ -140,6 +140,16 @@ restart. Missing key on live → `400 missing_lium_api_key`. Cost guardrails
 (`max_price_per_hour`, lifetime) still apply so a bad key cannot rent
 unbounded SKUs through the orchestrator.
 
+**B200 sold out ≠ rejected.** Live eval pins **1× NVIDIA B200**. If Lium has
+no matching offer, intake still **accepts** the ZIP (`202` + a `note`) and
+the run stays **`queued`**. `GET /v1/submissions/{id}/events` and
+`error_detail` say **B200s are currently out of capacity on Lium**; the
+orchestrator retries rent on the next worker tick when an offer appears.
+This is **not** Score(0). `GET /v1/status` advertises the same policy as
+`lium_capacity_note`. Auth / missing `X-Lium-Api-Key` / bad ZIP /
+template-permission after Lium's own fallback still fail — do not expect
+those to queue.
+
 **Pod lifetime ceiling is 7.0h.** You are billed for time actually used, not
 the ceiling. It must contain build (≤15m) + the **4.0 h / 240 min** train
 wall + checkpoint (≤30m) + eval (≤1.5h) ≈ 6.28 h. Isolated proofs set
@@ -589,7 +599,7 @@ score instead of being washed out.
 | Route | Use |
 |-------|-----|
 | `POST /v1/submissions/precheck` | Advisory copy/layout gate (3/coldkey/UTC day); no submit |
-| `GET /v1/status` | Backend mode, epoch, queue |
+| `GET /v1/status` | Backend mode, epoch, queue, `lium_capacity_note` |
 | `GET /v1/recipe` | Caps + AutoModel pin (`automodel_pin_id`, commit, content sha) |
 | `GET /v1/submissions/{id}` | Detail + receipt + scores + composite block (v3) |
 | `GET /v1/submissions/{id}/diff` | Unified diff + diffstat / classification (recipe ≥ 2.0) |
