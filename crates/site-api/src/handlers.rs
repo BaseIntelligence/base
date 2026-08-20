@@ -1598,7 +1598,10 @@ mod tests {
         let (s, v) = call(app, "/v1/site/arenas/prism/leaderboard").await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["waitingForFirst"], true, "{v}");
-        assert_eq!(v["total"], 0, "pin-only 2.0 must not rank under live 2.1: {v}");
+        assert_eq!(
+            v["total"], 0,
+            "pin-only 2.0 must not rank under live 2.1: {v}"
+        );
         assert_eq!(v["competitionId"], "prism-v2.1");
         assert_eq!(v["scoringGeneration"], 21);
     }
