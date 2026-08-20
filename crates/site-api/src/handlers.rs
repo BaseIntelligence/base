@@ -22,8 +22,9 @@ use site_data::map::{
 };
 use site_prism::{
     enrich_leaderboard_row_from_detail_with_zone, enrich_submission_from_detail_with_zone,
-    fill_v21_run_from_live, infer_recipe_era_with_live, map_benchmarks, payload_is_v21_contest,
-    pin_id_from_payload, prism_reference_baselines, prism_submission_detail_with_zone,
+    fill_v21_run_from_live, infer_recipe_era, infer_recipe_era_with_live, map_benchmarks,
+    payload_is_v21_contest, pin_id_from_payload, prism_reference_baselines,
+    prism_submission_detail_with_zone,
 };
 use site_types::coding_arena;
 use site_types::page_slice;
@@ -460,19 +461,35 @@ async fn prism_leaderboard_json(
         .and_then(|r| r.get("version"))
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let live = live_recipe.as_deref();
+    let list_by_id: HashMap<&str, &Value> = rows
+        .iter()
+        .filter_map(|row| row.get("id").and_then(Value::as_str).map(|id| (id, row)))
+        .collect();
     for row in &mut board {
+        let list = row
+            .submission_id
+            .as_deref()
+            .and_then(|id| list_by_id.get(id).copied());
+        let detail = row
+            .submission_id
+            .as_deref()
+            .and_then(|id| details.get(id).map(|fan| &fan.detail));
         if let Some(id) = row.submission_id.as_ref() {
             if let Some(fan) = details.get(id) {
                 enrich_leaderboard_row_from_detail_with_zone(row, &fan.detail, fan.zone_a.as_ref());
-                row.recipe_era = Some(infer_recipe_era_with_live(&fan.detail, live));
-                if row.recipe_era == Some(RecipeEra::V21) {
-                    row.run.weight_eligible = Some(true);
-                }
             }
         }
-        if row.recipe_era.is_none() {
-            // Historical 1.x champions without AutoModel signals → legacy tab.
+        // Rank only on contest stamps (recipe 2.1.x / prism-v2.1 / gen 21).
+        // Pin + live recipe 2.1 must not promote a closed 2.0 harvest.
+        if list.is_some_and(payload_is_v21_contest) || detail.is_some_and(payload_is_v21_contest) {
+            row.recipe_era = Some(RecipeEra::V21);
+            row.run.weight_eligible = Some(true);
+        } else if let Some(detail) = detail {
+            row.recipe_era = Some(infer_recipe_era(detail));
+            if row.run.weight_eligible.is_none() {
+                row.run.weight_eligible = Some(false);
+            }
+        } else {
             row.recipe_era = Some(RecipeEra::Legacy);
         }
     }
@@ -1537,6 +1554,53 @@ mod tests {
 
         let (s, v) = call(app, "/v1/site/arenas/prism/submissions/nope").await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    }
+
+    #[tokio::test]
+    async fn prism_leaderboard_excludes_pin_only_2_0_when_live_recipe_is_v21() {
+        let (design, prism, st) = setup().await;
+        mount_design_site_mocks(&design).await;
+        mount_prism_list_mocks(&prism).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/submissions/sub-pin20"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "submission": {
+                    "id": "sub-pin20",
+                    "miner_hotkey": "ee".repeat(32),
+                    "epoch": 2,
+                    "status": "terminated",
+                    "label": "pin-only-2.0",
+                    "bpb": 0.7,
+                    "n_params": 350_000_000_u64,
+                    "score": {"kind":"score","value": 990},
+                    "pin_id": "automodel@v0.5.0",
+                    "metrics": { "bpb": 0.7 }
+                },
+                "events": []
+            })))
+            .mount(&prism)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/submissions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "submissions": [{
+                    "id": "sub-pin20",
+                    "miner_hotkey": "ee".repeat(32),
+                    "status": "terminated",
+                    "bpb": 0.7,
+                    "n_params": 350_000_000_u64,
+                    "score": {"kind":"score","value": 990}
+                }]
+            })))
+            .mount(&prism)
+            .await;
+        let app = site_router(st);
+        let (s, v) = call(app, "/v1/site/arenas/prism/leaderboard").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["waitingForFirst"], true, "{v}");
+        assert_eq!(v["total"], 0, "pin-only 2.0 must not rank under live 2.1: {v}");
+        assert_eq!(v["competitionId"], "prism-v2.1");
+        assert_eq!(v["scoringGeneration"], 21);
     }
 
     #[tokio::test]
