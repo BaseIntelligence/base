@@ -13,11 +13,10 @@
 # challenge mini-secrets stay at $BASE_CHALLENGE_SK_FILE / $BASE_DESIGN_SK_FILE
 # (mode 0400).
 #
-# D24 (exact-E): with both challenges at >0 bps (currently 5000/5000), sealing
-# requires a complete leaf set from EVERY >0-bps challenge at the seal epoch.
-# The design pass therefore emits NoScore leaves first; its own seal attempt
-# 409s until the prism pass lands (tolerated), and the prism pass then seals
-# the complete set. All-NoScore still aggregates to the uid-0 burn vector.
+# D24 (exact-E): only challenges with emission_share_bps > 0 must have a
+# complete leaf set. Extra leaves for a 0-bps challenge (design today) are
+# IncompleteParticipantSet. Trust root is prism = 10000 / design = 0, so this
+# script emits prism NoScore only. All-NoScore still aggregates to uid-0 burn.
 set -euo pipefail
 
 BASE_HOME="${BASE_HOME:-/opt/base}"
@@ -44,37 +43,14 @@ if ! flock -n 9; then
 fi
 
 {
-  echo "$(date -Is) seal start gateway=${GATEWAY} netuid=${NETUID}"
-  # Design NoScore leaves (D24 participant). A 409 "incomplete participant
-  # set" on its seal attempt is expected until the prism pass seals.
-  dout="$("${BIN}" --gateway "${GATEWAY}" --burn --netuid "${NETUID}" \
-    --chain-endpoint "${CHAIN}" --challenge-id design --challenge-sk "${DESIGN_SK}" 2>&1 || true)"
-  # grep under `set -euo pipefail`: no-match must not kill the script before
-  # the explicit failure path below can log the design output.
-  echo "${dout}" | grep -E 'submitted|seal ok|latest OK|incomplete' | tail -2 || true
-  if ! echo "${dout}" | grep -qE 'submitted|seal ok'; then
-    echo "$(date -Is) design leaves FAILED (no submission)"
-    echo "${dout}" | tail -5
-    exit 1
-  fi
-  # D24 completeness is per-epoch: the prism pass must emit at the SAME epoch
-  # the design pass used (each run otherwise self-derives a fresh tip and the
-  # sets never intersect). Parse the design epoch and pin both epoch + block_b.
-  depoch="$(printf '%s\n' "${dout}" | sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p' | head -1)"
-  if [[ -z "${depoch}" ]]; then
-    echo "$(date -Is) could not parse design epoch from weights-smoke output"
-    exit 1
-  fi
-  echo "pinning prism pass to design epoch=${depoch}"
-  # Prism pass: seals the now-complete D24 set at the pinned epoch.
+  echo "$(date -Is) seal start gateway=${GATEWAY} netuid=${NETUID} challenge=prism"
   if out="$("${BIN}" --gateway "${GATEWAY}" --burn --netuid "${NETUID}" \
-      --chain-endpoint "${CHAIN}" --challenge-sk "${SK}" \
-      --epoch "${depoch}" --block-b "${depoch}" 2>&1)"; then
+      --chain-endpoint "${CHAIN}" --challenge-id prism --challenge-sk "${SK}" 2>&1)"; then
     echo "${out}" | grep -E 'seal ok|latest OK' || echo "${out}" | tail -3
     echo "$(date -Is) seal ok"
   else
     rc=$?
-    echo "${out}" | tail -5
+    echo "${out}" | tail -8
     echo "$(date -Is) seal FAILED rc=${rc}"
     exit "${rc}"
   fi

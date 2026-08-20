@@ -1,12 +1,13 @@
 # Validator role — NO gateway, NO owner hotkey, NO challenge execution.
-# Points at the master gateway over the DO VPC private IP.
-# Used with: docker compose -f docker-compose.yml -f deploy/compose/role-validator.yml
+# Points at the master gateway (staging VPC default; env-prod.yml pins
+# https://chain.joinbase.ai). Used with:
+# docker compose -f docker-compose.yml -f deploy/compose/role-validator.yml
 services:
   validator:
     environment:
-      # Default is the STAGING master VPC IP; env-prod.yml pins the prod master
-      # (http://10.116.0.3:8080). Never carry this pin in a shell var or an
-      # uncommitted .env — a bare `docker compose up` silently drops it.
+      # Default is the STAGING master VPC IP. env-prod.yml pins the public
+      # prod API. Never carry a prod pin in a shell var or an uncommitted
+      # .env — a bare `docker compose up` silently drops it.
       BASE_GATEWAY_ENDPOINT: ${BASE_GATEWAY_ENDPOINT:-http://10.116.0.2:8080}
       BASE_COORDINATION_INTERVAL_SECS: "3"
     volumes:
