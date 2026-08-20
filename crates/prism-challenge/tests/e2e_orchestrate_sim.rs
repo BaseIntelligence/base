@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -20,7 +21,9 @@ use prism_lium::{
     CostGuardrailError, EvalJobBackend, Instance, InstanceSpec, LiumError, Offer, RemoteExecResult,
     SimLiumBackend,
 };
-use prism_review::SimReviewer;
+use prism_review::{
+    ReviewBackend, ReviewError, ReviewVerdict, SimReviewer, SimilarityVerdict, SourceSnippet,
+};
 use std::sync::Mutex;
 
 fn fake_chain() -> FakeChain {
@@ -403,10 +406,56 @@ fn row_from_example(id: &str, req: &prism_challenge::SubmissionRequest) -> Submi
     }
 }
 
+struct CountingReviewer {
+    inner: SimReviewer,
+    reviews: AtomicUsize,
+    sims: AtomicUsize,
+}
+
+impl CountingReviewer {
+    fn new() -> Self {
+        Self {
+            inner: SimReviewer::new(),
+            reviews: AtomicUsize::new(0),
+            sims: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ReviewBackend for CountingReviewer {
+    async fn review(
+        &self,
+        architecture_py: &str,
+        training_py: &str,
+    ) -> Result<ReviewVerdict, ReviewError> {
+        self.reviews.fetch_add(1, Ordering::SeqCst);
+        self.inner.review(architecture_py, training_py).await
+    }
+
+    async fn similarity(
+        &self,
+        architecture_py: &str,
+        corpus: &[SourceSnippet],
+    ) -> Result<SimilarityVerdict, ReviewError> {
+        self.sims.fetch_add(1, Ordering::SeqCst);
+        self.inner.similarity(architecture_py, corpus).await
+    }
+}
+
 fn orch_with_backend(
     store: &Arc<MemoryPrismStore>,
     chain: &Arc<LockedFake>,
     backend: Arc<dyn EvalJobBackend>,
+) -> Orchestrator<LockedFake> {
+    orch_with_backend_review(store, chain, backend, Arc::new(SimReviewer::new()))
+}
+
+fn orch_with_backend_review(
+    store: &Arc<MemoryPrismStore>,
+    chain: &Arc<LockedFake>,
+    backend: Arc<dyn EvalJobBackend>,
+    reviewer: Arc<dyn ReviewBackend>,
 ) -> Orchestrator<LockedFake> {
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
@@ -426,7 +475,7 @@ fn orch_with_backend(
         },
         Arc::clone(store) as Arc<dyn PrismStore>,
         backend,
-        Arc::new(SimReviewer::new()),
+        reviewer,
         Arc::new(SimAgent::new()),
         &gateway,
         Arc::clone(chain),
@@ -438,10 +487,12 @@ fn orch_with_backend(
 async fn no_capacity_requeues_with_b200_note() {
     let store = Arc::new(MemoryPrismStore::new());
     let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
-    let orch = orch_with_backend(
+    let reviewer = Arc::new(CountingReviewer::new());
+    let orch = orch_with_backend_review(
         &store,
         &chain,
         Arc::new(ProvisionFail("capacity")) as Arc<dyn EvalJobBackend>,
+        Arc::clone(&reviewer) as Arc<dyn ReviewBackend>,
     );
     let req = example_valid_request();
     let id = submission_id(&req);
@@ -475,6 +526,18 @@ async fn no_capacity_requeues_with_b200_note() {
     assert!(orch.cycle_once().await.unwrap());
     let row = store.get(&id).await.unwrap().expect("row");
     assert_eq!(row.status, Stage::Queued, "next tick still queued");
+    assert!(row.review.is_some(), "sold-out must keep llm_review");
+    assert!(row.similarity.is_some(), "sold-out must keep similarity");
+    assert_eq!(
+        reviewer.reviews.load(Ordering::SeqCst),
+        1,
+        "llm_review must not re-run on every no_capacity tick"
+    );
+    assert_eq!(
+        reviewer.sims.load(Ordering::SeqCst),
+        1,
+        "similarity must not re-run on every no_capacity tick"
+    );
 }
 
 #[tokio::test]

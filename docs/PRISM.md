@@ -132,7 +132,9 @@ failed 429 rows from the last **6 hours**. **No matching 1× B200 offer**
 (`no_capacity` / sold out) is the same class: the row stays **`queued`**
 (not `failed` / Score(0)), events and `error_detail` carry
 `B200s are currently out of capacity on Lium; this job is queued until an offer appears.`,
-and the next `claim_next` tick retries rent on the miner BYOK key. Template
+and the next `claim_next` tick retries **rent only** on the miner BYOK key
+(similarity / LLM review / pre-pod agentic stay on the row — they are not
+re-run every sold-out tick). Template
 permission / auth / bad ZIP stay fails (Lium already retries a rentable
 template once). After an infra `blocked`, the
 miner may **`/retry` or re-POST the same bytes** for `ChallengeInternal`

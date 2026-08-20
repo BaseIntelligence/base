@@ -270,11 +270,13 @@ pub async fn update_prism_submission(
     Ok(row)
 }
 
-/// Reset a row for retry: clears review/score fields and re-queues.
+/// Reset a row for retry: clears score fields and re-queues.
 /// Completed measurements are retained for post-run review retries; rows
 /// without metrics drop stale pod/exec fields and re-provision cleanly.
-/// When `bump_retry`, increments `retry_count` (manual/auto infra). When
-/// false, keeps attempts (Lium 429 autonomous requeue — do not burn budget).
+/// When `bump_retry`, increments `retry_count` and clears screens
+/// (manual / llm_infra / ast_infra). When false (Lium 429 / `no_capacity`),
+/// keeps attempts **and** similarity/review so sold-out rent ticks do not
+/// re-bill LLM screens.
 ///
 /// # Errors
 /// SQL error / 0 rows for id.
@@ -290,7 +292,8 @@ pub async fn reset_prism_submission_for_retry(
             pod_provider = CASE WHEN metrics_json IS NULL THEN NULL ELSE pod_provider END, \
             receipt_json = CASE WHEN metrics_json IS NULL THEN NULL ELSE receipt_json END, \
             bpb = CASE WHEN metrics_json IS NULL THEN NULL ELSE bpb END, \
-            review_json = NULL, similarity_json = NULL, \
+            review_json = CASE WHEN $2 THEN NULL ELSE review_json END, \
+            similarity_json = CASE WHEN $2 THEN NULL ELSE similarity_json END, \
             kind = NULL, score = NULL, absence_reason = NULL, emitted_epoch = NULL, \
             error_detail = NULL, \
             retry_count = CASE WHEN $2 THEN retry_count + 1 ELSE retry_count END, \

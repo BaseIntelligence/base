@@ -667,10 +667,11 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         id: &str,
         row: &SubmissionState,
     ) -> Option<(SimilarityVerdict, prism_review::ReviewVerdict)> {
-        if mid_pod_resume(row) {
-            if let (Some(s), Some(r)) = (row.similarity.clone(), row.review.clone()) {
-                return Some((s, r));
-            }
+        // Keep pre-pod screens across 429 / no_capacity requeues. Re-running
+        // similarity + LLM review + pre-pod agentic every rent tick burns
+        // tokens while waiting for a B200.
+        if let (Some(s), Some(r)) = (row.similarity.clone(), row.review.clone()) {
+            return Some((s, r));
         }
         let (s, r, _) = self.pre_pod_screens(id, row).await?;
         if !mid_pod_resume(row) {
