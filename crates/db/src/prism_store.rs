@@ -274,7 +274,7 @@ pub async fn update_prism_submission(
 /// Completed measurements are retained for post-run review retries; rows
 /// without metrics drop stale pod/exec fields and re-provision cleanly.
 /// When `bump_retry`, increments `retry_count` and clears screens
-/// (manual / llm_infra / ast_infra). When false (Lium 429 / `no_capacity`),
+/// (manual / `llm_infra` / `ast_infra`). When false (Lium 429 / `no_capacity`),
 /// keeps attempts **and** similarity/review so sold-out rent ticks do not
 /// re-bill LLM screens.
 ///
