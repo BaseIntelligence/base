@@ -20,6 +20,7 @@ on:
       - "deploy/scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "deny.toml"
       - ".github/workflows/images.yml"
   workflow_dispatch:
     inputs:

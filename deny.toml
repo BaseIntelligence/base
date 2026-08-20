@@ -13,6 +13,8 @@ unmaintained = "workspace"
 ignore = [
     # Transitive via dcap-qvl → dcap-qvl-webpki → rsa; no safe upgrade upstream yet.
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin Attack is transitive through dcap-qvl 0.6.1 (optional attest-policy/dcap feature); no patched rsa in that graph" },
+    # schnorrkel 0.11.5 requires arrayref ^0.3.7; crates.io yanked 0.3.7–0.3.9.
+    { crate = "arrayref@0.3.9", reason = "all arrayref 0.3.x yanked; schnorrkel 0.11.5 has no other crate" },
 ]
 
 [licenses]
