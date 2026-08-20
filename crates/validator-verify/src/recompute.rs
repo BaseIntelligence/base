@@ -305,6 +305,12 @@ pub fn compare_bundle_bytes<C: ChainClient>(
     }
 }
 
+/// Map a gateway/coordination fetch error. Never substitutes another epoch (no LKG).
+#[must_use]
+pub fn no_submission_from_fetch(err: CoordinationError) -> ComparisonOutcome {
+    map_coord_err(err)
+}
+
 fn map_coord_err(err: CoordinationError) -> ComparisonOutcome {
     let reason = match err {
         CoordinationError::NoGateway => NoSubmissionReason::NoGatewayConfigured,
@@ -366,7 +372,7 @@ pub async fn fetch_and_compare<C: ChainClient>(
 ) -> ComparisonOutcome {
     match client.fetch_bundle(epoch).await {
         Ok(bytes) => compare_bundle_bytes(&bytes, chain, trust),
-        Err(e) => map_coord_err(e),
+        Err(e) => no_submission_from_fetch(e),
     }
 }
 

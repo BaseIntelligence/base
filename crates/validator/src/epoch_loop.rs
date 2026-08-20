@@ -11,7 +11,8 @@ use tracing::{info, warn};
 
 use crate::coordination::{CoordinationClient, CoordinationError};
 use crate::epoch::epoch_from_block;
-use crate::recompute::{fetch_and_compare, ComparisonOutcome};
+use crate::lkg::SealedBundleLkg;
+use crate::recompute::{compare_bundle_bytes, no_submission_from_fetch, ComparisonOutcome};
 
 /// Format Match line identical to `full_local_e2e` `VALIDATOR_LOG` shape.
 #[must_use]
@@ -228,7 +229,16 @@ pub async fn coordination_compare_once<C: ChainClient>(
     submit: Option<&CoordinationSubmitConfig>,
     dedupe: &EpochSubmitDedupe,
 ) -> Result<Option<ComparisonOutcome>, CoordinationError> {
-    coordination_compare_once_with_drand(client, chain, trust, submit, dedupe, &ReadyDrand).await
+    coordination_compare_once_with_drand(
+        client,
+        chain,
+        trust,
+        submit,
+        dedupe,
+        &ReadyDrand,
+        &SealedBundleLkg::disabled(),
+    )
+    .await
 }
 
 /// Same as [`coordination_compare_once`] with an injectable [`DrandClient`].
@@ -239,6 +249,7 @@ pub async fn coordination_compare_once_with_drand<C, D>(
     submit: Option<&CoordinationSubmitConfig>,
     dedupe: &EpochSubmitDedupe,
     drand: &D,
+    lkg: &SealedBundleLkg,
 ) -> Result<Option<ComparisonOutcome>, CoordinationError>
 where
     C: ChainClient,
@@ -267,8 +278,9 @@ where
         }
     }
     let Some(epoch) = latest.epoch.filter(|_| latest.is_sealed_bundle()) else {
-        // Fail-closed burn (sealed=false) or incomplete legacy body — no Match path.
-        return Ok(None);
+        return Ok(apply_unsealed_latest(
+            chain, trust, submit, dedupe, drand, lkg,
+        ));
     };
     // Pressure / verify: sealed vector must stay near the live chain epoch.
     // A stuck real-seal (D24 incomplete) leaves `/v1/weights/latest` on an old
@@ -303,8 +315,61 @@ where
             }
         }
     }
-    let outcome = fetch_and_compare(client, epoch, chain, trust).await;
-    match &outcome {
+    let outcome = match client.fetch_bundle(epoch).await {
+        Ok(bytes) => {
+            let outcome = compare_bundle_bytes(&bytes, chain, trust);
+            if matches!(outcome, ComparisonOutcome::Match { .. }) {
+                lkg.save(&bytes);
+            }
+            outcome
+        }
+        Err(e) => no_submission_from_fetch(e),
+    };
+    record_compare_outcome(&outcome, chain, drand, submit, dedupe);
+    Ok(Some(outcome))
+}
+
+/// Gateway serving the fail-closed burn (`sealed: false`): log, then Match the
+/// last independently verified seal so set-weights survives a master bounce.
+fn apply_unsealed_latest<C, D>(
+    chain: &C,
+    trust: &LocalTrustRoot,
+    submit: Option<&CoordinationSubmitConfig>,
+    dedupe: &EpochSubmitDedupe,
+    drand: &D,
+    lkg: &SealedBundleLkg,
+) -> Option<ComparisonOutcome>
+where
+    C: ChainClient,
+    D: DrandClient + ?Sized,
+{
+    warn!(
+        event = "validator_latest_unsealed",
+        "gateway /v1/weights/latest is unsealed burn; trying persisted sealed bundle"
+    );
+    let Some(bytes) = lkg.load() else {
+        warn!(
+            event = "validator_lkg_missing",
+            "no persisted sealed bundle; cannot submit weights until gateway reseals"
+        );
+        return None;
+    };
+    let outcome = compare_bundle_bytes(&bytes, chain, trust);
+    record_compare_outcome(&outcome, chain, drand, submit, dedupe);
+    Some(outcome)
+}
+
+fn record_compare_outcome<C, D>(
+    outcome: &ComparisonOutcome,
+    chain: &C,
+    drand: &D,
+    submit: Option<&CoordinationSubmitConfig>,
+    dedupe: &EpochSubmitDedupe,
+) where
+    C: ChainClient,
+    D: DrandClient + ?Sized,
+{
+    match outcome {
         ComparisonOutcome::Match {
             epoch,
             merkle_root,
@@ -329,7 +394,7 @@ where
                 gateway_vector_len = gateway_vector.len(),
                 "{line}"
             );
-            maybe_submit_match(&outcome, chain, drand, submit, dedupe);
+            maybe_submit_match(outcome, chain, drand, submit, dedupe);
         }
         ComparisonOutcome::VectorMismatch { epoch, .. } => {
             warn!(epoch, "coordination compare VectorMismatch");
@@ -341,7 +406,6 @@ where
             warn!(?reason, "coordination compare NoSubmission");
         }
     }
-    Ok(Some(outcome))
 }
 
 /// Spawn a background loop that periodically runs [`coordination_compare_once`].
@@ -358,14 +422,17 @@ where
     C: ChainClient + Send + Sync + 'static,
 {
     let dedupe = Arc::new(EpochSubmitDedupe::new());
+    let lkg = SealedBundleLkg::from_env();
     tokio::spawn(async move {
         // Immediate first attempt (covers seal-before-start and seal-soon-after).
-        if let Err(e) = coordination_compare_once(
+        if let Err(e) = coordination_compare_once_with_drand(
             client.as_ref(),
             chain.as_ref(),
             &trust,
             submit.as_ref(),
             dedupe.as_ref(),
+            &ReadyDrand,
+            &lkg,
         )
         .await
         {
@@ -375,12 +442,14 @@ where
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            if let Err(e) = coordination_compare_once(
+            if let Err(e) = coordination_compare_once_with_drand(
                 client.as_ref(),
                 chain.as_ref(),
                 &trust,
                 submit.as_ref(),
                 dedupe.as_ref(),
+                &ReadyDrand,
+                &lkg,
             )
             .await
             {
@@ -541,6 +610,7 @@ mod tests {
         LocalTrustRoot,
         [u8; 32],
         Vec<(u16, u16)>,
+        Vec<u8>,
     ) {
         let csk = sk(1);
         let gsk = sk(2);
@@ -627,7 +697,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/octet-stream")
-                    .set_body_bytes(bytes),
+                    .set_body_bytes(bytes.clone()),
             )
             .mount(&server)
             .await;
@@ -642,6 +712,7 @@ mod tests {
             trust,
             bundle.body.merkle_root,
             bundle.body.final_vector,
+            bytes,
         )
     }
 
@@ -649,7 +720,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn tick_sealed_latest_yields_match() {
         let epoch = 77u64;
-        let (client, chain, trust, merkle_root, _) = sealed_match_fixture(epoch).await;
+        let (client, chain, trust, merkle_root, _, _) = sealed_match_fixture(epoch).await;
         let dedupe = EpochSubmitDedupe::new();
         let out = coordination_compare_once(&client, &chain, &trust, None, &dedupe)
             .await
@@ -747,7 +818,7 @@ mod tests {
         // Same metagraph as the sealed fixture, but chain epoch/tip far ahead —
         // pressure-verify warns (validator_seal_lag) yet Match must still proceed.
         let epoch = 77u64;
-        let (client, _chain, trust, merkle_root, _) = sealed_match_fixture(epoch).await;
+        let (client, _chain, trust, merkle_root, _, _) = sealed_match_fixture(epoch).await;
         let miner = [0xA1u8; 32];
         let chain = FakeChain::new(FakeChainConfig {
             current_block: 10_000,
@@ -780,5 +851,99 @@ mod tests {
             }
             other => panic!("expected Match despite seal lag, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn tick_burn_after_restart_matches_lkg_and_submits() {
+        let epoch = 9_010_077u64;
+        let (sealed_client, chain, trust, merkle_root, _, bundle_bytes) =
+            sealed_match_fixture(epoch).await;
+        let dir = std::env::temp_dir().join(format!(
+            "base-lkg-tick-{}-{}-{}",
+            std::process::id(),
+            epoch,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let lkg = SealedBundleLkg::at(dir.join("last-sealed.bundle"));
+        let persist_dedupe = EpochSubmitDedupe::new();
+        let persisted = coordination_compare_once_with_drand(
+            &sealed_client,
+            &chain,
+            &trust,
+            None,
+            &persist_dedupe,
+            &ReadyDrand,
+            &lkg,
+        )
+        .await
+        .expect("ok")
+        .expect("sealed some");
+        match &persisted {
+            ComparisonOutcome::Match { epoch: e, .. } if *e == epoch => {}
+            other => panic!("expected sealed Match, got {other:?}"),
+        }
+        assert_eq!(
+            lkg.load().as_deref(),
+            Some(bundle_bytes.as_slice()),
+            "Match must persist SCALE bytes"
+        );
+        assert!(
+            chain.call_log().is_empty(),
+            "persist tick has no submit cfg"
+        );
+
+        let burn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/weights/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "epoch": null,
+                "merkle_root": "",
+                "sealed": false,
+                "uids": [0],
+                "weights": [1.0]
+            })))
+            .mount(&burn)
+            .await;
+        let burn_client = CoordinationClient::new(Some(burn.uri())).unwrap();
+        let submit = CoordinationSubmitConfig {
+            netuid: 1,
+            hotkey: vec![0xBBu8; 32],
+            version_key: 3,
+            epoch_length: 360,
+        };
+        // Process restart drops in-memory submit dedupe.
+        let restart_dedupe = EpochSubmitDedupe::new();
+        let out = coordination_compare_once_with_drand(
+            &burn_client,
+            &chain,
+            &trust,
+            Some(&submit),
+            &restart_dedupe,
+            &ReadyDrand,
+            &lkg,
+        )
+        .await
+        .expect("ok")
+        .expect("lkg match");
+        match out {
+            ComparisonOutcome::Match {
+                epoch: e,
+                merkle_root: root,
+                ..
+            } => {
+                assert_eq!(e, epoch);
+                assert_eq!(root, merkle_root);
+            }
+            other => panic!("expected LKG Match, got {other:?}"),
+        }
+        assert_eq!(
+            chain.call_log().len(),
+            1,
+            "restart + burn latest must submit last verified weights"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
