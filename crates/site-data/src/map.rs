@@ -397,6 +397,7 @@ pub fn design_leaderboard(
                 pin_id: None,
                 eval_groups: None,
                 benchmarks: None,
+                run: site_types::PrismRunStats::default(),
             },
         )
         .collect()
@@ -534,6 +535,7 @@ pub fn design_submission(
         pin_id: None,
         eval_groups: None,
         benchmarks: None,
+        run: site_types::PrismRunStats::default(),
     })
 }
 
@@ -628,6 +630,7 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         pin_id: None,
         eval_groups: None,
         benchmarks: None,
+        run: site_types::PrismRunStats::default(),
     })
 }
 
@@ -728,6 +731,7 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
                 pin_id: None,
                 eval_groups: None,
                 benchmarks: None,
+                run: site_types::PrismRunStats::default(),
             },
         )
         .collect()

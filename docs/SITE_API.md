@@ -62,7 +62,7 @@ Additional Prism routes:
 | `GET /v1/site/arenas/prism/references` | `PrismReferenceBaseline[]` — frozen **Prism-protocol** GPT-2 references (Large 774M **and** Small 124M): measured val **`bpb`** + G2 benches from 1×RTX 5090 eval-only runs on the public pack (`gpt2-large` + `openai-community/gpt2`). Includes `sourceUrl` / `disclaimer`. |
 | `GET /v1/site/arenas/prism/submissions/{id}/telemetry` | Existing loss-curve payload (also embedded on detail). |
 
-GPT-2 Large + Small constants live in `crates/site-api` (`prism_enrich`) so API and FE stay aligned; they are **measured Prism-protocol** numbers (eval-only, public pack), not Eleuther literature tables. List/leaderboard row shells still map in `crates/site-data`.
+GPT-2 Large + Small constants live in `crates/site-prism` so API and FE stay aligned; they are **measured Prism-protocol** numbers (eval-only, public pack), not Eleuther literature tables. List/leaderboard row shells still map in `crates/site-data`.
 
 `GET /v1/site/arenas/{slug}/submissions` and `/leaderboard` accept optional
 `?q=` — case-insensitive substring over miner hotkey (SS58 or hex), handle,

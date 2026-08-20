@@ -134,14 +134,57 @@ pub struct Agent {
     pub joined_epoch: u64,
 }
 
-/// Prism recipe era (`AutoModel` 2.0 vs legacy 1.x two-script / tree).
+/// Prism recipe era (`v2.1` contest vs closed `2.0` AutoModel vs legacy 1.x).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RecipeEra {
-    /// Recipe ≥ 2.0 AutoModel pin + patch.
+    /// Live contest: recipe `2.1.x` / `competition_id=prism-v2.1` / gen `21`.
+    V21,
+    /// Closed AutoModel 2.0 contest (pin+patch). Not weight-eligible.
     Automodel,
     /// Pre-2.0 architecture/training (or tree) layout.
     Legacy,
+}
+
+/// Optional measured Prism run stats (only fields the upstream payload has).
+///
+/// Flattened onto leaderboard / submission rows. Never invent values.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismRunStats {
+    /// `prism-v2.1` when the harvest carries the live contest id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub competition_id: Option<String>,
+    /// `21` when the harvest carries live `scoring_generation`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring_generation: Option<u16>,
+    /// Recipe semver (`2.1.0`) when present on metrics / manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_version: Option<String>,
+    /// Fail-closed weight eligibility (recipe 2.1 / gen 21 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight_eligible: Option<bool>,
+    /// Tokenizer-neutral bits/byte when the harness emitted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bits_per_byte: Option<f64>,
+    /// Tokens seen / accounted when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<f64>,
+    /// `org.g7.throughput_toks_s` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_per_sec: Option<f64>,
+    /// `org.diag.mfu_achieved` when present (0..1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mfu: Option<f64>,
+    /// Attested / spent FLOPs when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flops: Option<f64>,
+    /// GPU SKU string when the harness recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_type: Option<String>,
+    /// Eval gate `complete` when the composite outcome is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates_complete: Option<bool>,
 }
 
 /// One G1–G8 composite group score for marketing tables.
@@ -274,6 +317,9 @@ pub struct LeaderboardRow {
     /// Public G2 benchmark subset when measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub benchmarks: Option<PrismBenchmarks>,
+    /// Measured contest / efficiency fields (absent when unknown).
+    #[serde(flatten, default)]
+    pub run: PrismRunStats,
 }
 
 /// Submission status.
@@ -345,6 +391,9 @@ pub struct Submission {
     /// Public G2 benchmark subset when measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub benchmarks: Option<PrismBenchmarks>,
+    /// Measured contest / efficiency fields (absent when unknown).
+    #[serde(flatten, default)]
+    pub run: PrismRunStats,
 }
 
 /// Lexicographic gate flags from a Prism composite outcome (public subset).

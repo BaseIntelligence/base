@@ -1,0 +1,17 @@
+[package]
+name = "site-prism"
+description = "Prism list/detail enrichment for the marketing site API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+site-data = { path = "../site-data" }
+site-types = { path = "../site-types" }
+
+[lints]
+workspace = true

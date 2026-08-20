@@ -5203,6 +5203,7 @@ dependencies = [
  "serde",
  "serde_json",
  "site-data",
+ "site-prism",
  "site-types",
  "tokio",
  "tower",
@@ -5226,6 +5227,15 @@ dependencies = [
  "trustroot",
  "weights-api",
  "wiremock",
+]
+
+[[package]]
+name = "site-prism"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "site-data",
+ "site-types",
 ]
 
 [[package]]
