@@ -35,12 +35,13 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
         event: Option<&StageEvent>,
     ) -> Result<SubmissionState, StoreError>;
 
-    /// Retry reset: clears review/score fields and re-queues. A completed
+    /// Retry reset: clears score fields and re-queues. A completed
     /// measurement (metrics plus its pod/receipt/bpb fields) is retained so a
     /// post-run infra retry resumes without another GPU run; an incomplete
     /// measure attempt is cleared so provisioning starts cleanly.
-    /// `bump_retry` increments `retry_count` (manual/auto infra). Pass
-    /// `false` for Lium 429 / `no_capacity` requeue (do not burn attempt budget).
+    /// `bump_retry` increments `retry_count` and clears similarity/review
+    /// (manual / llm_infra / ast_infra). Pass `false` for Lium 429 /
+    /// `no_capacity` so pre-pod screens stay and are not re-billed.
     async fn reset_for_retry(
         &self,
         id: &str,
@@ -310,8 +311,10 @@ impl PrismStore for MemoryPrismStore {
             row.metrics_json = None;
             row.bpb = None;
         }
-        row.review = None;
-        row.similarity = None;
+        if bump_retry {
+            row.review = None;
+            row.similarity = None;
+        }
         row.final_score = None;
         row.error_detail = None;
         if bump_retry {
@@ -761,6 +764,43 @@ mod tests {
         assert_eq!(retried.retry_count, 1);
         assert_eq!(s.telemetry("a").await.unwrap().len(), 2);
         assert!(s.get("a").await.unwrap().unwrap().metrics_json.is_some());
+    }
+
+    #[tokio::test]
+    async fn no_capacity_reset_keeps_pre_pod_screens() {
+        use prism_review::{ReviewVerdict, SimilarityKind, SimilarityVerdict};
+        let s = MemoryPrismStore::new();
+        let mut r = row("a", "11");
+        r.metrics_json = None;
+        s.insert_queued(&r).await.unwrap();
+        s.apply(
+            "a",
+            &StatePatch {
+                review: Some(ReviewVerdict {
+                    quality_score: 10,
+                    issues: vec![],
+                    prompt_version: "t",
+                }),
+                similarity: Some(SimilarityVerdict {
+                    kind: SimilarityKind::Original,
+                    score: 0.1,
+                    closest: None,
+                    evidence: vec![],
+                    prompt_version: "t",
+                }),
+                ..StatePatch::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let kept = s.reset_for_retry("a", false).await.unwrap();
+        assert!(kept.review.is_some());
+        assert!(kept.similarity.is_some());
+        let wiped = s.reset_for_retry("a", true).await.unwrap();
+        assert!(wiped.review.is_none());
+        assert!(wiped.similarity.is_none());
+        assert_eq!(wiped.retry_count, 1);
     }
 
     #[tokio::test]
