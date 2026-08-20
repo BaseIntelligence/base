@@ -16,14 +16,14 @@ use crate::ssh::{
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 use prism_lium_harness::{
     classify_log, detach_launch_cmd, eval_assets_dir, harness_env_pairs, harness_upload_tar,
-    lium_template_create_body, parse_harness_probe, parse_metrics_output, random_seed_hex,
-    resolved_pod_image, HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP,
-    HARNESS_EXTRACT_CMD, HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, RECIPES_TEMPLATE_STARTUP,
-    TRAIN_DONE_MARKER,
+    listed_template_id, lium_template_create_body, parse_harness_probe, parse_metrics_output,
+    random_seed_hex, resolved_pod_image, HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT,
+    HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD, HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD,
+    RECIPES_TEMPLATE_STARTUP, TRAIN_DONE_MARKER,
 };
-use prism_lium_types::{CostGuardrailError, LiumError};
 use prism_lium_types::{
-    GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
+    CostGuardrailError, GpuPreference, Instance, InstanceSpec, LiumError, LiumSshConfig, Offer,
+    RemoteExecResult,
 };
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
@@ -261,12 +261,9 @@ impl LiumClient {
             .as_array()
             .cloned()
             .unwrap_or_else(|| get_array(&v, &["templates"]));
-        for tmpl in templates {
-            if get_str(&tmpl, &["name"]) == Some(name) {
-                if let Some(id) = get_str(&tmpl, &["id"]) {
-                    return Ok(id.to_owned());
-                }
-            }
+        if let Some(id) = listed_template_id(&templates, name, docker_image, docker_credential_id)?
+        {
+            return Ok(id);
         }
         let body = lium_template_create_body(
             name,
@@ -291,9 +288,7 @@ impl LiumClient {
                 return Ok(id.clone());
             }
         }
-        // Isolated proofs pin the public v9 template (f2f5e84c). Without this,
-        // provision tries to create private v10 and fails closed on missing
-        // PRISM_POD_DOCKER_CREDENTIAL_ID (or walks 8×5090 on CREATION_FAILED).
+        // Explicit public id (v9 f2f5e84c) skips private-template create.
         if let Ok(id) = std::env::var("PRISM_POD_TEMPLATE_ID") {
             let id = id.trim();
             if !id.is_empty() {
@@ -1229,6 +1224,37 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, LiumError::Integrity(_)));
+        assert!(error.to_string().contains("operator:"));
+    }
+
+    #[tokio::test]
+    async fn ensure_template_falls_back_to_public_v9_without_credential() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"name": "prism-recipe-v9", "id": "f2f5e84c-public-v9"}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/templates"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("must not create"))
+            .mount(&server)
+            .await;
+
+        let client = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let id = client
+            .ensure_template(
+                "prism-recipe-v10-digest-fe1197b26e30-tagged",
+                "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                None,
+                Some(RECIPES_TEMPLATE_STARTUP),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(id, "f2f5e84c-public-v9");
     }
 
     #[tokio::test]

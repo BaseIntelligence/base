@@ -29,6 +29,11 @@ pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v10-digest-fe1197b26e30-ta
 /// (template identity is name-based / reuse-if-exists on Lium: a new image
 /// must ship under a new name or pods would keep the old template).
 pub const RECIPES_TEMPLATE_NAME_V10: &str = "prism-recipe-v10";
+/// Public Lium templates that already boot B200/5090 (daturaai/pytorch).
+/// Used when the private DO pin cannot be created (no docker credential).
+pub const PUBLIC_TEMPLATE_FALLBACK_NAMES: &[&str] = &["prism-recipe-v10", "prism-recipe-v9"];
+/// Known-good public template id prefix (`prism-recipe-v9` / daturaai).
+pub const PUBLIC_TEMPLATE_FALLBACK_ID_PREFIXES: &[&str] = &["f2f5e84c"];
 /// Lium replaces `USER_PUBLIC_KEY` before launching this command. The image
 /// deliberately uses `CMD` so this bootstrap can install the rental key,
 /// signal readiness, and keep sshd as the container's foreground process.
@@ -88,13 +93,8 @@ pub fn lium_template_create_body(
         .map_or((docker_image, None), |(repository, digest)| {
             (repository, Some(digest))
         });
-    if repository.starts_with("registry.digitalocean.com/basecrawl/")
-        && docker_credential_id.is_none()
-    {
-        return Err(LiumError::Integrity(
-            "PRISM_POD_DOCKER_CREDENTIAL_ID is required to create the private Prism template"
-                .into(),
-        ));
+    if private_registry_needs_credential(docker_image, docker_credential_id) {
+        return Err(LiumError::Integrity(private_template_create_error()));
     }
     let mut body = serde_json::json!({
         "name": name,
@@ -114,6 +114,105 @@ pub fn lium_template_create_body(
         }
     }
     Ok(body)
+}
+
+/// True when `docker_image` is the private DO registry pin and no Lium
+/// credential reference is set. Credential is required only to *create* a
+/// new private template — existing public templates must still rent.
+#[must_use]
+pub fn private_registry_needs_credential(
+    docker_image: &str,
+    docker_credential_id: Option<&str>,
+) -> bool {
+    let repository = docker_image
+        .rsplit_once('@')
+        .map_or(docker_image, |(repository, _)| repository);
+    repository.starts_with("registry.digitalocean.com/basecrawl/")
+        && docker_credential_id.is_none_or(str::is_empty)
+}
+
+/// Operator-facing create refusal (miners should never see this if a public
+/// `prism-recipe-v9` / `v10` template already exists on Lium).
+#[must_use]
+pub fn private_template_create_error() -> String {
+    "operator: PRISM_POD_DOCKER_CREDENTIAL_ID is required to create a private \
+     Prism template; unset it and use PRISM_POD_TEMPLATE_ID or an existing \
+     public prism-recipe-v9/v10 template instead"
+        .into()
+}
+
+/// Id of `name` if it already exists on the Lium account.
+#[must_use]
+pub fn existing_template_id(templates: &[serde_json::Value], name: &str) -> Option<String> {
+    templates.iter().find_map(|tmpl| {
+        let listed = tmpl.get("name").and_then(|x| x.as_str())?;
+        let id = tmpl
+            .get("id")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())?;
+        (listed == name).then(|| id.to_owned())
+    })
+}
+
+/// Listed template to rent: exact name, else public fallback if create is blocked.
+pub fn listed_template_id(
+    templates: &[serde_json::Value],
+    name: &str,
+    docker_image: &str,
+    docker_credential_id: Option<&str>,
+) -> Result<Option<String>, LiumError> {
+    if let Some(id) = existing_template_id(templates, name) {
+        return Ok(Some(id));
+    }
+    reuse_public_template_if_uncreatable(templates, docker_image, docker_credential_id)
+}
+
+/// Reuse a public Lium template when a private pin cannot be created.
+///
+/// `Ok(None)` means create may proceed. `Ok(Some(id))` is an existing public
+/// template. `Err` is operator-facing (no credential and no public fallback).
+pub fn reuse_public_template_if_uncreatable(
+    templates: &[serde_json::Value],
+    docker_image: &str,
+    docker_credential_id: Option<&str>,
+) -> Result<Option<String>, LiumError> {
+    if !private_registry_needs_credential(docker_image, docker_credential_id) {
+        return Ok(None);
+    }
+    match public_template_fallback_id(templates) {
+        Some((_, id)) => Ok(Some(id)),
+        None => Err(LiumError::Integrity(private_template_create_error())),
+    }
+}
+
+/// First allowlisted public template already present on the Lium account.
+#[must_use]
+pub fn public_template_fallback_id(templates: &[serde_json::Value]) -> Option<(String, String)> {
+    let named = |want: &str| {
+        templates.iter().find_map(|tmpl| {
+            let name = tmpl.get("name").and_then(|x| x.as_str())?;
+            let id = tmpl
+                .get("id")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())?;
+            (name == want).then(|| (want.to_owned(), id.to_owned()))
+        })
+    };
+    PUBLIC_TEMPLATE_FALLBACK_NAMES
+        .iter()
+        .find_map(|name| named(name))
+        .or_else(|| {
+            templates.iter().find_map(|tmpl| {
+                let id = tmpl
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.is_empty())?;
+                PUBLIC_TEMPLATE_FALLBACK_ID_PREFIXES
+                    .iter()
+                    .any(|prefix| id.starts_with(prefix))
+                    .then(|| (id.to_owned(), id.to_owned()))
+            })
+        })
 }
 
 fn template_name_for_image(image: &str) -> String {
@@ -312,7 +411,8 @@ pub fn random_seed_hex() -> Result<String, LiumError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        credential_scoped_template_name, is_digest_image_ref, template_name_for_image,
+        credential_scoped_template_name, is_digest_image_ref, lium_template_create_body,
+        private_registry_needs_credential, public_template_fallback_id, template_name_for_image,
         RECIPES_TEMPLATE_STARTUP,
     };
 
@@ -349,6 +449,35 @@ mod tests {
             ),
             "prism-recipe-v10-digest-abc-cred-4ca23da3"
         );
+    }
+
+    #[test]
+    fn public_template_fallback_uses_existing_v9_without_credential() {
+        assert!(private_registry_needs_credential(
+            "registry.digitalocean.com/basecrawl/prism-pod@sha256:fe1197b26e30ebd88f200963cc8528533326666873880b62e676adb51663ff88",
+            None
+        ));
+        assert!(!private_registry_needs_credential(
+            "registry.digitalocean.com/basecrawl/prism-pod@sha256:fe1197b26e30ebd88f200963cc8528533326666873880b62e676adb51663ff88",
+            Some("cred")
+        ));
+        let listed = serde_json::json!([
+            {"name": "prism-recipe-v10-digest-fe1197b26e30-tagged", "id": ""},
+            {"name": "prism-recipe-v9", "id": "f2f5e84c-public-v9"}
+        ]);
+        assert_eq!(
+            public_template_fallback_id(listed.as_array().unwrap()),
+            Some(("prism-recipe-v9".into(), "f2f5e84c-public-v9".into()))
+        );
+        let err = lium_template_create_body(
+            "private",
+            "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("operator:"));
     }
 
     #[test]
