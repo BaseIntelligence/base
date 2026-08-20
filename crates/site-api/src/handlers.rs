@@ -22,8 +22,8 @@ use site_data::map::{
 };
 use site_prism::{
     enrich_leaderboard_row_from_detail_with_zone, enrich_submission_from_detail_with_zone,
-    infer_recipe_era_with_live, map_benchmarks, payload_is_v21_contest, pin_id_from_payload,
-    prism_reference_baselines, prism_submission_detail_with_zone,
+    fill_v21_run_from_live, infer_recipe_era_with_live, map_benchmarks, payload_is_v21_contest,
+    pin_id_from_payload, prism_reference_baselines, prism_submission_detail_with_zone,
 };
 use site_types::coding_arena;
 use site_types::page_slice;
@@ -605,40 +605,46 @@ async fn get_submissions(
                 .trim()
                 .to_ascii_lowercase();
             let champions_only = matches!(scope.as_str(), "champions" | "champion");
-            let mut items: Vec<_> = rows
+            let mut paired: Vec<(crate::Submission, &Value)> = rows
                 .iter()
                 .filter(|r| !champions_only || is_prism_champion_submission(r))
-                .filter_map(prism_submission)
+                .filter_map(|r| prism_submission(r).map(|s| (s, r)))
                 .collect();
             // Prefer in-flight + recent rows for detail fan-out (era / benches).
-            let mut ids: Vec<String> = items.iter().map(|s| s.id.clone()).collect();
+            let mut ids: Vec<String> = paired.iter().map(|(s, _)| s.id.clone()).collect();
             ids.truncate(PRISM_CHAMPION_DETAIL_FANOUT);
             let details = fetch_prism_details(&st, &ids).await;
-            let live_recipe = fetch_prism_recipe(&st)
-                .await
+            let recipe_json = fetch_prism_recipe(&st).await;
+            let live = recipe_json
                 .as_ref()
                 .and_then(|r| r.get("version"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let live = live_recipe.as_deref();
-            for item in &mut items {
+                .and_then(Value::as_str);
+            for (item, raw) in &mut paired {
                 if let Some(fan) = details.get(&item.id) {
                     enrich_submission_from_detail_with_zone(item, &fan.detail, fan.zone_a.as_ref());
-                    item.recipe_era = Some(infer_recipe_era_with_live(&fan.detail, live));
-                    if item.recipe_era == Some(RecipeEra::V21) {
+                    let harvested = infer_recipe_era_with_live(&fan.detail, None);
+                    let era = infer_recipe_era_with_live(&fan.detail, live);
+                    item.recipe_era = Some(era);
+                    // Live-recipe fallback only — keep harvest/gate eligibility intact.
+                    if era == RecipeEra::V21 && harvested != RecipeEra::V21 {
                         item.run.weight_eligible = Some(true);
                     }
-                } else if item.recipe_era.is_none() {
-                    // Pre-2.0 / unknown → legacy so era tabs are not empty.
-                    item.recipe_era = Some(RecipeEra::Legacy);
+                    fill_v21_run_from_live(&mut item.run, recipe_json.as_ref(), era);
+                } else {
+                    let era = infer_recipe_era_with_live(raw, live);
+                    item.recipe_era = Some(era);
+                    item.run.weight_eligible = Some(era == RecipeEra::V21);
+                    fill_v21_run_from_live(&mut item.run, recipe_json.as_ref(), era);
                 }
             }
+            let mut items: Vec<_> = paired.into_iter().map(|(s, _)| s).collect();
             decorate_submissions(&st, &mut items);
             if let Some(st_f) = status_filter {
                 items.retain(|s| match st_f {
                     "scored" => s.status == crate::SubmissionStatus::Scored,
                     "pending" => s.status == crate::SubmissionStatus::Pending,
                     "failed" => s.status == crate::SubmissionStatus::Failed,
+                    "queued" | "running" | "terminated" => s.stage.eq_ignore_ascii_case(st_f),
                     _ => true,
                 });
             }
@@ -1447,6 +1453,7 @@ mod tests {
         assert_eq!(v["items"][0]["recipeEra"], "v21");
         assert_eq!(v["items"][0]["pinId"], "automodel@v0.5.0");
         assert_eq!(v["items"][0]["weightEligible"], true);
+        assert_eq!(v["items"][0]["gatesComplete"], true);
         assert_eq!(v["items"][0]["competitionId"], "prism-v2.1");
         assert_eq!(v["items"][0]["tokens"], 2048.0);
         assert_eq!(v["items"][0]["tokensPerSec"], 1200.0);
@@ -1458,7 +1465,24 @@ mod tests {
         assert_eq!(v["items"][1]["weightEligible"], false);
         assert_eq!(v["items"][2]["id"], "sub-running");
         assert_eq!(v["items"][2]["status"], "pending");
-        assert_eq!(v["items"][2]["recipeEra"], "legacy");
+        assert_eq!(v["items"][2]["stage"], "running");
+        assert_eq!(
+            v["items"][2]["recipeEra"], "v21",
+            "live recipe 2.1.x labels unlabeled in-flight as v2.1: {v}"
+        );
+        assert_eq!(v["items"][2]["weightEligible"], true);
+        assert_eq!(v["items"][2]["competitionId"], "prism-v2.1");
+        assert_eq!(v["items"][2]["scoringGeneration"], 21);
+        assert_eq!(v["items"][2]["recipeVersion"], "2.1.0");
+
+        let (s, v) = call(
+            app.clone(),
+            "/v1/site/arenas/prism/submissions?status=running",
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "status=running filters by stage: {v}");
+        assert_eq!(v["items"][0]["id"], "sub-running");
 
         // scope=champions keeps Score>0 gallery; default scope=all includes in-flight.
         let (s, v) = call(
