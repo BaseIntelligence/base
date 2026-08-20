@@ -1,5 +1,11 @@
 //! Prism list/detail enrichment: recipe era, eval groups, G2 benches, GPT-2 refs.
 
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::doc_markdown)]
+
 use serde_json::Value;
 
 use site_types::{
