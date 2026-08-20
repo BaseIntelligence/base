@@ -782,7 +782,7 @@ fn spawn_orchestrator(
     spawn_rate_limit_recovery(store, gating);
 }
 
-/// Re-queue failed Lium 429 (6h window) and no_capacity / B200 sold-out rows.
+/// Re-queue failed Lium 429 (6h window) and `no_capacity` / B200 sold-out rows.
 async fn recover_rate_limited(
     store: &Arc<dyn PrismStore>,
     gating: Option<&Arc<dyn GatingStore>>,
