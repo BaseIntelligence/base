@@ -338,6 +338,69 @@ fn d24_missing_participant_rejected() {
 }
 
 #[test]
+fn d24_zero_bps_extra_leaves_stripped_at_seal() {
+    let prism_sk = sk(1);
+    let design_sk = sk(3);
+    let gsk = sk(2);
+    let prism_id = b"prism";
+    let design_id = b"design";
+    let trust = LocalTrustRoot {
+        challenges: ChallengesBody {
+            challenges: vec![
+                ChallengeEntry {
+                    id: design_id.to_vec(),
+                    public_key: pk_of(&design_sk),
+                    emission_share_bps: 0,
+                    policy: ParticipantPolicy::AllMetagraphHotkeys,
+                },
+                ChallengeEntry {
+                    id: prism_id.to_vec(),
+                    public_key: pk_of(&prism_sk),
+                    emission_share_bps: 10_000,
+                    policy: ParticipantPolicy::AllMetagraphHotkeys,
+                },
+            ],
+        },
+        measurements_digest: measurements_digest(&MeasurementsBody::default()),
+    };
+    let block_b = 90u64;
+    let chain = chain_with(vec![hk(0xA1)], block_b);
+    let leaves = vec![
+        make_signed_leaf(
+            &prism_sk,
+            prism_id,
+            hk(0xA1),
+            7,
+            ScoreOrAbsence::Score { value: 100 },
+        )
+        .unwrap(),
+        make_signed_leaf(
+            &design_sk,
+            design_id,
+            hk(0xA1),
+            7,
+            ScoreOrAbsence::Score { value: 1 },
+        )
+        .unwrap(),
+    ];
+    let bundle = build_sealed_bundle(
+        &chain,
+        &trust,
+        leaves,
+        &SealParams {
+            epoch: 7,
+            netuid: 1,
+            block_b,
+            gateway_secret: gsk,
+        },
+    )
+    .unwrap();
+    assert_eq!(bundle.body.leaves.len(), 1);
+    assert_eq!(bundle.body.leaves[0].challenge_id, prism_id);
+    assert!(bundle.verify(&chain, &trust).is_ok());
+}
+
+#[test]
 fn d24_noscore_covers_participant() {
     let csk = sk(1);
     let gsk = sk(2);

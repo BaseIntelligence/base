@@ -84,6 +84,8 @@ services:
       # Staging uses real Docker via socket-proxy. Host SimSandbox is fail-closed
       # here (never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM on droplets).
       DESIGN_FORCE_SIM: "false"
+      # Same as prod: staging trust root is design = 0 bps.
+      DESIGN_SKIP_LEAF_EMIT: "1"
       # Compressed lifecycle for the staging e2e: ~15-minute rounds (prod
       # defaults stay 8640s / 1800s when these are unset).
       DESIGN_ROUND_SECS: "900"

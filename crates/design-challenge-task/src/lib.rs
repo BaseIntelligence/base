@@ -13,7 +13,9 @@
 
 mod emit;
 mod score;
-pub use emit::{design_emit_plan, DesignEmitPlan, DESIGN_EMIT_LATE_BLOCKS};
+pub use emit::{
+    design_emit_plan, design_leaf_emit_enabled, DesignEmitPlan, DESIGN_EMIT_LATE_BLOCKS,
+};
 pub use score::{
     not_attempted, round_win_delta, score_window, to_leaf, window_start, ScorePlan, WindowScorePlan,
 };

@@ -17,9 +17,9 @@ use challenge_common::{
 };
 use crypto::KEY_LEN;
 use design_challenge_task::{
-    awaiting_admin_unscored_expired, clip_logs, design_emit_plan, not_attempted, now_ms, now_secs,
-    reject_awaiting_admin_run, round_id_at, round_secs, score_window, to_leaf, window_start,
-    WindowScorePlan, MAX_LOG_CHARS, UNSCORED_EPOCH_LIMIT,
+    awaiting_admin_unscored_expired, clip_logs, design_emit_plan, design_leaf_emit_enabled,
+    not_attempted, now_ms, now_secs, reject_awaiting_admin_run, round_id_at, round_secs,
+    score_window, to_leaf, window_start, WindowScorePlan, MAX_LOG_CHARS, UNSCORED_EPOCH_LIMIT,
 };
 use design_http::{enqueue_active_harnesses_for_round, mark_awaiting_admin, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
@@ -282,6 +282,9 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
     {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
+        if !design_leaf_emit_enabled() {
+            return Ok(false);
+        }
         let Some(plan) = design_emit_plan(
             self.emitted_epoch.load(Ordering::Relaxed),
             state.subnet_epoch_index,
@@ -1057,6 +1060,10 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
     async fn emit_leaves_at(&self, epoch: u64, pin_block: u64) -> Result<(), String> {
         if epoch == 0 {
             return Err("refuse emit for epoch 0".into());
+        }
+        if !design_leaf_emit_enabled() {
+            info!(epoch, "design leaf emit skipped (DESIGN_SKIP_LEAF_EMIT)");
+            return Ok(());
         }
         let block_hash = self
             .chain
