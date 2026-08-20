@@ -16,21 +16,15 @@ use crate::ssh::{
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 use prism_lium_harness::{
     classify_log, detach_launch_cmd, eval_assets_dir, harness_env_pairs, harness_upload_tar,
-    parse_harness_probe, parse_metrics_output, random_seed_hex, HarnessProgress,
-    EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
-    HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, TRAIN_DONE_MARKER,
+    lium_template_create_body, parse_harness_probe, parse_metrics_output, random_seed_hex,
+    resolved_pod_image, HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP,
+    HARNESS_EXTRACT_CMD, HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, RECIPES_TEMPLATE_STARTUP,
+    TRAIN_DONE_MARKER,
 };
 use prism_lium_types::{CostGuardrailError, LiumError};
 use prism_lium_types::{
     GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
 };
-
-// cu13.0.2-dinD: sshd from image init (empty startup). Other marketplace
-// images lack a stable sshd under Lium's metachar-free startup rules.
-const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
-const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda13.0.2-devel-ubuntu24.04-dind";
-const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9";
-const RECIPES_TEMPLATE_STARTUP: &str = "";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
 const TERMINAL_FAIL_STATUSES: &[&str] = &[
@@ -258,6 +252,7 @@ impl LiumClient {
         docker_image: &str,
         docker_image_tag: Option<&str>,
         startup_commands: Option<&str>,
+        docker_credential_id: Option<&str>,
     ) -> Result<String, LiumError> {
         let v = self
             .request(reqwest::Method::GET, "/templates", None)
@@ -273,19 +268,13 @@ impl LiumClient {
                 }
             }
         }
-        let mut body = serde_json::json!({
-            "name": name,
-            "docker_image": docker_image,
-            "internal_ports": [22],
-            "is_private": true,
-            "container_start_immediately": true,
-        });
-        if let Some(tag) = docker_image_tag {
-            body["docker_image_tag"] = serde_json::Value::String(tag.to_owned());
-        }
-        if let Some(cmd) = startup_commands {
-            body["startup_commands"] = serde_json::Value::String(cmd.to_owned());
-        }
+        let body = lium_template_create_body(
+            name,
+            docker_image,
+            docker_image_tag,
+            startup_commands,
+            docker_credential_id,
+        )?;
         let created = self
             .request(reqwest::Method::POST, "/templates", Some(&body))
             .await?;
@@ -302,16 +291,30 @@ impl LiumClient {
                 return Ok(id.clone());
             }
         }
+        // Isolated proofs pin the public v9 template (f2f5e84c). Without this,
+        // provision tries to create private v10 and fails closed on missing
+        // PRISM_POD_DOCKER_CREDENTIAL_ID (or walks 8×5090 on CREATION_FAILED).
+        if let Ok(id) = std::env::var("PRISM_POD_TEMPLATE_ID") {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Ok(id.to_owned());
+            }
+        }
+        let (image, tag, default_name) = resolved_pod_image()?;
+        let docker_credential_id = std::env::var("PRISM_POD_DOCKER_CREDENTIAL_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
         let name = spec
             .template_name
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or(RECIPES_TEMPLATE_NAME);
+            .unwrap_or(default_name.as_str());
         self.ensure_template(
             name,
-            RECIPES_TEMPLATE_IMAGE,
-            Some(RECIPES_TEMPLATE_TAG),
+            &image,
+            tag.as_deref(),
             Some(RECIPES_TEMPLATE_STARTUP),
+            docker_credential_id.as_deref(),
         )
         .await
     }
@@ -393,7 +396,7 @@ impl LiumClient {
         })
     }
 
-    /// Fail-closed: nvidia-smi must report the Prism SKU pin (1× RTX 5090).
+    /// Fail-closed: nvidia-smi must report the selected Prism SKU pin.
     async fn require_pin_gpu(
         &self,
         instance_id: &str,
@@ -401,13 +404,13 @@ impl LiumClient {
         key: &Path,
     ) -> Result<String, LiumError> {
         let gpu_type = self.gpu_smoke(target, key).await?;
-        if GpuPreference::default_prism().matches_pin(&gpu_type) {
+        if crate::pod_gpu_preference_from_env().matches_pin(&gpu_type) {
             return Ok(gpu_type);
         }
         warn!(instance_id, gpu = %gpu_type, "non-pin GPU — terminate for requeue");
         let _ = self.terminate(instance_id).await;
         Err(LiumError::Exec(format!(
-            "non-pin GPU ({gpu_type}); Prism requires 1× RTX 5090 — resubmit/retry"
+            "non-pin GPU ({gpu_type}); Prism SKU pin mismatch — resubmit/retry"
         )))
     }
 
@@ -819,8 +822,8 @@ impl EvalJobBackend for LiumClient {
         }
 
         let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
-        let pref = GpuPreference::default_prism();
-        pref.filter_sort_offers(&mut offers, spec.gpu_count); // 1×5090 hard pin
+        let pref = GpuPreference::for_request(spec.gpu_count);
+        pref.filter_sort_offers(&mut offers, spec.gpu_count);
         let candidates: Vec<Offer> = match &spec.preferred_offer_id {
             Some(pref_id) => {
                 let matched: Vec<Offer> = offers
@@ -835,7 +838,7 @@ impl EvalJobBackend for LiumClient {
                 }
                 matched
             }
-            None => offers.into_iter().take(10).collect(),
+            None => offers.into_iter().take(3).collect(),
         };
         if candidates.is_empty() {
             return Err(CostGuardrailError::NoCapacity.into());
@@ -843,18 +846,6 @@ impl EvalJobBackend for LiumClient {
 
         let lifetime = spec.max_lifetime_hours.ceil() as u64;
         let template_id = self.resolve_template_id(spec).await?;
-        // Never rent more GPUs than requested — even if the marketplace
-        // offer advertises a larger host (those are filtered above).
-        let rent_gpu_count = spec.gpu_count.max(1);
-        let make_body = || {
-            serde_json::json!({
-                "pod_name": spec.name,
-                "user_public_key": spec.ssh_public_keys,
-                "termination_hours": lifetime.max(1),
-                "gpu_count": rent_gpu_count,
-                "template_id": template_id,
-            })
-        };
 
         let mut last_err = String::from("no offer tried");
         for selected in &candidates {
@@ -863,6 +854,17 @@ impl EvalJobBackend for LiumClient {
             }
             let effective =
                 prism_lium_types::effective_gpu_count(selected.gpu_count, &selected.gpu_type);
+            // 1-GPU rents 1; else whole host (no split). Never 8×5090 fallback.
+            let rent_gpu_count = if spec.gpu_count <= 1 {
+                1
+            } else {
+                effective.max(spec.gpu_count)
+            };
+            if pref.matches_pin("RTX 5090") && rent_gpu_count >= 8 && spec.gpu_count < 8 {
+                return Err(LiumError::Api(format!(
+                    "abort: refusing {rent_gpu_count}× 5090 rent (no 8×5090 fallback)"
+                )));
+            }
             info!(
                 offer_id = %selected.id,
                 gpu = %selected.gpu_type,
@@ -872,7 +874,13 @@ impl EvalJobBackend for LiumClient {
                 %template_id,
                 "lium rent"
             );
-            let body = make_body();
+            let body = serde_json::json!({
+                "pod_name": spec.name,
+                "user_public_key": spec.ssh_public_keys,
+                "termination_hours": lifetime.max(1),
+                "gpu_count": rent_gpu_count,
+                "template_id": template_id,
+            });
             // Fire rent immediately — BYOK keys must not share a process-wide
             // queue with each other or with an operator fallback key.
             let rented = self
@@ -1010,7 +1018,8 @@ mod tests {
 
     use super::*;
     use crate::ASSETS_ENV_LOCK;
-    use wiremock::matchers::{method, path};
+    use prism_lium_harness::RECIPES_TEMPLATE_NAME;
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -1103,7 +1112,7 @@ mod tests {
         InstanceSpec {
             name: "x".into(),
             max_lifetime_hours: 1.0,
-            max_price_per_hour: 2.5,
+            max_price_per_hour: 8.0,
             gpu_count: 1,
             image_digest: None,
             ssh_public_keys: vec!["ssh-ed25519 AAAA".into()],
@@ -1160,42 +1169,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_prefers_5090_over_cheaper_a100() {
+    async fn private_template_carries_provider_credential_reference() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/templates"))
+            .and(body_json(serde_json::json!({
+                "name": "prism-recipe-v10-private",
+                "docker_image": "registry.digitalocean.com/basecrawl/prism-pod",
+                "docker_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "internal_ports": [22],
+                "is_private": true,
+                "container_start_immediately": true,
+                "startup_commands": RECIPES_TEMPLATE_STARTUP,
+                "docker_credential_id": "credential-id"
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "private"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let id = client
+            .ensure_template(
+                "prism-recipe-v10-private",
+                "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                None,
+                Some(RECIPES_TEMPLATE_STARTUP),
+                Some("credential-id"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(id, "private");
+    }
+
+    #[tokio::test]
+    async fn private_template_creation_requires_provider_credential() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let client = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let error = client
+            .ensure_template(
+                "prism-recipe-v10-private",
+                "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                None,
+                Some(""),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LiumError::Integrity(_)));
+    }
+
+    #[tokio::test]
+    async fn provision_prefers_b200_over_cheaper_5090() {
         let server = MockServer::start().await;
         mount_common(
             &server,
             serde_json::json!([
-                {"id": "cheap-a100", "gpu_type": "NVIDIA A100-SXM4-80GB", "gpu_count": 1, "price_per_hour": 0.5},
-                {"id": "pin-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 2.0},
+                {"id": "cheap-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 0.65},
+                {"id": "pin-b200", "gpu_type": "NVIDIA B200", "gpu_count": 1, "price_per_hour": 5.5},
                 {"id": "mid-h100", "gpu_type": "NVIDIA H100", "gpu_count": 1, "price_per_hour": 1.5}
             ]),
         )
         .await;
-        // Every candidate rents fine: the returned pod proves which offer the
-        // sort put first (5090 despite being the priciest within the cap).
-        mount_rent_path(&server, "pin-5090", "pod-5090").await;
-        mount_rent_path(&server, "cheap-a100", "pod-a100").await;
+        mount_rent_path(&server, "pin-b200", "pod-b200").await;
+        mount_rent_path(&server, "cheap-5090", "pod-5090").await;
         mount_rent_path(&server, "mid-h100", "pod-h100").await;
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
         let inst = c.provision(&provision_spec()).await.unwrap();
-        assert_eq!(inst.id, "pod-5090");
+        assert_eq!(inst.id, "pod-b200");
     }
 
     #[tokio::test]
-    async fn provision_never_selects_8x_5090_when_1x_available() {
+    async fn provision_never_selects_8x_b200_when_1x_available() {
         let server = MockServer::start().await;
         mount_common(
             &server,
             serde_json::json!([
-                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48},
-                {"id": "eight-label", "gpu_type": "8x RTX 5090", "gpu_count": 1, "price_per_hour": 0.45},
-                {"id": "one-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 2.0}
+                {"id": "eight-b200", "gpu_type": "NVIDIA B200", "gpu_count": 8, "price_per_hour": 5.6},
+                {"id": "eight-label", "gpu_type": "8x NVIDIA B200", "gpu_count": 1, "price_per_hour": 5.0},
+                {"id": "one-b200", "gpu_type": "NVIDIA B200", "gpu_count": 1, "price_per_hour": 5.5}
             ]),
         )
         .await;
-        mount_rent_path(&server, "one-5090", "pod-1x").await;
-        // If multi-GPU slipped through, these would be rented instead.
-        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        mount_rent_path(&server, "one-b200", "pod-1x").await;
+        mount_rent_path(&server, "eight-b200", "pod-8x").await;
         mount_rent_path(&server, "eight-label", "pod-8x-label").await;
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
         let inst = c.provision(&provision_spec()).await.unwrap();
@@ -1226,7 +1295,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_fail_closed_when_no_5090() {
+    async fn provision_prefers_2x_6000_over_5090() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "four-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 4, "price_per_hour": 1.0},
+                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48},
+                {"id": "two-6000", "gpu_type": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpu_count": 2, "price_per_hour": 2.4}
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "two-6000", "pod-6000").await;
+        mount_rent_path(&server, "four-5090", "pod-5090").await;
+        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let mut spec = provision_spec();
+        spec.gpu_count = 2;
+        let inst = c.provision(&spec).await.unwrap();
+        assert_eq!(inst.id, "pod-6000");
+    }
+
+    #[tokio::test]
+    async fn provision_refuses_8x_5090_when_requesting_four() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "eight-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 8, "price_per_hour": 0.48}
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "eight-5090", "pod-8x").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let mut spec = provision_spec();
+        spec.gpu_count = 4;
+        let err = c.provision(&spec).await.unwrap_err();
+        assert!(
+            err.to_string().contains("8×5090")
+                || err.to_string().contains("8x5090")
+                || err.to_string().contains("no 8"),
+            "got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_fail_closed_when_no_b200() {
         let server = MockServer::start().await;
         mount_common(
             &server,
@@ -1259,7 +1373,7 @@ mod tests {
             &server,
             serde_json::json!([{
                 "id": "only",
-                "gpu_type": "NVIDIA GeForce RTX 5090",
+                "gpu_type": "NVIDIA B200",
                 "gpu_count": 1,
                 "price_per_hour": 1.0
             }]),
@@ -1304,6 +1418,10 @@ mod tests {
         std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
         std::env::set_var("PRISM_TEST_EVAL_CAPS", "0");
         std::env::set_var("PRISM_EVAL_G5_N_ITEMS", "1");
+        std::env::set_var(
+            "PRISM_EVAL_G2_TASKS",
+            "lambada,unknown,hellaswag,piqa,arc_easy",
+        );
         std::env::set_var("PRISM_FLOW", "v3");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
         assert!(pairs
@@ -1318,6 +1436,9 @@ mod tests {
         assert!(pairs
             .iter()
             .any(|(k, v)| *k == "PRISM_EVAL_G5_N_ITEMS" && v == "1"));
+        assert!(pairs.iter().any(|(k, v)| {
+            *k == "PRISM_EVAL_G2_TASKS" && v == "lambada,hellaswag,piqa,arc_easy"
+        }));
         assert!(pairs.iter().any(|(k, v)| *k == "PRISM_FLOW" && v == "v3"));
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15'; rm -rf /; '");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
@@ -1330,6 +1451,7 @@ mod tests {
         std::env::remove_var("PRISM_TEST_MAX_PARAMS");
         std::env::remove_var("PRISM_TEST_EVAL_CAPS");
         std::env::remove_var("PRISM_EVAL_G5_N_ITEMS");
+        std::env::remove_var("PRISM_EVAL_G2_TASKS");
         std::env::remove_var("PRISM_FLOW");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090' OR '1", false);
         assert!(pairs
@@ -1341,6 +1463,62 @@ mod tests {
         assert!(pairs
             .iter()
             .any(|(k, v)| *k == "PRISM_EVAL_ASSETS_DIR" && v == "/tmp/prism_eval/eval-assets"));
+    }
+
+    /// The dual-cap currency must reach the pod, and the operator seed knob
+    /// must be forwardable. This is an ALLOWLIST, so a knob missing from it
+    /// is silently dropped over SSH: a seed-variance sweep would then set the
+    /// seed on the control plane, have it ignored on the pod, and train every
+    /// run on the same lattice seed — reporting sigma_seed ≈ 0, which is a
+    /// confident wrong answer rather than a visible failure.
+    #[test]
+    fn harness_env_pairs_carry_the_dual_cap_and_seed_override() {
+        let pairs = harness_env_pairs(5.0, "NVIDIA GeForce RTX 5090", false);
+        let get = |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+        };
+        // Currency and floor are always sent, not left to a pod-side default.
+        assert_eq!(
+            get("PRISM_TRAIN_FLOPS_CAP"),
+            Some(prism_recipe::TRAIN_FLOPS_CAP.to_string()),
+            "the FLOPs cap is the budget currency and must be attested from \
+             the master's constant"
+        );
+        assert_eq!(
+            get("PRISM_MIN_SPEND_FRACTION"),
+            Some(prism_recipe::MIN_SPEND_FRACTION.to_string())
+        );
+        assert_eq!(get("PRISM_TRAIN_HOURS_CAP"), Some("5".into()));
+        // Absent by default: measurement-only knobs must not leak into a
+        // scored round just because the crate knows about them.
+        assert_eq!(get("PRISM_SEED_OVERRIDE"), None);
+        assert_eq!(get("PRISM_TEST_TRAIN_FLOPS"), None);
+
+        std::env::set_var("PRISM_SEED_OVERRIDE", "1001");
+        std::env::set_var("PRISM_TEST_TRAIN_FLOPS", "5e17");
+        std::env::set_var("PRISM_FLOPS_PROBE_SAMPLES", "8");
+        let pairs = harness_env_pairs(5.0, "NVIDIA GeForce RTX 5090", false);
+        let get = |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("PRISM_SEED_OVERRIDE"), Some("1001".into()));
+        assert_eq!(get("PRISM_TEST_TRAIN_FLOPS"), Some("5e17".into()));
+        assert_eq!(get("PRISM_FLOPS_PROBE_SAMPLES"), Some("8".into()));
+        // Same numeric guard as the rest of the allowlist: a shell payload in
+        // a forwarded knob is dropped, not quoted and hoped for.
+        std::env::set_var("PRISM_SEED_OVERRIDE", "1001'; rm -rf /; '");
+        let pairs = harness_env_pairs(5.0, "NVIDIA GeForce RTX 5090", false);
+        assert!(!pairs.iter().any(|(_, v)| v.contains("rm -rf")));
+        assert!(!pairs.iter().any(|(k, _)| *k == "PRISM_SEED_OVERRIDE"));
+        std::env::remove_var("PRISM_SEED_OVERRIDE");
+        std::env::remove_var("PRISM_TEST_TRAIN_FLOPS");
+        std::env::remove_var("PRISM_FLOPS_PROBE_SAMPLES");
     }
 
     #[test]

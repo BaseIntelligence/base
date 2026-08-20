@@ -154,6 +154,7 @@ def _run(cfg, st):
         "probe_curve": cfg.get("probe_curve") or [],
         "telemetry_series": cfg.get("telemetry_series") or [],
         "tokens_seen": int(cfg.get("tokens_seen", 0)),
+        "train_flops_cap": float(cfg.get("train_flops_cap", 0.0) or 0.0),
         "n_params": n_params,
         "build_model": arch.build_model,
         "build_ctx": build_ctx,

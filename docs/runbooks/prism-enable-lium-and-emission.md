@@ -19,6 +19,106 @@
    seal). Prefer rolling the challenge image when no pods are in
    `provisioning`/`running`, or accept resume after boot.
 
+## Prism v2.1 safe operator environment
+
+Keep the live `:28092` service on the established scoring/emission surface:
+
+```bash
+PRISM_SCORING_MODE=benchmarks
+PRISM_ANCHOR_VERSION=0
+PRISM_EMISSION_MODE=wta
+PRISM_OWNER_ARCH_CREDIT_BPS=0
+PRISM_EVAL_REQUIRE_PRIVATE=0
+PRISM_POD_GPU_COUNT=1
+# PRISM_POD_GPU_NAME=NVIDIA B200,B200
+# fallback: PRISM_POD_GPU_COUNT=4 and/or PRISM_POD_GPU_NAME=RTX 5090
+# fallback: PRISM_POD_GPU_COUNT=2 (or 8) and/or PRISM_POD_GPU_NAME=RTX PRO 6000
+```
+
+Unknown emission modes fall back to WTA; unknown anchor versions fall back
+to v0. Do not combine a pod/image change with a composite, private-required,
+owner-credit, top3, or sig flip.
+
+For an isolated v3 calibration wave (not the live service), use:
+
+```bash
+PRISM_FLOW=v3
+PRISM_SCORING_MODE=benchmarks   # do not flip live or isolated :28092 to composite
+PRISM_ANCHOR_VERSION=3          # measure only; placeholders until pre-register
+PRISM_TRAIN_FLOPS_CAP=3.0e18
+PRISM_MIN_SPEND_FRACTION=0.5
+PRISM_EVAL_G2_TASKS=lambada,hellaswag,piqa,arc_easy
+PRISM_EVAL_BATTERY_BUDGET_S=3600
+PRISM_G6_BPB_THRESHOLD=1.5
+PRISM_POD_GPU_COUNT=1
+```
+
+The 0.5 floor applies only when `binding_cap=none`; `steps`, `wall`, and
+`flops` are protocol stops and exempt. v3 remains a placeholder anchor set:
+the calibration wave measures references and does not authorize a live flip.
+
+Build a private-tier assets directory (hard cap: 400 rows per JSONL file):
+
+```bash
+PACK_TIER=private \
+PRISM_EVAL_ASSETS_DIR=/var/lib/prism/eval-assets-private \
+python3 crates/prism-recipe/harness/eval/build_private_pack.py
+```
+
+Verify `tier.json` says `private`, `manifest.json` hashes every asset, and the
+completed run reports `battery.mirror_defence.contamination_checked=true`.
+
+## CUDA 13 + Transformer Engine pod image
+
+The workflow is manual: it builds in GHCR, mirrors the execution artifact to
+the existing private DigitalOcean registry, and reports the provider digest.
+Runtime pins must use that digest:
+
+```bash
+gh workflow run images.yml \
+  --ref prism-v2.1-scoring \
+  -f prism_pod_only=true
+```
+
+Set the staged service with:
+
+```bash
+PRISM_POD_IMAGE_REF=registry.digitalocean.com/basecrawl/prism-pod@sha256:fe1197b26e30ebd88f200963cc8528533326666873880b62e676adb51663ff88
+PRISM_POD_IMAGE_TAG=v10-cuda13-te
+PRISM_POD_DOCKER_CREDENTIAL_ID=<lium-docker-credential-id>
+```
+
+The credential ID is a non-secret reference; the registry username/password
+remain stored in Lium. It is needed to create a new provider template, whose
+name is digest- and credential-scoped. Lium needs the tag as a pull locator,
+but records and checks the digest separately; malformed or missing digest
+refs fail closed. The image must use overridable Docker `CMD`; the Lium
+bootstrap injects `USER_PUBLIC_KEY` through a metacharacter-free command, then
+the image script writes `authorized_keys`, touches `/root/container_ready`,
+and keeps sshd in the foreground. Before promotion, run the billable test with
+`PRISM_LIVE_RUNNING_TIMEOUT_SECS=1800`; bound retries during diagnosis with
+`PRISM_LIVE_MAX_ATTEMPTS=1` (accepted range 1–8). One 4-GPU rent must prove:
+
+1. `torch.cuda.device_count()` matches the profile (`2` for 6000, `4` for 5090);
+2. `transformer_engine.pytorch` and
+   `transformer_engine.common.recipe.NVFP4BlockScaling` import;
+3. the dependency install phase can build/install a harmless manifest;
+4. a stream-owned 4-GPU train produces nonzero attested FLOPs and G6 probe
+   points (2×6000 or 4×5090);
+5. the fresh train netns has `lo` up and no external route;
+6. all anchored v3 G1–G8 keys are present; and
+7. the pod terminates and disappears from Lium inventory.
+
+### Reversible SKU cutover (5090 / 6000 env fallbacks)
+
+Drain active `provisioning`/`running` rows, change only
+`PRISM_POD_GPU_COUNT` (and optionally `PRISM_POD_GPU_NAME`), restart
+`prism-challenge`, and submit one operator smoke. Confirm the selected
+offer matches the requested pin. Default is 1× NVIDIA B200. Do not edit
+Compose topology or the `:28092` scoring/emission knobs. Restore
+`PRISM_POD_GPU_COUNT=1` and restart to roll back; already rented pods
+retain their original width.
+
 ## Failed measure with EVAL_OK but no metrics (ops)
 
 If `error_detail` ends with cheatguard / `EVAL_OK` but has no parseable
@@ -46,3 +146,29 @@ To rebalance shares:
    [`design-enable-and-emission.md`](./design-enable-and-emission.md).
 
 Current committed default: **prism = 5000 bps**, **design = 5000 bps**.
+
+## v2.1 competition cutover (new contest — old scores do not pay)
+
+Recipe **2.1.0** is a **new competition** (`competition_id=prism-v2.1`,
+`scoring_generation=21`). Code ignores pre-v2.1 harvests for
+`emission_leaves` / carry / top-model. Do **not** flip live `:28092`
+`PRISM_SCORING_MODE` / `PRISM_EMISSION_MODE` as part of this cutover
+(keep `benchmarks` + `wta` unless a separate governance flip).
+
+1. **Store.** Prefer a **fresh** Prism harvest volume / Postgres for
+   `prism_submission`. Reusing the old store is safe for *emission* (2.0
+   rows stay `weight_eligible=false`) but do **not** rematerialize or
+   admin-retry old 2.0 rows if that would rewrite metrics to 2.1 and
+   leak a prior winner into the new contest. Site history can keep the
+   old table read-only.
+2. **Burn until first 2.1 score.** With no terminated eligible v2.1 row,
+   leaves are all-zero. Leave the gateway **unsealed** so
+   `GET /v1/weights/latest` stays fail-closed **burn** (uid 0 = 100%,
+   `sealed: false`). Do **not** reseal the previous 2.0 champion. If an
+   old sealed bundle is still served, drop / expire it so burn applies.
+3. **First winner.** After the first v2.1 eligible termination, emit
+   WTA as usual (`POST /v1/weights/raw` → `POST /v1/admin/seal` →
+   `GET /v1/weights/latest` with `sealed: true` and the new hotkey).
+4. **Env.** Same safe defaults as **Prism v2.1 safe operator environment**
+   above. `GET /v1/recipe` advertises `competition_id` and
+   `scoring_generation` so miners can see they are on the new contest.

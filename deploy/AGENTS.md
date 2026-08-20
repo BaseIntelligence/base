@@ -46,6 +46,16 @@ Compose always runs a digest-pinned `postgres` service (`base-pgdata` volume, he
 
 Migrations (`crates/db/migrations`) run on boot in gateway / design-challenge / prism-challenge when `BASE_DATABASE_URL` is set. Compose requires `deploy/env/{design,prism}-challenge.env` so challenges cannot silently boot on memory.
 
+## Prism Lium GPU profiles (do not mix)
+
+Default 1B train SKU is **2× NVIDIA RTX PRO 6000 Blackwell Server Edition**
+(`PRISM_POD_GPU_COUNT=2`, needles `RTX PRO 6000` / `Blackwell Server`).
+Second profile: **4× RTX 5090** (`PRISM_POD_GPU_COUNT=4`). Override needles
+with `PRISM_POD_GPU_NAME`. Never fall through to 8×5090. Prefer an
+unsplittable full-host 6000 rent when Lium will not split. Do **not** flip
+live `:28092` scoring/emission when changing pod width. Details:
+[`docs/PRISM.md`](../docs/PRISM.md), [`docs/runbooks/prism-enable-lium-and-emission.md`](../docs/runbooks/prism-enable-lium-and-emission.md).
+
 Verify rows (local master stack):
 
 ```bash

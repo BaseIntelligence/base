@@ -22,15 +22,18 @@ const EXTERNAL_MINER_PINS: &[(&str, &str)] = &[
     ("bundle_spec_link", "BUNDLE_SPEC.md"),
 ];
 
-/// Pins required in `docs/external-miner/prism.md` for recipe 2.0 `AutoModel`.
+/// Pins required in `docs/external-miner/prism.md` for recipe 2.1 `AutoModel`.
 const PRISM_AUTOMODEL_PINS: &[(&str, &str)] = &[
-    ("recipe_2_0_0", "2.0.0"),
+    ("recipe_2_1_0", "2.1.0"),
     ("automodel_base_member", "automodel.base"),
     ("automodel_patch_member", "automodel.patch"),
     ("live_pin_id", "automodel@v0.5.0"),
     ("recipe_json_pin_id", "automodel_pin_id"),
     ("diff_route", "/v1/submissions/{id}/diff"),
     ("lium_byok", "X-Lium-Api-Key"),
+    ("competition_id", "prism-v2.1"),
+    ("scoring_generation_21", "scoring_generation"),
+    ("new_competition", "new competition"),
 ];
 
 /// Substrings that must not appear as live miner guidance (removed path).

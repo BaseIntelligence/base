@@ -28,8 +28,66 @@ use thiserror::Error;
 /// Embedded v0 anchor set (PLACEHOLDER values — see module docs).
 pub const ANCHOR_SET_V0_JSON: &str = include_str!("../anchors/v0.json");
 
-/// Latest anchor-set version known to this build.
-pub const LATEST_ANCHOR_VERSION: u16 = 0;
+/// Embedded v1 anchor set (Prism **v2.1** additions; PLACEHOLDER values).
+///
+/// v1 = v0 plus two battery keys — `org.g7.reasoning_throughput`
+/// (compute-normalized reasoning) and `org.g8.mup_scaling_slope` (local
+/// scaling-exponent probe) — with identical group weights, gates, mirror
+/// and bootstrap parameters. Selected at runtime via `PRISM_ANCHOR_VERSION`
+/// (default 0); like every placeholder set it must be measured on the E6
+/// baselines and pre-registered before scoring against it.
+pub const ANCHOR_SET_V1_JSON: &str = include_str!("../anchors/v1.json");
+
+/// Embedded v2 anchor set (Prism **v2.2** swap; PLACEHOLDER values).
+///
+/// v2 = v1 with `org.g2.lambada_acc` (4-way MC over random-word
+/// distractors — saturated: 0.955 at 112M, 0.985 GPT-2 Large) replaced by
+/// `org.g2.lambada_strict_acc` — the canonical LAMBADA protocol
+/// (unconstrained greedy last-word exact match, chance ≈ 0, real headroom).
+/// Same asset, same weights/gates/mirror/bootstrap; the harness emits both
+/// keys so v0/v1 scoring is untouched.
+pub const ANCHOR_SET_V2_JSON: &str = include_str!("../anchors/v2.json");
+
+/// Embedded v3 anchor set (Prism **v3 measurement**; PLACEHOLDER values).
+///
+/// v3 = v2 with the measurement changes of the dual-cap budget:
+///
+/// - **removes** `org.g8.mup_scaling_slope` from the scored set. It is
+///   confounded: for `L = E + A/N^α` the measured local slope is
+///   `α·(1 − E/L)`, i.e. only ~30–56 % of `α`, so a model better *in level*
+///   can look like it scales *worse*. The harness keeps emitting the key —
+///   it is cheap and informative — but a key absent from the anchor set is
+///   inert (the `unknown_metrics_are_ignored` path), which is precisely the
+///   "telemetry, never scored" outcome.
+/// - **adds** three byte-denominated / compute-milestone G6 keys
+///   (`auc_log_bytes`, `bytes_to_bpb_threshold`, `bpb_at_half_budget`),
+///   re-reading G6 as *data and compute* efficiency.
+/// - **adds** the confirmation-tier `org.conf.*` keys under a `conf` group
+///   at weight 0. That group is *structurally* inert, not merely
+///   down-weighted: `prism_pipeline::composite` hardcodes
+///   `GROUP_KEYS = [g1..g8]`, so a group outside that list is never
+///   validated, normalized, or required.
+/// - **adds** the compute gates `max_flops` + `min_spend_fraction`, and
+///   lowers `max_wall_s` 21600 → 18000 because wall-clock is now only the
+///   anti-DoS bound.
+/// - **adds** `min_params` = 850M (recipe 2.1 floor). v0/v1/v2 stay
+///   byte-frozen without this field. `max_params` stays 1B.
+///
+/// Every numeric is `placeholder` and must be measured on the E6 baselines
+/// and pre-registered before any governance flip.
+pub const ANCHOR_SET_V3_JSON: &str = include_str!("../anchors/v3.json");
+
+/// Latest anchor-set version known to this build (v3 measurement set).
+pub const LATEST_ANCHOR_VERSION: u16 = 3;
+
+/// The anchor-set version live scoring defaults to (`PRISM_ANCHOR_VERSION`
+/// absent). Stays 0 until v1+ anchors are measured + pre-registered.
+///
+/// This is load-bearing, not caution theatre: v1/v2/v3 are hash-committed
+/// pre-registration artifacts. The battery emits v3's scored G6 keys, but
+/// every numeric anchor is still an uncalibrated placeholder. Selection stays
+/// at v0 until baseline measurement and pre-registration are complete.
+pub const DEFAULT_ANCHOR_VERSION: u16 = 0;
 
 /// Per-metric normalization descriptor (research/12 §7 step 1).
 ///
@@ -96,19 +154,12 @@ pub struct GroupAnchors {
 }
 
 /// Lexicographic gate thresholds (research/12 §7 step 3).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct GateThresholds {
-    /// Minimum G3 (recall probes) group score.
-    pub g3_min: f64,
-    /// Minimum G8 (stability) group score.
-    pub g8_min: f64,
-    /// Max per-axis clustered 95% CI half-width δ.
-    pub ci_half_width_delta: f64,
-    /// Fixed-recipe parameter budget.
-    pub max_params: u64,
-    /// Fixed-recipe wall-clock budget (seconds; 6h = 21600).
-    pub max_wall_s: f64,
-}
+///
+/// Re-exported from `prism-budget` so the anchor registry and the scorer
+/// parse **one** schema rather than two structs that must be kept in sync by
+/// hand — the compute gates (`max_flops`, `min_spend_fraction`) have to mean
+/// the same thing on both sides of the JSON.
+pub use prism_budget::GateThresholds;
 
 /// Mirror-gap (contamination) penalty parameters (§7 step 2.5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +236,9 @@ impl AnchorSet {
     pub fn canonical_json(version: u16) -> Result<&'static str, AnchorError> {
         match version {
             0 => Ok(ANCHOR_SET_V0_JSON),
+            1 => Ok(ANCHOR_SET_V1_JSON),
+            2 => Ok(ANCHOR_SET_V2_JSON),
+            3 => Ok(ANCHOR_SET_V3_JSON),
             v => Err(AnchorError::UnknownVersion(v)),
         }
     }
@@ -249,6 +303,8 @@ mod tests {
         assert!((set.gates.g3_min - 0.25).abs() < f64::EPSILON);
         assert!((set.gates.g8_min - 0.5).abs() < f64::EPSILON);
         assert!((set.gates.ci_half_width_delta - 0.05).abs() < f64::EPSILON);
+        // v0 is byte-frozen at the pre-registration 350M cap; the live cap
+        // raise to 1B lands in v2 only (see v2_swaps_saturated_mc_lambada...).
         assert_eq!(set.gates.max_params, 350_000_000);
         assert!((set.gates.max_wall_s - 21_600.0).abs() < f64::EPSILON);
         assert_eq!(
@@ -284,6 +340,540 @@ mod tests {
             AnchorSet::prereg_hash_for(99),
             Err(AnchorError::UnknownVersion(99))
         ));
+    }
+
+    #[test]
+    fn v1_is_v0_plus_the_two_v21_keys() {
+        let v0 = AnchorSet::load(0).expect("v0 parses");
+        let v1 = AnchorSet::load(1).expect("v1 parses");
+        assert_eq!(v1.version, 1);
+        assert_eq!(v1.status, "placeholder");
+        assert_eq!(
+            AnchorSet::latest().expect("latest").version,
+            LATEST_ANCHOR_VERSION
+        );
+        assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
+
+        // Identical group weights, gates, mirror, bootstrap.
+        for key in v0.groups.keys() {
+            let (a, b) = (&v0.groups[key], &v1.groups[key]);
+            assert!((a.weight - b.weight).abs() < 1e-12, "{key} weight moved");
+        }
+        assert_eq!(v0.gates, v1.gates);
+        assert_eq!(v0.mirror, v1.mirror);
+        assert_eq!(v0.bootstrap, v1.bootstrap);
+
+        // Exactly two additions, both placeholder-marked.
+        let keys = |s: &AnchorSet| -> Vec<String> {
+            s.groups
+                .values()
+                .flat_map(|g| g.metrics.keys().cloned())
+                .collect()
+        };
+        let (k0, k1) = (keys(&v0), keys(&v1));
+        assert_eq!(k1.len(), k0.len() + 2);
+        for added in ["org.g7.reasoning_throughput", "org.g8.mup_scaling_slope"] {
+            assert!(k1.iter().any(|k| k == added), "{added} missing from v1");
+            assert!(!k0.iter().any(|k| k == added), "{added} must not be in v0");
+        }
+        let slope = &v1.groups["g8"].metrics["org.g8.mup_scaling_slope"];
+        assert_eq!(slope.status.as_deref(), Some("placeholder"));
+        assert!(matches!(
+            slope.norm,
+            NormKind::EfficiencyLogRatio { reference, cap }
+                if reference > 0.0 && cap > reference
+        ));
+
+        // Distinct canonical bytes ⇒ distinct pre-registration hashes.
+        assert_ne!(
+            AnchorSet::prereg_hash_for(0).expect("v0 hash"),
+            AnchorSet::prereg_hash_for(1).expect("v1 hash")
+        );
+    }
+
+    #[test]
+    fn v2_swaps_saturated_mc_lambada_for_strict() {
+        let v1 = AnchorSet::load(1).expect("v1 parses");
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        assert_eq!(v2.version, 2);
+        assert_eq!(v2.status, "placeholder");
+        // v2 must stay embedded and loadable however far LATEST advances, and
+        // whatever LATEST points at must itself parse.
+        assert!(AnchorSet::load(2).is_ok(), "v2 must stay loadable");
+        assert!(
+            AnchorSet::load(LATEST_ANCHOR_VERSION).is_ok(),
+            "LATEST_ANCHOR_VERSION must name a set that parses"
+        );
+        assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
+
+        // Identical group weights, mirror, bootstrap — one key swap.
+        for key in v1.groups.keys() {
+            let (a, b) = (&v1.groups[key], &v2.groups[key]);
+            assert!((a.weight - b.weight).abs() < 1e-12, "{key} weight moved");
+        }
+        assert_eq!(v1.mirror, v2.mirror);
+        assert_eq!(v1.bootstrap, v2.bootstrap);
+
+        // Gates differ in exactly ONE field: the intentional 350M -> 1B
+        // parameter-cap raise (v0/v1 stay byte-frozen at 350M). Same spirit as
+        // the G2 key swap above — assert the single difference, not equality.
+        assert_eq!(v1.gates.max_params, 350_000_000, "v1 frozen at the old cap");
+        assert_eq!(
+            v2.gates.max_params,
+            crate::MAX_PARAMS,
+            "v2 tracks the live cap"
+        );
+        assert_eq!(v2.gates.max_params, 1_000_000_000);
+        assert_eq!(
+            v1.gates,
+            GateThresholds {
+                max_params: 350_000_000,
+                ..v2.gates
+            },
+            "max_params is the ONLY gate difference v1 -> v2"
+        );
+
+        let g2_v1 = &v1.groups["g2"].metrics;
+        let g2_v2 = &v2.groups["g2"].metrics;
+        assert_eq!(g2_v1.len(), g2_v2.len(), "swap, not add/remove");
+        assert!(g2_v1.contains_key("org.g2.lambada_acc"), "v1 keeps MC form");
+        assert!(
+            !g2_v2.contains_key("org.g2.lambada_acc"),
+            "saturated MC out"
+        );
+        let strict = &g2_v2["org.g2.lambada_strict_acc"];
+        assert_eq!(strict.status.as_deref(), Some("placeholder"));
+        // Open-vocabulary exact match: chance floor is ~0.
+        assert!(matches!(strict.norm, NormKind::Accuracy { chance } if chance == 0.0));
+        // Every group KEY set outside G2 is inherited unchanged from v1
+        // (G6 re-anchors values in place — no key rename; see
+        // `v2_fixes_inverted_g6_auc_direction`).
+        for (name, group) in &v1.groups {
+            if name == "g2" {
+                continue;
+            }
+            assert_eq!(
+                group.metrics.keys().collect::<Vec<_>>(),
+                v2.groups[name].metrics.keys().collect::<Vec<_>>(),
+                "{name} keys moved"
+            );
+        }
+        assert_ne!(
+            AnchorSet::prereg_hash_for(1).expect("v1 hash"),
+            AnchorSet::prereg_hash_for(2).expect("v2 hash")
+        );
+    }
+
+    /// `org.g6.auc_log_tokens` was direction-inverted and inert in v0/v1:
+    /// the anchor declared `reference 0.5 / cap 0.95` ("higher-better"),
+    /// but the harness computes a MEAN CROSS-ENTROPY per decade of tokens
+    /// (`eval/g6_curve.py`, lower-better, plausibly 3-5 nats), so every
+    /// plausible submission clipped to 1.0 and half of G6's weight was a
+    /// constant. v2 re-anchors it to the quantity actually computed.
+    ///
+    /// v0 and v1 are hash-committed pre-registration artifacts, so the bug
+    /// stays byte-frozen there — this test pins both sides.
+    #[test]
+    fn v2_fixes_inverted_g6_auc_direction() {
+        let auc_of = |v: u16| {
+            let set = AnchorSet::load(v).expect("anchor set parses");
+            match set.groups["g6"].metrics["org.g6.auc_log_tokens"].norm {
+                NormKind::EfficiencyLogRatio { reference, cap } => (reference, cap),
+                ref other => panic!("unexpected norm kind for v{v}: {other:?}"),
+            }
+        };
+
+        // v0 / v1 keep the inverted anchor verbatim (pre-registration).
+        for frozen in [0u16, 1u16] {
+            let (reference, cap) = auc_of(frozen);
+            assert!(
+                (reference - 0.5).abs() < f64::EPSILON && (cap - 0.95).abs() < f64::EPSILON,
+                "v{frozen} must stay byte-frozen at the pre-registered values"
+            );
+            assert!(cap > reference, "v{frozen} encoded higher-better");
+        }
+
+        // v2: lower-better (cap < reference) over a real mean-CE range.
+        let (reference, cap) = auc_of(2);
+        assert!(cap < reference, "v2 must encode lower-better for a mean CE");
+        assert!(
+            reference > 1.0 && cap > 1.0,
+            "anchors must sit in the plausible nats/token range, not [0.5, 0.95]"
+        );
+
+        // The tokens-to-threshold sibling keeps its lower-better anchors;
+        // censoring is fail-closed harness-side (CENSORED_TOKENS -> 0.0).
+        let set = AnchorSet::load(2).expect("v2 parses");
+        match set.groups["g6"].metrics["org.g6.tokens_to_threshold"].norm {
+            NormKind::EfficiencyLogRatio { reference, cap } => {
+                assert!(cap < reference, "tokens-to-threshold is lower-better");
+            }
+            ref other => panic!("unexpected norm kind: {other:?}"),
+        }
+        let g6_py = crate::HARNESS_FILES
+            .iter()
+            .find(|(path, _)| *path == "eval/g6_curve.py")
+            .map(|(_, body)| *body)
+            .expect("g6_curve.py is embedded");
+        assert!(
+            g6_py.contains("CENSORED_TOKENS"),
+            "harness must fail-closed on right-censored curves"
+        );
+    }
+
+    /// v3 is the **measurement** set: it drops the confounded scaling slope,
+    /// adds byte/compute-denominated G6 keys, adds the inert confirmation
+    /// tier, and adds the compute gates. Same spirit as
+    /// `v2_swaps_saturated_mc_lambada_for_strict` — assert the exact
+    /// differences, not equality.
+    #[test]
+    fn v3_drops_confounded_slope_and_adds_compute_keys() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        assert_eq!(v3.version, 3);
+        assert_eq!(v3.status, "placeholder");
+        assert_eq!(LATEST_ANCHOR_VERSION, 3);
+        assert_eq!(DEFAULT_ANCHOR_VERSION, 0, "live default stays v0");
+
+        // Every scored group weight is inherited unchanged; the g1..g8
+        // weights must still sum to 1 with the `conf` group excluded.
+        for key in v2.groups.keys() {
+            let (a, b) = (&v2.groups[key], &v3.groups[key]);
+            assert!((a.weight - b.weight).abs() < 1e-12, "{key} weight moved");
+        }
+        assert_eq!(v2.mirror, v3.mirror);
+        assert_eq!(v2.bootstrap, v3.bootstrap);
+        let scored_sum: f64 = v3
+            .groups
+            .iter()
+            .filter(|(k, _)| k.starts_with('g'))
+            .map(|(_, g)| g.weight)
+            .sum();
+        assert!(
+            (scored_sum - 1.0).abs() < 1e-9,
+            "scored g1..g8 weights must still sum to 1, got {scored_sum}"
+        );
+
+        // Every other scored group's key set is inherited verbatim. `g2` is
+        // excluded here and asserted exactly in
+        // `v3_retires_the_four_pinned_g2_tasks`.
+        for (name, group) in &v2.groups {
+            if name == "g2" || name == "g6" || name == "g8" {
+                continue;
+            }
+            assert_eq!(
+                group.metrics.keys().collect::<Vec<_>>(),
+                v3.groups[name].metrics.keys().collect::<Vec<_>>(),
+                "{name} keys moved"
+            );
+        }
+
+        // Distinct canonical bytes ⇒ distinct pre-registration hashes.
+        let hashes: Vec<String> = (0u16..=3)
+            .map(|v| AnchorSet::prereg_hash_for(v).expect("hash"))
+            .collect();
+        for (i, a) in hashes.iter().enumerate() {
+            for (j, b) in hashes.iter().enumerate() {
+                assert!(i == j || a != b, "v{i} and v{j} share a prereg hash");
+            }
+        }
+    }
+
+    /// v3 retires the four G2 sub-metrics that normalize to a **constant 0
+    /// for the entire field** at this operating point, keeping the group
+    /// weight fixed at 0.15.
+    ///
+    /// Why this is a correctness fix and not a tuning preference: G2's
+    /// sub-metrics are equal-weighted, so four dead axes carried **half of
+    /// G2's weight — 7.5 % of the whole composite — while measuring nothing**.
+    /// And because the composite is a weighted **geometric** mean, an axis
+    /// pinned at 0 is actively harmful, not merely inert.
+    ///
+    /// It is not a cap problem either: separating two submissions on
+    /// Winogrande needs ~76 824 items and the set has 1 267, so the resolution
+    /// does not exist at *any* cap.
+    ///
+    /// Companion to `v2_swaps_saturated_mc_lambada_for_strict`: assert the
+    /// exact difference, so a silent key drift fails here.
+    #[test]
+    fn v3_retires_the_four_pinned_g2_tasks() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+
+        let survivors = [
+            "org.g2.arc_easy_acc",
+            "org.g2.hellaswag_acc",
+            "org.g2.lambada_strict_acc",
+            "org.g2.piqa_acc",
+        ];
+        let retired = [
+            "org.g2.arc_challenge_acc",
+            "org.g2.boolq_acc",
+            "org.g2.obqa_acc",
+            "org.g2.winogrande_acc",
+        ];
+
+        let v3_g2 = &v3.groups["g2"];
+        assert_eq!(
+            v3_g2.metrics.keys().collect::<Vec<_>>(),
+            survivors.iter().collect::<Vec<_>>(),
+            "v3 G2 must be exactly the four tasks with dynamic range"
+        );
+        for key in retired {
+            assert!(
+                v2.groups["g2"].metrics.contains_key(key),
+                "{key} must have been in v2 for this to be a retirement"
+            );
+            assert!(
+                !v3_g2.metrics.contains_key(key),
+                "{key} is pinned at 0 for the whole field and must not be scored"
+            );
+        }
+
+        // The group weight is deliberately UNCHANGED: this changes what G2
+        // measures, not how much G2 counts.
+        assert!(
+            (v3_g2.weight - 0.15).abs() < 1e-12,
+            "G2 group weight must stay 0.15, got {}",
+            v3_g2.weight
+        );
+        assert!(
+            (v3_g2.weight - v2.groups["g2"].weight).abs() < 1e-12,
+            "G2 weight must match v2"
+        );
+
+        // Retiring 8 → 4 equal-weighted metrics doubles each survivor's share
+        // of G2, which is the intended effect.
+        assert_eq!(v2.groups["g2"].metrics.len(), 8);
+        assert_eq!(v3_g2.metrics.len(), 4);
+    }
+
+    /// The confounded slope must be gone from the scored set — and still
+    /// **emitted**, because demotion to telemetry is the decision, not
+    /// deletion. A key absent from the anchor set is inert, not missing.
+    #[test]
+    fn v3_demotes_the_scaling_slope_to_telemetry() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        let g8 = &v3.groups["g8"].metrics;
+        assert!(
+            !g8.contains_key("org.g8.mup_scaling_slope"),
+            "the scaling slope is confounded (measured slope is only \
+             α·(1 − E/L) ≈ 30–56% of α) and must not be scored in any form"
+        );
+        assert!(
+            v2.groups["g8"]
+                .metrics
+                .contains_key("org.g8.mup_scaling_slope"),
+            "v2 must stay byte-frozen WITH the slope"
+        );
+        assert_eq!(g8.len(), v2.groups["g8"].metrics.len() - 1, "removal only");
+        // ...but the harness must still EMIT it: demoted to telemetry, not
+        // deleted. A key absent from the anchor set is inert, not missing.
+        let g8_py = crate::HARNESS_FILES
+            .iter()
+            .find(|(p, _)| *p == "eval/g8_stability.py")
+            .map(|(_, b)| *b)
+            .expect("g8_stability.py embedded");
+        assert!(
+            g8_py.contains("scaling_slope"),
+            "slope must remain emitted as unscored telemetry"
+        );
+    }
+
+    /// The three new G6 keys re-read the group as *data and compute*
+    /// efficiency. The byte-denominated names are only honest because the
+    /// probe curve now records bytes — asserted here, not assumed.
+    #[test]
+    fn v3_adds_byte_and_compute_denominated_g6_keys() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        let g6 = &v3.groups["g6"].metrics;
+        for added in [
+            "org.g6.auc_log_bytes",
+            "org.g6.bytes_to_bpb_threshold",
+            "org.g6.bpb_at_half_budget",
+        ] {
+            let m = g6.get(added).unwrap_or_else(|| panic!("{added} missing"));
+            assert_eq!(m.status.as_deref(), Some("placeholder"), "{added}");
+            assert!(
+                !v2.groups["g6"].metrics.contains_key(added),
+                "{added} must not be in the byte-frozen v2"
+            );
+        }
+        // Direction: `cap < reference` is the ONLY encoding of lower-better
+        // (there is no direction flag) — the v0 auc bug got this backwards.
+        for lower_better in ["org.g6.auc_log_bytes", "org.g6.bytes_to_bpb_threshold"] {
+            match g6[lower_better].norm {
+                NormKind::EfficiencyLogRatio { reference, cap } => assert!(
+                    cap < reference,
+                    "{lower_better} must encode lower-better (cap < reference), \
+                     got reference={reference} cap={cap}"
+                ),
+                ref other => panic!("{lower_better}: unexpected norm {other:?}"),
+            }
+        }
+        assert!(matches!(
+            g6["org.g6.bpb_at_half_budget"].norm,
+            NormKind::BpbLogRatio { chance, reference } if chance > reference
+        ));
+        // The token-denominated predecessor is superseded, and the byte form
+        // is only honest because the probe curve now records bytes.
+        assert!(
+            !g6.contains_key("org.g6.auc_log_tokens"),
+            "the tokenizer-dependent token form is superseded by auc_log_bytes"
+        );
+        let all = crate::HARNESS_FILES
+            .iter()
+            .map(|(_, c)| *c)
+            .collect::<String>();
+        for byte_marker in ["bytes_seen", "bytes_per_token", "probe_bits_per_byte"] {
+            assert!(
+                all.contains(byte_marker),
+                "org.g6.auc_log_bytes requires the probe curve to carry \
+                 {byte_marker} — otherwise the key name would be a lie"
+            );
+        }
+        for org_key in g6.keys() {
+            assert!(
+                all.contains(org_key),
+                "v3 declares {org_key}, but the embedded harness/rollup has no \
+                 producer mapping — selecting v3 would fail completeness"
+            );
+        }
+    }
+
+    /// The confirmation tier is a separate audit record, so it must be
+    /// **structurally** inert rather than merely down-weighted.
+    #[test]
+    fn v3_confirmation_tier_is_structurally_inert() {
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        let conf = v3.groups.get("conf").expect("conf group present");
+        assert!(
+            conf.weight.abs() < f64::EPSILON,
+            "the confirmation tier is a separate audit record, not part of \
+             the Stage-1 composite"
+        );
+        assert!(
+            !v3.groups.contains_key("g9"),
+            "must NOT be named g9: composite hardcodes GROUP_KEYS = [g1..g8], \
+             so a g9-looking group would read as a scored group that is silently \
+             ignored"
+        );
+        for key in [
+            "org.conf.isoflop_min_bpb",
+            "org.conf.isoflop_convexity_r2",
+            "org.conf.isoflop_argmin_nbody",
+            "org.conf.advantage_growth",
+        ] {
+            let m = conf.metrics.get(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!(m.status.as_deref(), Some("placeholder"), "{key}");
+        }
+        // The two never-scorable statistics carry a degenerate normalizer, so
+        // promoting them into a scored group collapses the geometric mean to
+        // 0 instead of quietly ranking noise (argmin is ±17–47% in N; the
+        // advantage-growth MDD 0.019–0.028 straddles the 0.013–0.065 signal).
+        for never_scored in ["org.conf.isoflop_argmin_nbody", "org.conf.advantage_growth"] {
+            match conf.metrics[never_scored].norm {
+                NormKind::EfficiencyLogRatio { reference, cap } => assert!(
+                    (reference - cap).abs() < f64::EPSILON,
+                    "{never_scored} must keep a degenerate normalizer"
+                ),
+                ref other => panic!("{never_scored}: unexpected norm {other:?}"),
+            }
+        }
+    }
+
+    /// The compute gates are the currency: `max_flops` + the underspend
+    /// floor, with the wall bound demoted. And every v3 numeric must still be
+    /// a placeholder whose note states the measurement obligation.
+    #[test]
+    fn v3_adds_compute_gates_and_keeps_every_numeric_placeholder() {
+        let v2 = AnchorSet::load(2).expect("v2 parses");
+        let v3 = AnchorSet::load(3).expect("v3 parses");
+        assert_eq!(v2.gates.max_flops, None, "v2 predates the FLOPs currency");
+        assert_eq!(v2.gates.min_spend_fraction, None);
+        assert_eq!(v3.gates.max_flops, Some(crate::TRAIN_FLOPS_CAP));
+        assert_eq!(v3.gates.min_spend_fraction, Some(crate::MIN_SPEND_FRACTION));
+        assert!(
+            (v3.gates.max_wall_s - crate::TRAIN_HOURS_CAP * 3600.0).abs() < f64::EPSILON,
+            "max_wall_s must track TRAIN_HOURS_CAP (now the anti-DoS bound)"
+        );
+        assert!(
+            (v2.gates.max_wall_s - 21_600.0).abs() < f64::EPSILON,
+            "v2 frozen at 6h"
+        );
+        // max_params stays 1B (v2 already raised it). v3 adds the 850M
+        // inclusive floor so a 215M pack cannot score on the live-intended
+        // set. v0/v1/v2 stay byte-frozen without min_params.
+        assert_eq!(v3.gates.max_params, v2.gates.max_params);
+        assert_eq!(v3.gates.max_params, 1_000_000_000);
+        assert_eq!(v2.gates.min_params, None, "v2 must stay byte-frozen");
+        assert_eq!(v3.gates.min_params, Some(crate::MIN_PARAMS));
+        assert_eq!(
+            v2.gates,
+            GateThresholds {
+                max_wall_s: 21_600.0,
+                max_flops: None,
+                min_spend_fraction: None,
+                min_params: None,
+                ..v3.gates
+            },
+            "wall, compute gates, and min_params are the v2→v3 gate diffs"
+        );
+
+        // Every numeric is still a placeholder awaiting E6 measurement, and
+        // every note says so.
+        for (gk, g) in &v3.groups {
+            for (mk, m) in &g.metrics {
+                assert_eq!(
+                    m.status.as_deref(),
+                    Some("placeholder"),
+                    "{gk}/{mk} must stay placeholder until measured on E6"
+                );
+                let note = m.note.as_deref().unwrap_or("");
+                assert!(
+                    note.contains("MUST") || note.contains("NEVER"),
+                    "{gk}/{mk} note must state the measurement/scoring \
+                     obligation, got {note:?}"
+                );
+            }
+        }
+        assert!(v3.notes.contains("MUST be measured"));
+        assert!(v3.notes.contains("emit before declare"));
+    }
+
+    /// v0/v1/v2 are hash-committed pre-registration artifacts. Their bytes
+    /// are the commitment, so this pins the exact hashes: any edit to those
+    /// files — including a "harmless" reformat — breaks the commitment and
+    /// must fail here rather than in an audit.
+    #[test]
+    fn v0_v1_v2_stay_byte_frozen() {
+        for (version, want) in [
+            (
+                0u16,
+                "581643c789faca19b9acb9980856aa9cac718c2a3cad279b8aa0bf89099de671",
+            ),
+            (
+                1u16,
+                "85998f13355171ff2e6632f1a730e627a4e10eeaa530149fa9e3af5cdd6323ef",
+            ),
+            (
+                2u16,
+                "6a6246c5f4c3cb25751df254b1b8e78017c66df72d79aef4aadbf0a036c2bc79",
+            ),
+        ] {
+            let got = AnchorSet::prereg_hash_for(version).expect("hash");
+            assert_eq!(
+                got, want,
+                "anchors/v{version}.json is a hash-committed pre-registration \
+                 artifact and must stay byte-identical"
+            );
+        }
+        // v3 is new, so it only has to be self-consistent and distinct.
+        let v3 = AnchorSet::prereg_hash_for(3).expect("v3 hash");
+        assert_eq!(v3.len(), 64);
+        assert!(v3.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

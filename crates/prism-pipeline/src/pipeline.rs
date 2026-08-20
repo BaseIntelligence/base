@@ -65,7 +65,7 @@ pub async fn run_eval_pipeline(
         name: name.clone(),
         max_lifetime_hours: cfg.max_lifetime_hours,
         max_price_per_hour: cfg.max_price_per_hour,
-        gpu_count: 1,
+        gpu_count: prism_lium::pod_gpu_count_from_env(),
         image_digest: cfg.default_image_digest.clone(),
         ssh_public_keys: cfg.ssh_public_keys.clone(),
         ssh_key_name: Some("prism-mission-worker".into()),
@@ -173,13 +173,38 @@ pub fn mid_pod_resume(row: &prism_store::SubmissionState) -> bool {
     row.pod_id.is_some() && resume_measurement(row).is_none()
 }
 
+/// Public `/v1/recipe` body: descriptor plus live contest identity.
+#[must_use]
+pub fn recipe_descriptor_json() -> serde_json::Value {
+    let mut v = serde_json::to_value(prism_recipe::descriptor()).unwrap_or_default();
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "competition_id".into(),
+            serde_json::json!(prism_store::PRISM_COMPETITION_ID),
+        );
+        obj.insert(
+            "scoring_generation".into(),
+            serde_json::json!(prism_store::PRISM_SCORING_GENERATION),
+        );
+    }
+    v
+}
+
 /// Store patch persisting a completed measurement (receipt + metrics + bpb);
 /// the metrics blob also lands the per-step telemetry series master-side.
 #[must_use]
 pub fn measurement_patch(m: &RemoteExecResult, r: &EvalReceipt) -> prism_store::StatePatch {
+    let metrics_json = serde_json::to_value(m).ok().map(|mut v| {
+        if let Some(obj) = v.as_object_mut() {
+            obj.entry("recipe")
+                .or_insert_with(|| serde_json::json!(prism_recipe::RECIPE_VERSION));
+        }
+        prism_store::stamp_v21_competition(&mut v);
+        v
+    });
     prism_store::StatePatch {
         receipt: Some(r.clone()),
-        metrics_json: serde_json::to_value(m).ok(),
+        metrics_json,
         bpb: Some(m.bpb),
         ..prism_store::StatePatch::default()
     }

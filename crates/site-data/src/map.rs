@@ -1368,7 +1368,7 @@ mod tests {
 
     #[test]
     fn prism_window_uses_tokens_and_list_n_params() {
-        let recipe = json!({"max_params": 350_000_000_u64, "dataset_ref": "ds"});
+        let recipe = json!({"max_params": 1_000_000_000_u64, "dataset_ref": "ds"});
         let subs = vec![json!({
             "id":"deadbeef01",
             "status":"terminated",
@@ -1407,7 +1407,8 @@ mod tests {
             },
         );
         let w = prism_window(Some(&recipe), None, &subs, &telemetry);
-        assert_eq!(w.param_ceiling, 350);
+        // Millions of params: the 1B recipe cap surfaces as 1000.
+        assert_eq!(w.param_ceiling, 1000);
         // Observed tokens appear on the curve axis; they are not a recipe budget.
         assert_eq!(w.token_budget, 0);
         assert_eq!(w.series[0].points[0].step, 100_000);

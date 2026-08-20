@@ -1,0 +1,583 @@
+{
+  "measured": "2026-08-16",
+  "note": "EVIDENCE, not spec. sigma_seed is a LOWER BOUND: reduced 3.0e17 train budget (~6% of TRAIN_FLOPS_CAP).",
+  "baseline": "reference Transformer++ d=1024 L=24 V=50257",
+  "seeds": [
+    1001,
+    1002,
+    1003
+  ],
+  "varied": "training seed only",
+  "hardware": "1x RTX 5090 32GB",
+  "train_flops_budget": 3e+17,
+  "train_flops_cap_full": 3e+18,
+  "anchor_version_scored": 0,
+  "eligibility": {
+    "all_seeds": "ineligible",
+    "cause": "missing_metric x4 (org.g7.ttft_ms_32k, org.g7.tpot_ms_32k, org.g7.joules_per_token, org.g8.mup_lr_stability) under v0 completeness; unrelated to seed variance",
+    "g3_floor_flip": {
+      "seed1001": {
+        "g3": 0.19791666666666666,
+        "floor": 0.25,
+        "g3_ok": false
+      },
+      "seed1002": {
+        "g3_ok": true
+      },
+      "seed1003": {
+        "g3_ok": true
+      },
+      "driver": "org.g3.passkey_acc 0.0->0.5 on a single cluster; induction_acc 0.5->1.0",
+      "significance": "a BINARY hard gate flipped on training seed alone"
+    },
+    "composite": {
+      "seed1001": 0.0,
+      "seed1002": 0.0,
+      "seed1003": 0.330184285492597,
+      "caveat": "spread is a gate artifact (completeness/g3), NOT composite sigma_seed"
+    }
+  },
+  "sigma_seed": {
+    "org.diag.bytes_seen": {
+      "per_seed": [
+        379632853.0,
+        378618095.0,
+        379163037.0
+      ],
+      "mean": 379137995.0,
+      "sd": 507842.27469166054,
+      "cv_pct": 0.13394655280900047
+    },
+    "org.diag.effective_flops_per_token_ratio": {
+      "per_seed": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mean": 1.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.flops_analytic_gap": {
+      "per_seed": [
+        0.011193379670477082,
+        0.011193379670477082,
+        0.011193379670477082
+      ],
+      "mean": 0.011193379670477082,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.flops_analytic_mismatch": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "sd": 0.0,
+      "cv_pct": null
+    },
+    "org.diag.flops_analytic_ratio": {
+      "per_seed": [
+        1.0113200897327597,
+        1.0113200897327597,
+        1.0113200897327597
+      ],
+      "mean": 1.0113200897327597,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.flops_attested": {
+      "per_seed": [
+        1.8197558329344e+17,
+        1.8197558329344e+17,
+        1.8197558329344e+17
+      ],
+      "mean": 1.8197558329344e+17,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.flops_per_token_probe": {
+      "per_seed": [
+        2221381632.0,
+        2221381632.0,
+        2221381632.0
+      ],
+      "mean": 2221381632.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.flops_physical_ceiling": {
+      "per_seed": [
+        4.7485988482219584e+17,
+        4.771448383280039e+17,
+        4.733378363320291e+17
+      ],
+      "mean": 4.751141864940763e+17,
+      "sd": 1916198855698408.5,
+      "cv_pct": 0.40331333186202384
+    },
+    "org.diag.flops_physically_possible": {
+      "per_seed": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mean": 1.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.flops_probe_cv": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "sd": 0.0,
+      "cv_pct": null
+    },
+    "org.diag.flops_probe_samples": {
+      "per_seed": [
+        8.0,
+        8.0,
+        8.0
+      ],
+      "mean": 8.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.flops_probe_unstable": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "sd": 0.0,
+      "cv_pct": null
+    },
+    "org.diag.mfu_achieved": {
+      "per_seed": [
+        0.4023805096310819,
+        0.40045358790355745,
+        0.403674390238435
+      ],
+      "mean": 0.40216949592435813,
+      "sd": 0.0016207365635436052,
+      "cv_pct": 0.40299838251492864
+    },
+    "org.diag.n_gpu_attested": {
+      "per_seed": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mean": 1.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.n_params_body": {
+      "per_seed": [
+        289457152.0,
+        289457152.0,
+        289457152.0
+      ],
+      "mean": 289457152.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.n_params_embed": {
+      "per_seed": [
+        51463168.0,
+        51463168.0,
+        51463168.0
+      ],
+      "mean": 51463168.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.spend_fraction": {
+      "per_seed": [
+        0.6065852776448,
+        0.6065852776448,
+        0.6065852776448
+      ],
+      "mean": 0.6065852776448,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.diag.tokenizer_bytes_per_token": {
+      "per_seed": [
+        4.634190100097657,
+        4.621802917480469,
+        4.628455041503906
+      ],
+      "mean": 4.628149353027344,
+      "sd": 0.006199246517232175,
+      "cv_pct": 0.13394655280900028
+    },
+    "org.g1.bits_per_byte_code": {
+      "per_seed": [
+        3.3558837367670304,
+        3.2168716188211812,
+        3.0078457284696416
+      ],
+      "mean": 3.193533694685951,
+      "sd": 0.17518877770025582,
+      "cv_pct": 5.485734438680589
+    },
+    "org.g1.bits_per_byte_fresh_crawl": {
+      "per_seed": [
+        1.823734362351267,
+        1.8168078934183296,
+        1.8155067859935712
+      ],
+      "mean": 1.818683013921056,
+      "sd": 0.004422704020758913,
+      "cv_pct": 0.24318168624798575
+    },
+    "org.g1.bits_per_byte_key_token": {
+      "per_seed": [
+        0.2308181864385813,
+        0.2291821455312354,
+        0.23271274471183304
+      ],
+      "mean": 0.23090435889388325,
+      "sd": 0.001766876315011541,
+      "cv_pct": 0.7651983373010055
+    },
+    "org.g1.bits_per_byte_math": {
+      "per_seed": [
+        2.4833433347869636,
+        2.462710566622926,
+        2.4575878973966394
+      ],
+      "mean": 2.4678805996021764,
+      "sd": 0.013633875807950927,
+      "cv_pct": 0.5524528135659689
+    },
+    "org.g1.bits_per_byte_prose": {
+      "per_seed": [
+        2.02189755049307,
+        1.9974649193915903,
+        2.0071828020688303
+      ],
+      "mean": 2.008848423984497,
+      "sd": 0.012301182378523933,
+      "cv_pct": 0.6123499529210307
+    },
+    "org.g2.arc_challenge_acc": {
+      "per_seed": [
+        0.375,
+        0.375,
+        0.375
+      ],
+      "mean": 0.375,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g2.arc_easy_acc": {
+      "per_seed": [
+        0.25,
+        0.25,
+        0.25
+      ],
+      "mean": 0.25,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g2.boolq_acc": {
+      "per_seed": [
+        0.75,
+        0.75,
+        0.25
+      ],
+      "mean": 0.5833333333333334,
+      "sd": 0.28867513459481287,
+      "cv_pct": 49.48716593053935
+    },
+    "org.g2.hellaswag_acc": {
+      "per_seed": [
+        0.25,
+        0.375,
+        0.25
+      ],
+      "mean": 0.2916666666666667,
+      "sd": 0.07216878364870322,
+      "cv_pct": 24.743582965269674
+    },
+    "org.g2.lambada_acc": {
+      "per_seed": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "mean": 0.5,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g2.lambada_strict_acc": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "sd": 0.0,
+      "cv_pct": null
+    },
+    "org.g2.obqa_acc": {
+      "per_seed": [
+        0.25,
+        0.25,
+        0.25
+      ],
+      "mean": 0.25,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g2.piqa_acc": {
+      "per_seed": [
+        0.75,
+        0.75,
+        0.75
+      ],
+      "mean": 0.75,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g2.winogrande_acc": {
+      "per_seed": [
+        0.375,
+        0.5,
+        0.375
+      ],
+      "mean": 0.4166666666666667,
+      "sd": 0.07216878364870322,
+      "cv_pct": 17.32050807568877
+    },
+    "org.g3.copying_acc": {
+      "per_seed": [
+        0.16666666666666666,
+        0.16666666666666666,
+        0.16666666666666666
+      ],
+      "mean": 0.16666666666666666,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g3.induction_acc": {
+      "per_seed": [
+        0.5,
+        0.5,
+        1.0
+      ],
+      "mean": 0.6666666666666666,
+      "sd": 0.28867513459481287,
+      "cv_pct": 43.30127018922193
+    },
+    "org.g3.mqar_acc": {
+      "per_seed": [
+        0.125,
+        0.25,
+        0.1875
+      ],
+      "mean": 0.1875,
+      "sd": 0.0625,
+      "cv_pct": 33.333333333333336
+    },
+    "org.g3.passkey_acc": {
+      "per_seed": [
+        0.0,
+        0.5,
+        0.5
+      ],
+      "mean": 0.3333333333333333,
+      "sd": 0.28867513459481287,
+      "cv_pct": 86.60254037844386
+    },
+    "org.g4.arithmetic_acc": {
+      "per_seed": [
+        0.16666666666666666,
+        0.16666666666666666,
+        0.3333333333333333
+      ],
+      "mean": 0.2222222222222222,
+      "sd": 0.09622504486493762,
+      "cv_pct": 43.30127018922193
+    },
+    "org.g4.boolean_logic_acc": {
+      "per_seed": [
+        1.0,
+        0.5,
+        0.5
+      ],
+      "mean": 0.6666666666666666,
+      "sd": 0.28867513459481287,
+      "cv_pct": 43.30127018922193
+    },
+    "org.g4.dyck_acc": {
+      "per_seed": [
+        0.9166666666666669,
+        0.5,
+        0.3333333333333333
+      ],
+      "mean": 0.5833333333333334,
+      "sd": 0.3004626062886659,
+      "cv_pct": 51.50787536377129
+    },
+    "org.g4.knights_knaves_acc": {
+      "per_seed": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mean": 1.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g4.modular_acc": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.25
+      ],
+      "mean": 0.08333333333333333,
+      "sd": 0.14433756729740643,
+      "cv_pct": 173.20508075688772
+    },
+    "org.g4.proofwriter_acc": {
+      "per_seed": [
+        0.5,
+        0.5,
+        0.75
+      ],
+      "mean": 0.5833333333333334,
+      "sd": 0.14433756729740643,
+      "cv_pct": 24.743582965269674
+    },
+    "org.g5.babilong_acc": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.3
+      ],
+      "mean": 0.09999999999999999,
+      "sd": 0.17320508075688773,
+      "cv_pct": 173.20508075688775
+    },
+    "org.g5.helmet_rag_acc": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "sd": 0.0,
+      "cv_pct": null
+    },
+    "org.g5.lstar": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "sd": 0.0,
+      "cv_pct": null
+    },
+    "org.g5.natural_mcq_acc": {
+      "per_seed": [
+        0.5,
+        0.0,
+        0.5
+      ],
+      "mean": 0.3333333333333333,
+      "sd": 0.28867513459481287,
+      "cv_pct": 86.60254037844386
+    },
+    "org.g5.ruler_acc": {
+      "per_seed": [
+        0.365,
+        0.265,
+        0.29
+      ],
+      "mean": 0.30666666666666664,
+      "sd": 0.05204164998665331,
+      "cv_pct": 16.970103256517387
+    },
+    "org.g6.auc_log_tokens": {
+      "per_seed": [
+        5.53241337661946,
+        5.562854589356916,
+        5.52293986909182
+      ],
+      "mean": 5.539402611689399,
+      "sd": 0.020855054030315068,
+      "cv_pct": 0.3764856157287821
+    },
+    "org.g6.tokens_to_threshold": {
+      "per_seed": [
+        1000000000000000.0,
+        1000000000000000.0,
+        1000000000000000.0
+      ],
+      "mean": 1000000000000000.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    },
+    "org.g7.reasoning_throughput": {
+      "per_seed": [
+        67.66990423606359,
+        53.04419667590939,
+        60.38223795172075
+      ],
+      "mean": 60.36544628789791,
+      "sd": 7.312868238849129,
+      "cv_pct": 12.114328127339988
+    },
+    "org.g7.state_bytes_per_token_32k": {
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "sd": 0.0,
+      "cv_pct": null
+    },
+    "org.g7.throughput_toks_s": {
+      "per_seed": [
+        113.3077466278274,
+        119.34944252079612,
+        114.40845085589194
+      ],
+      "mean": 115.68854666817182,
+      "sd": 3.217841867190047,
+      "cv_pct": 2.7814696958893843
+    },
+    "org.g8.loss_spike_score": {
+      "per_seed": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mean": 1.0,
+      "sd": 0.0,
+      "cv_pct": 0.0
+    }
+  },
+  "verdict": {
+    "continuous_g1_ranking": "MEANINGFUL: sigma_seed(bits_per_byte_prose)=0.0123 bpb < the 0.02-nat plateau the competition must resolve",
+    "significance_gated_emission_pr168": "NOT YET SAFE: binary gates flip on seed (G3 floor); and this sigma is a reduced-budget lower bound with no measured inter-architecture gap to compare against"
+  },
+  "pods": {
+    "rented_total": 6,
+    "remaining_active": 0,
+    "approx_cost_usd": 13.0,
+    "ceiling_pod_runs": 8,
+    "orphan_terminated": "prism-11ff5c042c6f / fcea756d-3880-4520-8783-fd42e9e8858f"
+  }
+}

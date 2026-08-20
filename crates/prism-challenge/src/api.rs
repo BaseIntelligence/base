@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use submission_gating::{infra_resubmit_allowed, GatingState, GatingStore, MetagraphCache};
+use submission_gating::{resubmit_allowed, GatingState, GatingStore, MetagraphCache};
 
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
@@ -158,7 +158,7 @@ async fn gate_one_max(
     if let Some(g) = &st.gating {
         match g.get(challenge, hotkey).await {
             Ok(Some(row))
-                if row.state != GatingState::Open && !infra_resubmit_allowed(&row, now_ms()) =>
+                if row.state != GatingState::Open && !resubmit_allowed(&row, now_ms()) =>
             {
                 return Err(json_err(
                     StatusCode::CONFLICT,
@@ -551,7 +551,7 @@ async fn get_jobs(State(st): State<Arc<AppState>>) -> Response {
 }
 
 async fn get_recipe() -> impl IntoResponse {
-    Json(prism_recipe::descriptor())
+    Json(prism_pipeline::recipe_descriptor_json())
 }
 
 async fn get_recipe_baseline() -> impl IntoResponse {
@@ -1079,9 +1079,24 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!(v["version"], "2.0.0");
-        assert_eq!(v["train_hours_cap"], 6.0);
+        assert_eq!(v["version"], "2.1.0");
+        // Tracks the constant rather than hardcoding it: the wall cap is now
+        // the anti-DoS bound under the attested-FLOPs currency, so it moves
+        // with `prism_recipe::TRAIN_HOURS_CAP` and this assertion should not
+        // need editing when it does. The currency itself is asserted below.
+        assert_eq!(v["train_hours_cap"], prism_recipe::TRAIN_HOURS_CAP);
+        assert_eq!(v["train_flops_cap"], prism_recipe::TRAIN_FLOPS_CAP);
+        assert_eq!(
+            v["min_spend_fraction"],
+            prism_recipe::MIN_SPEND_FRACTION,
+            "the underspend floor is miner-facing: it must be advertised"
+        );
         assert_eq!(v["automodel_pin_id"], prism_automodel::AUTOMODEL_PIN_ID);
+        assert_eq!(v["competition_id"], prism_store::PRISM_COMPETITION_ID);
+        assert_eq!(
+            v["scoring_generation"],
+            prism_store::PRISM_SCORING_GENERATION
+        );
         let (s, v) = call(
             app,
             Request::get("/v1/recipe/baseline")

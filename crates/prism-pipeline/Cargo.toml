@@ -14,6 +14,7 @@ bundle = { path = "../bundle" }
 challenge-agentic = { path = "../challenge-agentic" }
 hex = "0.4"
 prism-automodel = { path = "../prism-automodel" }
+prism-budget = { version = "0.1.0", path = "../prism-budget" }
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }
 prism-recipe = { path = "../prism-recipe" }

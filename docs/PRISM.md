@@ -1,15 +1,17 @@
 # PRISM challenge (Base)
 
 **challenge_id:** `prism`  
-**scoring_version:** `4` live (equal-weight **G2 public-suite accuracies** → lattice; tokenizer length no longer farms the leaf). Legacy: `2` = pure bits/token bpb (`PRISM_SCORING_MODE=shadow`); `3` = full G1–G8 composite (`composite`, anchors required). Default mode is `benchmarks`. See **v4 G2 benchmark scoring** and **v3 composite scoring** below.  
-**recipe_version:** `2.0.0` (pinned NeMo AutoModel base + miner unified diff; legacy **1.x** two-script / source-tree layouts rejected on live — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))  
+**competition_id:** `prism-v2.1` (`scoring_generation` `21`) — **new contest**. Recipe `2.0.0` / 1.x harvests are a different competition: they are **not** rescored and **cannot** win or carry leaves. `GET /v1/weights/latest` stays fail-closed **burn** (uid 0 = 100%, `sealed: false`) until the first terminated, weight-eligible v2.1 submission exists, then normal WTA/benchmarks emission.  
+**scoring_version:** `4` live (equal-weight **G2 public-suite accuracies** → lattice; tokenizer length no longer farms the leaf). Legacy: `2` = pure bits/token bpb (`PRISM_SCORING_MODE=shadow`); `3` = full G1–G8 composite (`composite`, anchors required). Default mode is `benchmarks`. See **v4 G2 benchmark scoring** and **v3 composite scoring** below. **v2.1 additions (opt-in, default-off):** emission economics (`PRISM_EMISSION_MODE`, `PRISM_OWNER_ARCH_CREDIT_BPS`) + versioned battery anchors (`PRISM_ANCHOR_VERSION`, sets v0–v3). See **v2.1 innovation-scoring additions** below.
+
+**recipe_version:** `2.1.0` (pinned NeMo AutoModel diff + 4-GPU CUDA 13/TE pod + attested dual cap + complete v3 battery; legacy **1.x** layouts rejected — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))
 **port:** `8092`  
 **emission_share_bps:** `10000` (100% prism; sum `10000`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
 
 ## What it is
 
-PRISM on Base (recipe **2.0.0**) accepts miner submissions as a **unified
+PRISM on Base (recipe **2.1.0**) accepts miner submissions as a **unified
 diff against a pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel)
 checkout** — ZIP members `automodel.base` (pin id) + `automodel.patch` (+
 optional `prism.toml`). Megatron-Bridge and free-form
@@ -200,7 +202,10 @@ absences do not carry. A manually retried + re-scored row re-enters the outbox
 no *new* outbox rows; the first epoch after recovery still includes active
 positive scores plus any backlog (seals always pin fresh epochs — stale
 bundles can never Match on-chain). Run **exactly one** prism-challenge emitter
-instance per netuid (single master topology).
+instance per netuid (single master topology). The WTA collapse is the
+default emission projection; `PRISM_EMISSION_MODE=top3` (v2.1, opt-in)
+swaps it for the top-3 decaying split — see **v2.1 innovation-scoring
+additions**.
 
 **Competition scoring (epoch-local, SCORE_MAX lattice preserved; prism
 `SCORING_VERSION` stays 2 — the competition reallocates credits inside the
@@ -211,27 +216,33 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
   rows in the epoch's competition set (fresh outbox + active carry). Credit
   attaches to `miner_hotkey` on the scored submission — the UID that **posted**
   the run — never to the architecture registry owner.
-- *architecture-owner credit*: **disabled for emission**
-  (`OWNER_ARCH_CREDIT_ENABLED = false` in `prism-registry`). Arch ownership
-  still exists for top-model / publish bookkeeping, but it must **not** divert
-  Prism weight. Do not re-enable without an explicit product change.
+- *architecture-owner credit*: the legacy pre-WTA path stays **disabled**
+  (`OWNER_ARCH_CREDIT_ENABLED = false` in `prism-registry`; do not flip).
+  Arch ownership still exists for top-model / publish bookkeeping. The
+  sanctioned owner-credit mechanism is the **v2.1 post-collapse split**
+  (`PRISM_OWNER_ARCH_CREDIT_BPS`, default 0 — see **v2.1
+  innovation-scoring additions**), which redistributes only the winner's
+  own leaf and cannot re-route emission to off-metagraph owners.
 - *per-hotkey credit*: **own score only** (best-BPB submitter). `Score(0)`
   rows (cheat/copy-gate) never win; hotkeys whose rows are all `NoScore` keep
   their absence.
 - *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
   Prism's emission share (50% of the subnet) goes entirely to that **submitter**
   (best BPB → that submission's miner UID).
-- *Recipe 2.0 / AutoModel weight eligibility* (fail-closed): only submissions
-  with recipe major ≥ 2, an `automodel@…` pin signal, or a packed tree
-  containing `.prism/automodel.patch` may carry into the competition set or
-  win WTA. Legacy 1.x positives remain in Postgres / site FE history but are
-  treated as `Score(0)` for emission; if every positive score is ineligible,
-  the epoch projects all-zero (burn / hold) — never emit Prism share to 1.x.
+- *Recipe 2.1 / `prism-v2.1` weight eligibility* (fail-closed): only harvests
+  whose metrics carry recipe `2.1.x`, `competition_id=prism-v2.1`, or
+  `scoring_generation=21` may enter `emission_leaves` as winners or carry.
+  Recipe `2.0.0`, AutoModel-pin-only rows, and 1.x trees are the **previous
+  contest** — they stay in Postgres / site history as `Score(0)` for
+  emission and are never retroactively rescored. Empty registry or
+  old-generation-only positives project all-zero (gateway burn / hold)
+  until the first eligible v2.1 termination. See **v2.1 competition
+  cutover** in [`runbooks/prism-enable-lium-and-emission.md`](runbooks/prism-enable-lium-and-emission.md).
 
 **Top-model publish + secure receive.** The master tracks the global best
 **lattice score** (G2 equal-weight accuracies under `scoring_version` 4 —
-never min-bpb alone) across **weight-eligible** (recipe 2.0 / AutoModel)
-scored submissions. After a successful Lium eval it
+never min-bpb alone) across **weight-eligible** (recipe 2.1 / `prism-v2.1`)
+  scored submissions. After a successful Lium eval it
 **pulls** `checkpoint.pt` from the pod over SSH (master-initiated; the pod
 never pushes) and stages it through the secure receive hook into
 `$PRISM_ARTIFACT_DIR/<submission_id>/` **before** terminate. Staging
@@ -251,10 +262,11 @@ weights (embed ↔ lm_head) but the pickle can materialize each state_dict key,
 so the budget includes a 2× tying factor on top of 1.5× pickle/tar overhead.
 Harvest uses the harness-measured `n_params` from `METRICS_JSON`; when
 missing (older harness), it falls back to `prism_recipe::max_params()`
-(350M, or `PRISM_TEST_MAX_PARAMS` in staging). Admin
+(1B, or `PRISM_TEST_MAX_PARAMS` in staging). Admin
 `POST /v1/admin/artifacts/{id}/receive` resolves `n_params` from the
 submission store, else requires `X-Prism-N-Params` (fail-closed if
-unknown). HTTP body ceiling is recipe-max × 12 (~3.91 GiB); the per-receive
+unknown). HTTP body ceiling is recipe-max × 12 (~11.18 GiB at the 1B cap);
+the per-receive
 check is tighter when measured params are known. Oversized payloads are
 refused **before** writing.
 
@@ -331,7 +343,7 @@ not shadow bpb.
 **Source-tree submissions (v3 / recipe 1.3–1.4 historical).** Under recipe
 ≤ 1.4.0, miners could submit a full source tree as a ZIP (`zip_base64` or
 `application/zip` with `prism.toml`; `train.py` / `training.py` entry) with
-optional `kernels/`. **Recipe 2.0.0 live intake rejects that layout** in
+optional `kernels/`. **Recipe ≥2.0 live intake rejects that layout** in
 favor of `automodel.base` + `automodel.patch` (see
 [`PRISM_RECIPE.md`](PRISM_RECIPE.md)).
 
@@ -347,15 +359,18 @@ Lium; a local dir on Sim). The eval phase starts as a fresh subprocess with
 reading). No `.ready` within the wait budget → fail-closed error, **never**
 a silent downgrade to embedded `public_dev` fixtures. Relevant env:
 `PRISM_PHASE`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED`,
-`PRISM_EVAL_TIER`.
+`PRISM_EVAL_TIER`. Every generated JSONL asset is hard-capped at **400 rows
+per file**; the cap applies to downloaded rows and copied private pools.
 
 **Eval tiers (fail-closed staging).** With staged assets the battery
 defaults to `eval_tier=public` (full G1 domains + fresh FineWeb dump + G2/G5
 from public HF — held-out, not secret; build via
-`harness/eval/build_public_pack.py`). Optional `PRISM_EVAL_TIER=private`
-keeps secret contamination mirrors. Without staged assets the run uses
-`public_dev` (tiny embedded fixtures). The realized tier is recorded on the
-run (`eval_tier`). Overnight operator recipe:
+`harness/eval/build_public_pack.py`). The private path is
+`PACK_TIER=private PRISM_EVAL_ASSETS_DIR=<output> python3
+harness/eval/build_private_pack.py`; its `tier.json` makes the staged run
+`private` and enables live public-vs-private mirror evidence. Without staged
+assets the run uses `public_dev` (tiny embedded fixtures). The realized tier
+is recorded on the run (`eval_tier`). Overnight operator recipe:
 [`docs/runbooks/prism-overnight-battery.md`](runbooks/prism-overnight-battery.md).
 
 **The G1–G8 battery** (harness `eval/` package, all organizer-measured —
@@ -363,14 +378,20 @@ Zone A `org.*` metrics):
 
 | Group | Axis | Weight |
 |-------|------|--------|
-| G1 | intrinsic fit (tokenizer-neutral `org.g1.bits_per_byte_*` + debug per-token `g1.bpb.*`) | 0.25 |
+| G1 | intrinsic fit (tokenizer-neutral `org.g1.bits_per_byte_*` including prose/math/fresh-crawl — aliases from news/crawl or chance floor if a pack omitted those slices; debug per-token `g1.bpb.*`) | 0.25 |
 | G2 | commonsense/reading 0-shot core (LAMBADA, HellaSwag, PIQA, ARC, Winogrande, BoolQ, OBQA) | 0.15 |
 | G3 | retrieval/associative recall (MQAR, copying, induction, passkey — procedural, memorization-proof) | 0.10 |
 | G4 | reasoning at small scale (S5 permutations, arithmetic, ProofWriter, Dyck-k, modular, K&K) | 0.15 |
 | G5 | long-context **pretrain-only** (RULER + BABILong + LongBench-v2 MCQ + HELMET RAG few-shot base; lengths in miner-tokenizer tokens; `org.g5.lstar`) — no IFT/chat/judge | 0.15 |
-| G6 | sample efficiency from the train-phase probe curve (AUC over log-tokens, tokens-to-threshold) | 0.075 |
-| G7 | inference efficiency (TTFT/TPOT/throughput, state card, joules/token) | 0.075 |
+| G6 | sample efficiency from organizer-owned train probes (v3: AUC over log-bytes, bytes-to-bpb threshold, bpb at half of the FLOPs cap) | 0.075 |
+| G7 | inference efficiency (32k TTFT/TPOT/state, throughput, joules/token, reasoning throughput) | 0.075 |
 | G8 | training stability + µP LR-transfer | 0.05 |
+
+**G8 `org.g8.loss_spike_score`.** Derived from the parent telemetry series
+(NaN fraction + MAD spike rate). Empty series (typical when DDP workers
+never reported) still emits the key as a stub (no observed NaNs / spikes)
+so completeness is not blocked; ingest the worker sidecar to score spikes
+for real. µP keys are independent.
 
 **G8 `org.g8.mup_lr_stability`.** Rollup of the µP width×LR micro-sweep:
 `1/(1+|log2(best_lr_wide/best_lr_base)|)` when the sweep converges; **0.0
@@ -379,9 +400,105 @@ knob unsupported / budget cuts it short (so the G8 composite always sees
 the key after a real sweep). Tiny-caps test skips omit the key. The sweep
 builds from a **fixed small width/depth probe** (`d_model=128`, `n_layer=4`,
 … — see harness `eval/g8_stability.py`), **not** the scored submission's
-full geometry: 4× of a near-cap 350M model is unbuildable on the eval GPU.
+full geometry: 4× of a near-cap 1B model is unbuildable on the eval GPU.
 `build_model` must honor top-level / `arch` width-depth overrides **and**
 `ctx["prism_width_multiplier"]` (reference baselines do).
+
+**G6 censoring is fail-closed.** `org.g6.tokens_to_threshold` is
+**lower-better** (anchor `cap < reference`). When the probe curve never
+reaches the CE level the curve is *right-censored* — the run did not
+demonstrate that level at any token count — so the harness emits
+`eval.common`-side `CENSORED_TOKENS` (`1e15`, normalizes to the **0.0**
+floor) instead of the small `tokens_seen` the run stopped at. Emitting the
+raw endpoint made *training less* score **1.0** (a censored `1e8` under
+`reference 2e9 / cap 5e8`), which was directly exploitable. The raw
+endpoint stays observable as `g6.tokens_to_ce4.0.observed`, and
+`g6.tokens_to_ce*.censored` still flags the condition. Same convention as
+`org.g8.mup_lr_stability`: a real measurement that failed emits the worst
+value rather than being omitted, so the group stays complete.
+`org.g6.auc_log_tokens` is also lower-better (it is a **mean cross-entropy
+per decade of tokens**); anchor set **v2** fixes the v0/v1 anchor that
+declared it higher-better over `[0.5, 0.95]`, where every plausible run
+clipped to 1.0 and half of G6's weight was a constant. It is CE per token
+of the submitted tokenizer, so — unlike `org.g1.bits_per_byte_*` — it is
+not tokenizer-neutral; a bits/byte form needs byte counts on the probe
+curve. Anchor v3 supersedes it with tokenizer-neutral
+`org.g6.auc_log_bytes`, adds right-censored
+`org.g6.bytes_to_bpb_threshold`, and samples
+`org.g6.bpb_at_half_budget` at `0.5 × PRISM_TRAIN_FLOPS_CAP`. Probe cadence
+is owned by accounted stream batches, not miner telemetry calls; forced
+pre/post boundaries make the curve total even when an external DDP trainer
+reports tokens itself. Spawned DDP workers do not share the parent
+`prism_telemetry` shim: rank 0 must write `dense_1b_ddp/telemetry.json` (or
+`prism_ddp/telemetry.json`); `train_v3` ingests it after `train()` so
+`report_count` / `probe_curve` are not left empty. An empty curve still
+emits fail-closed `org.g6.auc_log_tokens` and `org.g6.tokens_to_threshold`
+(chance AUC + censored tokens) instead of omitting the keys.
+
+**G7 completeness is fail-closed.** A model that cannot run the 32k grid,
+OOMs, is predicted to OOM (skip without allocating 16k/32k after a smaller
+length failed — a hard OOM can kill the eval process), exhausts the G7
+budget, or lacks GPU power telemetry still emits every anchored G7 key
+(`org.g7.ttft_ms_32k`, `org.g7.tpot_ms_32k`, …) with an explicit worst-case
+censored value plus `g7.anchor_censored` / `*.skip_oom` / `*.fail_closed`;
+it does not become structurally `MissingMetric`.
+Capable GPU runs replace those sentinels with measured 32k TTFT/TPOT/state,
+board joules/token, saturated throughput, and
+`org.g7.reasoning_throughput`.
+
+**Bootstrap clusters are per item.** The clustered bootstrap resamples
+`clusters` with replacement, so a metric with one cluster contributes
+exactly **zero** variance. G1 records per **document** (`<tag>#<i>`) and G2
+per **row** (`g2/<task>#<i>`), matching the per-row convention
+`rollup.build_mirrors` already used; G3/G4 use the generator's per-item
+variant id and G5 uses `<probe>@<length>`. Previously G1/G2 used a constant
+cluster id per task/domain, so **40% of composite weight** (G1 0.25 + G2
+0.15) added no variance: `SE(C)` was understated, the payable LCB
+`C − 1.645·SE` inflated, and the `ci_half_width_delta` gate vacuous on the
+two heaviest axes. Fixing it **lowers** LCB/lattice for a noisy submission
+and can now make a genuinely noisy G1/G2 fail the CI gate — that gate is
+supposed to bind.
+
+**Eval time budget (internally consistent).** One global battery budget,
+with per-group ceilings as fractional **shares** of it, so the ceilings
+cannot over-subscribe the phase that contains them:
+
+| Knob | Default | Note |
+|------|---------|------|
+| `PRISM_EVAL_BATTERY_BUDGET_S` | `3600` (1.0 h) | Global battery ceiling; group shares sum to exactly 1.0 |
+| `PRISM_EVAL_<GROUP>_BUDGET_S` | share of the above | Per-group escape hatch (**can** over-subscribe; operator debugging only) |
+| `PRISM_EVAL_TIMEOUT_S` | `5400` (1.5 h) | Eval phase = model load + battery + rollup + scoring |
+| `POD_LIFETIME_HOURS_CAP` | `7.0` | Must contain build 900 + train (4 h + 120) + checkpoint 1800 + eval 5400 ≈ **6.28 h** |
+
+Group shares are weighted toward the expensive and the discriminative
+groups: G5 0.29, G2 0.22, G7 0.12, G8 0.09, G3/G4 0.08, G1 0.05, mirror
+0.07. G8 keeps **more** than its old 300 s ceiling because it feeds a
+lexicographic gate. These ceilings are *smaller* than the old per-group
+numbers (G1–G4 1800 each, G5 3600, G7 2400, G8 300, mirror 600 = 14 100 s
+≈ 3.92 h) but the old set was never simultaneously reachable: it sat inside
+a 3 h phase inside a 7 h pod that the train phase alone nearly exhausted,
+so the battery truncated group-by-group or was killed outright. Truncation
+is now **loud** — the battery blob carries
+`budget: {battery_budget_s, group_budgets_s, truncated, partial_groups}`,
+aggregating the per-group `*.partial` flags that were previously buried in
+the group view.
+
+**G2 item caps are per task.** `PRISM_EVAL_G2_CAP` (default **200**) is the
+base; the tasks that actually separate two submissions at this operating
+point — **LAMBADA** (scored strict, chance ~0), **HellaSwag**, **PIQA**,
+**ARC-easy** — may request a higher `PRISM_EVAL_G2_CAP_USABLE`, but the
+pack governance cap is **400 rows/file**, so a built pack cannot supply more
+than 400. Winogrande
+and OpenBookQA sit *at* chance and ARC-challenge / BoolQ at or below their
+floors at ≤1B/6h, so extra items there buy no discrimination and would
+spend budget for nothing; they keep 200. **No weight change** — all eight
+tasks stay in v0–v2; v3 explicitly measures only the four discriminative
+tasks via `PRISM_EVAL_G2_TASKS=lambada,hellaswag,piqa,arc_easy` while keeping
+the G2 group weight unchanged. At most 400 rows are packed for any one G2 task.
+The builder clamps `G1_N`, `G2_N`, `G2_N_USABLE`, and `G5_QA_N` and also
+truncates copied JSONL trees to the same limit. Evidence:
+[`docs/spikes/prism-v3/research/14-scaling-laws-and-diagnostics.md`](spikes/prism-v3/research/14-scaling-laws-and-diagnostics.md)
+§4.4 (non-normative).
 
 **G5 scored keys (recipe ≥ 1.4.0).** The battery is an evaluation of
 **pretrained base LMs** — completion / few-shot base prompts, short EM or
@@ -408,7 +525,10 @@ normalized sub-metrics → `g_k` (G5 uses the unequal internal weights above;
 other groups default equal weight 1 — a single zero sub-metric lowers `g_k`
 proportionally, it does **not** zero the whole group); mirror-gap penalty
 `max(0, (x_public − x_mirror) − 0.05)` deducted from G2/G4/G5; lexicographic
-gates (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget caps `350M` params / `6h`, CI
+gates (`g3 ≥ 0.25` **disarmed** — Phase 0 showed the placeholder floor
+flipping on training seed alone via 1–2-cluster G3 probes; re-arm only
+after item counts stabilize, see `G3_HARD_FLOOR_ARMED`; `g8 ≥ 0.5`,
+budget caps `1B` params / `5h` wall + `3.0e18` attested FLOPs, CI
 half-width ≤ `0.05`); **across groups**: weighted **geometric** mean
 `C = ∏ g_k^{w_k}` (a **group** score of exactly 0 collapses `C` to 0 — that
 is intentional no-compensation; individual G5 zeros such as
@@ -445,11 +565,19 @@ kernel deltas. The plans are returned as JSON (operator-triggered
 execution via the normal intake); swapped cells are gated on the
 hidden-shape correctness suite before scoring.
 
-**Parameter cap (v3 semantics).** A model over `max_params` is a
-miner-attributable breach machine-verified at build: the harness emits a
-terminal `CAP_EXCEEDED` payload and the orchestrator finalizes
-`Score(0)` / `rejected` — never a measured score, no review/agentic spend,
-no auto-retry.
+**Parameter range (v3 / recipe 2.1 semantics).** Total unique parameters
+(tied embeddings counted once) must satisfy
+`850_000_000 ≤ n_params ≤ 1_000_000_000` (`MIN_PARAMS` / `MAX_PARAMS`).
+A model over the cap **or** under the floor is a miner-attributable
+breach machine-verified at build: the harness emits a terminal
+`CAP_EXCEEDED` payload (`floor_missed` when under the floor) and the
+orchestrator finalizes `Score(0)` / `rejected` — never a measured score,
+no review/agentic spend, no auto-retry. v0/v1/v2 anchor JSON stays
+byte-frozen without `min_params`; the 850M floor lives on **v3** only
+(and on the recipe descriptor). The 215M LoopMoE example is invalid for
+v2.1 submit. The miner reference is a **dense ~975M** transformer
+([`docs/external-miner/examples/dense-1b/`](external-miner/examples/dense-1b/));
+MoE is allowed as a miner experiment but is not the default pack.
 
 **Migration note.** No chain-facing change in `shadow`: scoring stays
 `scoring_version 2` and the v2 number is bit-identical. The flip to
@@ -470,6 +598,372 @@ explicit scoring-version / governance change — tracked as a follow-up
 leaf + public board primary sort together, or wait for `composite`).
 Public UI should prefer G2 benches / group scores as the hero display
 while shadow emissions remain bpb.
+
+## v2.1 innovation-scoring additions (versioned, opt-in, default-off)
+
+Motivation: v2 pure-bpb WTA is a robust anti-cheat tournament but a poor
+multi-axis innovation detector — it cannot reward scaling behavior, it
+structurally penalizes adaptive-compute (looped) architectures via raw
+G7, and it pays exploration nothing (WTA + 1-max). v2.1 closes those
+three gaps as independent, individually-gated additions. **Every knob
+defaults to the historical bit-identical behavior**; each flip is a
+governance action like the `composite` mode flip.
+
+| Knob | Values | Default | Effect |
+|------|--------|---------|--------|
+| `PRISM_EMISSION_MODE` | `wta` \| `top3` (\| `sig`, see v3 below) | `wta` | `top3`: the top three positive credits keep 100 % / 50 % / 25 % of their own lattice score (ranks by the WTA tie convention; a scaled positive never rounds below 1); everything else is zeroed. Funds exploration behind the champion. |
+| `PRISM_OWNER_ARCH_CREDIT_BPS` | `0..=5000` | `0` | Post-collapse split of the **winner's own leaf**: the registry owner of the winning architecture receives `score × bps/10000`, the winner keeps the rest. No-op when the winner is the owner, the winning row has no published `arch_id`, or the cut rounds to 0. An off-metagraph owner's leaf is dropped by the D24 expected-set filter (cut burns — the legacy lex-tie theft vector stays closed). This — not flipping `OWNER_ARCH_CREDIT_ENABLED` (which stays `false`/dead) — is the sanctioned owner-credit path. |
+| `PRISM_ANCHOR_VERSION` | `0` \| `1` \| `2` \| `3` | `0` | Selects the composite anchor set. v1 adds two battery keys; v2 swaps saturated MC LAMBADA for strict; v3 adds byte/compute G6, retires four pinned G2 tasks, and adds dual-cap gates. Unknown values fall back to v0 with a warning. v0 remains byte-frozen. |
+
+The v3 harness now emits every scored G1–G8 key declared by `anchors/v3.json`
+(including G1 code/prose/math/fresh crawl/key-token, all censored-or-measured
+32k G7 cards + reasoning throughput, and G8 µP). This fixes structural
+`MissingMetric` ineligibility. **It does not activate v3:** all numeric v3
+anchors remain `placeholder`; keep `PRISM_ANCHOR_VERSION=0` and
+`PRISM_SCORING_MODE=benchmarks` on live `:28092` until reference calibration,
+hash pre-registration, and an announced governance ceremony.
+
+v3 measurement/operator knobs (all non-secret and recorded or allowlisted
+into the pod where applicable):
+
+| Knob | Production value / meaning |
+|------|----------------------------|
+| `PRISM_FLOW` | `v3`; two-phase train/checkpoint/eval |
+| `PRISM_TRAIN_FLOPS_CAP` | organizer constant `3.0e18`; first of FLOPs or wall/steps binds |
+| `PRISM_MIN_SPEND_FRACTION` | `0.5`; voluntary under-spend only—`steps`, `wall`, and `flops` protocol stops are exempt |
+| `PRISM_PROBE_EVERY` / `PRISM_PROBE_TIME_BUDGET_S` | organizer batch cadence and per-probe time ceiling |
+| `PRISM_FLOPS_PROBE_SAMPLES` / `PRISM_FLOPS_PROBE_CV_MAX` / `PRISM_FLOPS_ANALYTIC_GAP_MAX` / `PRISM_FLOPS_PROBE_SKIP` | attestation robustness thresholds. `FlopCounterMode` OOM halves probe rows; if a single row still OOM (LoopMoE), the analytic graph arms the FLOPs cap (`estimator=analytic_fallback`). Graphs ≥400M unique params skip the full-graph probe *before* it pins GPU0 (~31/32 GiB) so DDP spawn can load. The dual cap never silently disarms. |
+| `PRISM_G6_BPB_THRESHOLD` | G6 bytes-to-bpb target (default `1.5`) |
+| `PRISM_EVAL_G2_TASKS` | v3 only: `lambada,hellaswag,piqa,arc_easy`; do not use with v0–v2 |
+| `PRISM_EVAL_BATTERY_BUDGET_S` | global battery cap (default `3600`) |
+| `PRISM_POD_GPU_COUNT` | default `1` (1B: 1× NVIDIA B200). Explicit env fallbacks: `4` → 4×5090, `2`/`8` → RTX PRO 6000 |
+| `PRISM_POD_GPU_NAME` | optional comma-separated offer needles (default `NVIDIA B200`/`B200`; fallbacks `RTX 5090` or `RTX PRO 6000`) |
+| `PRISM_POD_IMAGE_REF` | optional staged pod image, required form `repository@sha256:<64 lowercase hex>` |
+| `PRISM_POD_IMAGE_TAG` | Lium pull locator (default `v10-cuda13-te`); never accepted without the separate digest pin |
+| `PRISM_POD_DOCKER_CREDENTIAL_ID` | non-secret Lium reference required only when creating the private DigitalOcean registry template |
+
+**Anchor set v1 battery keys** (emitted by the harness on every real run;
+inert under v0 since unknown `org.*` keys are ignored):
+
+- `org.g7.reasoning_throughput` — mean G4 accuracy × decode toks/s
+  (`efficiency_log_ratio`). Compute-normalized reasoning: a model that
+  "thinks" via loops/extra depth is credited for its reasoning gain in the
+  same key that charges its inference cost, instead of being structurally
+  penalized by raw G7. Absent when either side was not measured (never
+  fabricated).
+- `org.g8.mup_scaling_slope` — local scaling exponent
+  `(ln L_base − ln L_wide)/(ln N_wide − ln N_base)` probed on the existing
+  µP 1×/4× width sweep, clamped ≥ 0 (`efficiency_log_ratio`). Rewards
+  architectures whose quality improves fastest with scale — the Tier-1
+  "slope" signal at zero extra pod cost. Same fail-closed contract as
+  `org.g8.mup_lr_stability`: 0.0 after a failed real sweep, omitted on
+  tiny-caps skips.
+
+v1 anchors ship as placeholders (`prism-recipe/anchors/v1.json`,
+embedded + hash-committed like v0): measure on the E6 baselines and
+pre-register before selecting `PRISM_ANCHOR_VERSION=1` for scoring.
+Emission plumbing: `prism_registry::emission_leaves` (competition credits
+→ configured collapse → optional owner split) — with default knobs it is
+bit-identical to `apply_wta(competition_scores(..))`, enforced by test.
+
+**Anchor set v2 (v2.2): LAMBADA strict.** The G2 LAMBADA item was scored
+as a 4-way MC over **random-word distractors** — but the gold word is
+uniquely determined by the long context (that is the design of LAMBADA),
+so the MC form saturates and discriminates nothing: **0.955** for a 112M/1h
+miner model and **0.985** for the GPT-2 Large reference on the harness
+protocol (literature-strict GPT-2 Large is ~0.52–0.60). v2 anchors
+(`prism-recipe/anchors/v2.json`) replace `org.g2.lambada_acc` with
+`org.g2.lambada_strict_acc`: **unconstrained greedy last-word exact match**
+over the full vocabulary (`g2.lambada_strict.acc`, chance ≈ 0, expected
+~0.10–0.35 at the reference 6h operating point — real headroom and spread;
+the placeholder must be re-measured at the 1B cap before an anchor flip).
+Same `lambada.jsonl` asset (the gold word is recovered from
+`choices[gold]`) — no eval-pack rebuild; the harness emits **both** keys so
+v0/v1 scoring is bit-identical. The MC key stays outside v2 (a saturated
+metric only dilutes G2 weight). Ops note: re-measure the GPT-2 Large
+public reference row under the strict protocol before selecting
+`PRISM_ANCHOR_VERSION=2` (the published HF top-model card's LAMBADA
+column reflects the old MC protocol until then).
+
+## v3 significance-gated emission (versioned, opt-in, default-off)
+
+**Status: implemented, default-off, and NOT to be enabled before `σ_seed` is
+measured** (see *Sequencing constraint* below — this is a hard prerequisite,
+not a recommendation).
+
+Motivation, stated as arithmetic rather than fairness: under WTA on point
+estimates a **functional clone of the champion has identical true quality**, so
+by symmetry of the measurement noise it wins the entire share with probability
+≈ 0.5 — expected value ≈ **50 % of Prism's emission for the price of one pod**.
+That makes the copy detector load-bearing, and semantics-preserving obfuscation
+is measured to defeat detectors of that class. Requiring a challenger to clear a
+one-sided significance test cuts a true-Δ-zero clone's expectation to **< 5 %**
+*mechanically*, with no detector involved. Significance gating protects the
+**champion share**; it does not protect the graded band, where a statistical tie
+lands high by construction, so the copy gate remains necessary (SN9 measured
+exactly this: epsilon bounded copying at the top slot while copies still
+populated the leaderboard).
+
+**The knob.**
+
+| Knob | Values | Default | Effect |
+|------|--------|---------|--------|
+| `PRISM_EMISSION_MODE` | `wta` \| `top3` \| `sig` | `wta` | `sig`: the significance-gated collapse below. Unknown values (including typos and case variants) are `wta`, fail-safe. |
+| `PRISM_EVAL_REQUIRE_PRIVATE` | `0` \| `1` | `0` | `1` marks a run with no contamination evidence as not scoreable (`prism_competition::contamination`). **Implied by `PRISM_EMISSION_MODE=sig`**, which additionally fail-closes at emission regardless of this knob (below). |
+
+**The rule** (`crates/prism-competition`: `paired.rs`, `frontier.rs`, `sig.rs`,
+`rerun.rs`; wired through `prism_registry::emission_leaves_with` →
+`prism_emit::build_epoch_leaves_with`):
+
+*Displacement test — paired, per-example, on the identical slice.* For champion
+`A` and challenger `B` scored on the same private slice, per eval item
+`d_i = better(A_i) − better(B_i)` in **absolute metric units**:
+
+```text
+DECIDED(i)  iff |d_i| >= 0.01          # dead zone, absolute (bits/byte, accuracy)
+win_rate     = #{i : d_i > 0 and DECIDED(i)} / #DECIDED
+B displaces A iff  LCB_99%(win_rate) >= 0.55     # paired bootstrap, 10 000 resamples, fixed seed
+               AND mean_gap           >= 0.01     # absolute, not relative
+               AND #DECIDED           >= 100      # sized so SE(win_rate) <= ~5 %
+```
+
+`#DECIDED >= 100` is sized from the criterion, not chosen: for a proportion
+`SE = √(p(1−p)/n)`, so at the `p = 0.55` bar n=100 gives **4.97 %** while n=30
+would give **9.1 %** — nearly twice the criterion. A thin slice produces a wide
+bootstrap, and this floor is what stops a verdict being read off one; the gate is
+deliberately stricter when it has less to go on. It makes displacement harder,
+which is the incumbent-squatting risk — mitigated by the tenure-decayed
+*economic* floor and the champion re-run, never by weakening the statistical bar.
+
+Margins are **absolute, never relative**: a difference of D nats is D nats of
+evidence whether the loss is 0.02 or 2.0, so a relative margin collapses exactly
+where the metric saturates — which is where a converging field spends most of its
+time. The win-rate bar is **0.55 and deliberately not higher**: a genuinely
+better architecture with wide per-example spread sits near 0.55, so a higher bar
+selects for **low-variance submissions rather than good ones**. The bootstrap
+seed is a pinned constant (`20260816`) because leaves are consensus-critical —
+identical inputs must always produce identical leaves, and anyone re-scoring a
+closed round must reach the same verdict.
+
+*Two distinct bars.* Clearing the test **transfers the crown**; a strictly larger
+mean gap (`PREMIUM_GAP = 0.02`) is required to earn *above* the champion floor.
+"Who is champion" and "how much the champion is paid" are separate questions, so
+a marginal-but-real win does not unlock the full share.
+
+*What the store retains, and the one limit that follows.* `prism_eval_metric`
+persists each `org.*` metric with its **per-cluster values** for every scored run,
+and the harness records one cluster id per item (`g2/<task>#<i>`, `mqar/…`,
+`prose#<i>`; G1 domains per document). So per-example data **is** retained for
+both sides, including past champions — a genuine paired test needs no new state,
+and `prism_competition::evidence` builds it from those rows. But cluster ids are
+**positional**, so they align across two runs only if both scored the *same asset
+slice*. Under a rotating private slice an incumbent measured on the previous
+round's slice shares no real item with the challenger, and the ids may collide
+numerically while referring to different items. `evidence` therefore requires
+`slice_id` equality and **refuses** otherwise (`PairedRefusal::SliceMismatch`); a
+refusal means the champion holds. There is deliberately no fallback that pairs
+aggregates — comparing two independently-bootstrapped levels is exactly what the
+paired design exists to avoid. This is what makes the champion re-run
+load-bearing rather than optional: re-measuring the incumbent on the challenger's
+slice is what produces two same-slice series.
+
+*Allocation of Prism's share.*
+
+| Tier | Share | Recipient |
+|------|-------|-----------|
+| Champion | **60 %** (floor **50 %** when sub-premium; the difference burns) | Incumbent, or the challenger that displaced it |
+| Band | **15 / 10 / 5 %** | Ranks 2–4 among gate-passing credits |
+| Exploration | **10 %**, ≤5 slots, split equally | Gate-passing entries holding ≥1 per-axis frontier (the champion excluded; band members are eligible — the case this exists for is "3rd on the composite, 1st on G3") |
+| Remainder | **burns** | — |
+
+*Tenure decays the economic floor only.* The champion floor decays linearly
+(~0.15 %/day, bounded at 80 % of base) so a hoarder is progressively easier to
+displace. **The statistical term never decays** — the dead zone and win-rate bar
+are truth conditions, not policy preferences, and decaying them would knowingly
+crown champions on noise.
+
+*Weight EMA and tail floor.* The emitted share vector is smoothed
+(`α = 0.5`) so a single anomalous round cannot swing emission, and shares at or
+below 100 bps are zeroed rather than paid, so unresolvable rank differences are
+not paid at all. The EMA is a *temporal* smoother and the paired test a
+*statistical* one; they compose and neither substitutes for the other.
+
+*Burn is real, and requires a leaf.* Per [`BUNDLE_SPEC`](BUNDLE_SPEC.md) §6.4
+each challenge's positive leaves are **normalized to sum to 1** before scaling by
+the challenge's share — so a "60 % champion" leaf set with nothing else in it
+would still deliver 100 % of Prism's share to the champion, silently
+redistributing the remainder rather than burning it. `sig` mode therefore emits
+the unallocated remainder as a leaf for the expected participant at **uid 0**,
+which §6.5 drops *and burns*. Fail-safe: if uid 0 is absent from the expected set
+or already carries a positive competition credit, the burn leaf is skipped and
+the remainder dilutes instead — the one case where burn degrades, and it is
+logged rather than hidden.
+
+**Per-axis elite archive (why not a novelty score).** The exploration pool pays
+submissions holding the best measured value on any group `g1..g8`. Nobody has
+made "pay for measured difference" work — Numerai marketed *being different pays*
+and implemented *marginal contribution*, and the component that was exploited was
+the rank-shaped bonus. A novelty distance is faked by renaming variables; being
+best at associative recall is not. The descriptor cells are **operator-owned**:
+a miner cannot invent a ninth axis to farm. The archive is recomputed from stored
+per-group measurements and holds no state a miner can write.
+
+**Champion re-runs ("prove it again").** `prism-emit` carries a champion's
+positive score forward, and by the winner's curse that carried number is an
+optimistic draw — so an incumbent is defended by an inflated figure and any
+anchor-overfit is never re-tested after being paid. `rerun.rs` schedules an
+**eval-only** re-measurement on each fresh private slice at an **unannounced**
+time: the decision is a keyed hash of `(epoch, slice_id, champion)`, so a miner
+cannot predict it (the slice id is unpublished until the round closes) while
+anyone can recompute it afterwards and confirm the operator neither skipped nor
+fabricated an audit. A drop beyond `1.645·SE(Δ_paired)` costs tenure; a failed
+measurement never does. Operator-funded (~$3–8): a champion has no incentive to
+fund its own audit, and a trustworthy ranking is a public good for the subnet.
+
+**Mirror defence is now loud.** The contamination (mirror-gap) penalty is inert
+*by construction* in the `public_dev` tier — `rollup.build_mirrors` makes the run
+its own mirror, so the gap is identically 0. That was honestly labelled in a
+comment but nothing surfaced it, so a scored `public_dev` run looked
+contamination-checked when it was not. The harness now emits
+`battery.mirror_defence` with `contamination_checked`, `inert_pairs`,
+`live_pairs` and a reason string, and logs a warning when the defence is inert.
+**A zero mirror penalty in an inert run is the absence of a check, not a clean
+result.** An absent flag counts as unchecked, so an older harness cannot pass by
+silence.
+
+The policy half is `prism_competition::contamination`. Two levels, because they
+have different blast radii:
+
+- **`PRISM_EVAL_REQUIRE_PRIVATE=1`** marks an unchecked run not scoreable
+  (`scoreable()`). Refusing to *persist* an unchecked composite is strictly
+  stronger — it also keeps the number out of the carry set and off the public
+  leaderboard — and the one-line insert for `finalize_composite` is recorded in
+  `contamination::FINALIZE_GATE_PATCH`. It is **not** wired there yet.
+- **`sig` mode fail-closes on its own, and does not wait for that.** An
+  unchecked round allocates **nothing** and burns the entire share
+  (`SigContext::contamination_checked = false`, default `false` — silence is not
+  evidence). This is the strictest posture available that does not break the
+  existing test matrix: `public_dev` is the tier CI, Sim and local-e2e all run
+  in, and every one of those runs is *supposed* to have an inert mirror because
+  no private pack is staged, so a default-on gate would fail-closed on the whole
+  test matrix rather than on a real contamination risk. Hence: **loud always,
+  refused where a protected share is at stake.** The private tier is in that
+  sense mandatory for `sig`-scored rounds — not by a separate switch, but because
+  an unchecked round pays nobody.
+
+**Sequencing constraint — why this ships off.** The clustered bootstrap measures
+**eval-item variance only**. Training-seed variance (`σ_seed`) is absent from the
+model because each submission is trained exactly once, and a seed change alone
+re-ranks NAS architectures at Kendall τ = 0.48. The lower bound is therefore
+**overconfident by construction**, and *a significance test computed on a
+provably wrong standard error is worse than honest WTA* — it lends false
+statistical authority to a biased ranking. Required order:
+
+1. Per-item bootstrap clusters on G1/G2 — **done** on this branch.
+2. **Measure `σ_seed` by baseline replication, and publish it.** ← not yet done;
+   this is the blocking prerequisite.
+3. Stage the private tier and make it mandatory for scored rounds.
+4. Then, as a governance action, select `PRISM_EMISSION_MODE=sig`.
+
+`OWNER_ARCH_CREDIT_ENABLED` stays `false` and is unaffected: rewards routed over
+a graph whose edges beneficiaries declare were farmed to >150 000 spam packages
+at tea.xyz, and Prism's token sits structurally on that side. The opt-in
+`PRISM_OWNER_ARCH_CREDIT_BPS` split above is a different mechanism and stays
+implemented, default-off.
+
+Evidence and full derivations:
+[`docs/spikes/prism-v3/research/15-incentives-and-landscape.md`](spikes/prism-v3/research/15-incentives-and-landscape.md)
+(non-normative).
+
+## Modular pod image + miner-installable dependencies (recipe-v10)
+
+Miners are no longer limited to the harness's preinstalled stack. recipe-v10
+ships a **complete CUDA 13 base image** (`prism_recipe::POD_IMAGE_REF` is the
+immutable
+`registry.digitalocean.com/basecrawl/prism-pod@sha256:fe1197…3ff88`
+reference built from
+[`deploy/prism-pod/Dockerfile`](../deploy/prism-pod/Dockerfile)) with
+PyTorch, a full build toolchain (`nvcc`, `ninja`, `build-essential`),
+**Transformer Engine** (NVFP4 training), and common accelerators — plus a
+**network-on install phase** so a submission can bring its own deps.
+
+**What a miner may ship** (a file in the submitted tree — for the AutoModel
+path, **add it at the repo root via `automodel.patch`**; slim delivery
+always keeps `requirements.txt` / `pyproject.toml`, and the harness searches
+the workdir root and `submission/`):
+
+- `requirements.txt` — `pip install -r requirements.txt`
+- `pyproject.toml` — `pip install .` (PEP 621)
+
+They install FlashAttention, `mamba-ssm`, custom Triton/CUDA kernels, etc.,
+into the image before training. A worked AutoModel example (dense ~975M,
+4-GPU ZeRO-1 + optional NVFP4) is
+[`docs/external-miner/examples/dense-1b/`](external-miner/examples/dense-1b/).
+`/v1/recipe` advertises the capability:
+`pod_image_ref`, `miner_install_supported`, `miner_deps_members`,
+`install_timeout_secs` (1800s).
+
+**Isolation is unchanged.** The install runs in the **parent harness, which
+still has network**, strictly *before* the train/eval children are spawned
+under `unshare --net`
+([`prismlib/deps.py`](../crates/prism-recipe/harness/prismlib/deps.py),
+called from `main.py` after the dataset/tokenizer warm and before
+`pre_train`). Miner *model* code — the only code that later sees the private
+eval assets — never has network. `requirements.txt` wins over
+`pyproject.toml` when both are shipped.
+
+**Forgiving retry (miner-fixable classes).** A miner-caused failure never
+burns the 1-max slot and is resubmittable **at will** (no time window),
+unlike operator infra classes (windowed):
+
+| Class | Trigger | Resubmit |
+|-------|---------|----------|
+| `install_deps` | the miner's `requirements.txt`/`pyproject.toml` install command failed (bad pin, missing wheel, build error) | unbounded — fix the manifest, resubmit |
+| `train_script` | `training.py` crashed at build/train time (e.g. within the wall) | unbounded — fix the code, re-run |
+
+Wiring: the harness emits `EVAL_FAIL` + `{"stage": "install_deps"|"train"|"build", …}`;
+`orchestrator::classify_eval_fail` maps those to the classes above, and
+`submission_gating::{is_miner_fixable_class, resubmit_allowed}` grants the
+unbounded resubmit. Later phases (eval/battery/score) keep the windowed
+`install` class. The pod image is env-overridable for staged rollout with
+`PRISM_POD_IMAGE_REF`; tags are rejected and the Lium template name includes
+the digest and credential ID, preventing stale image or credential reuse.
+Unset uses the same immutable recipe-v10 pin advertised by `/v1/recipe`. A
+new private-registry template requires the non-secret
+`PRISM_POD_DOCKER_CREDENTIAL_ID` reference; registry credentials themselves
+remain stored in Lium. Lium's startup bootstrap substitutes
+`USER_PUBLIC_KEY` into a metacharacter-free command; the image script writes
+`authorized_keys` and touches `/root/container_ready`. The image uses
+overridable Docker `CMD` so the provider bootstrap can run.
+
+**GPU profiles + netns contract.** Lium profiles, never mixed in one job:
+
+1. **Default / 1B dense:** `PRISM_POD_GPU_COUNT=1` + name match **NVIDIA B200**
+   (needles `B200`, `NVIDIA B200`). Exact 1× only — **do not** fall through to
+   8× B200, 5090, or RTX PRO 6000. ~180–192 GB → dense-1b uses mb≥8,
+   `DENSE1B_TE=1` default, checkpoint off, DDP world=1.
+2. **Explicit env fallbacks:** `PRISM_POD_GPU_COUNT=4` + **RTX 5090** (exact
+   4×; **do not** fall through to 8×5090). `PRISM_POD_GPU_COUNT=2` or `8` +
+   **RTX PRO 6000 Blackwell** (Server Edition). ~96 GB/card → mb≥4, TE on,
+   checkpoint off.
+
+Lium inventory snapshot (2026-08-19): **1× NVIDIA B200** listed at
+**$5.50/gpu-hr** (two offers). 8× B200 @ $5.60/gpu-hr is **not** the pin.
+RTX PRO 6000 Server Edition remains an env fallback (1× @ $1.29; 8× @
+$1.01–$1.85). Ada “RTX 6000” is **not** the 6000 pin. Do **not** treat a
+5090 as a B200.
+
+`PRISM_POD_GPU_NAME` overrides the pin needles. The eval battery remains on
+GPU 0 for comparable G7 timings. Train/eval children run in a fresh network
+namespace; the wrapper brings `lo` up before `exec` so local
+`torch.distributed` rendezvous works without creating an external route.
+`test_multigpu_netns.py` asserts both shell quoting and actual loopback state.
+
+To use a 4×5090 or 2×/8×6000 fallback, set `PRISM_POD_GPU_COUNT` (and
+optionally `PRISM_POD_GPU_NAME`), restart the challenge after active pods
+drain, and verify the selected offer. Do not edit production Compose
+topology, scoring mode, anchor version, or emission mode in the same change.
+Do not flip live `:28092`. Existing pods keep their rented width.
 
 ## Agentic anti-cheat + AST + metrics gate
 
@@ -508,6 +1002,19 @@ of baseline + champions (catches `inconsistent_metrics` / eval forge). Final
 judge is the mandatory `submit_verdict` function-call. Agentic must not treat
 generic modern-LM components as plagiarism; AST bands (`≥8500` suspicious /
 `≥9500` cheat) remain the structural copy thresholds.
+
+**Tokenizer verification (v2.2, `agentic_v5`).** The tokenizer is
+miner-submitted (`tokenizer/` files or `build_tokenizer(ctx)` hook — see
+`PRISM_RECIPE.md`), and the harness ships an objective **tokenizer card** in
+`METRICS_JSON["tokenizer"]["card"]` (compression on a fixed probe, roundtrip
+fidelity, sampled vocab shape, soft flags). The metrics-aware pass reads the
+card + any tokenizer source in the delta and marks `tokenizer_gaming` as
+`cheat` when the tokenizer is engineered for metrics instead of language
+modeling: multi-word / answer-phrase single tokens, vocab stuffed with
+eval-looking strings, `decode()` that rewrites output, memorizing
+compression. An honestly **weak** tokenizer is explicitly not a cheat (it
+only hurts its owner — G1 is tokenizer-neutral bits/byte); card flags alone
+without corroborating source evidence cap at `suspicious`.
 
 | Verdict | Leaf effect |
 |---------|-------------|
@@ -623,7 +1130,7 @@ the harness semantics listed above, and the baseline sources they may reuse.
 
 | Dimension | Real | Fallback |
 |-----------|------|----------|
-| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`). **Hard pin: 1× RTX 5090** (non-5090 / multi-GPU rejected at rent; no silent fallback) | `SimLiumBackend` |
+| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`). **Hard pin: 1× NVIDIA B200** (default). Explicit env fallbacks: **4× RTX 5090** (`PRISM_POD_GPU_COUNT=4`) or **2×/8× RTX PRO 6000** (`PRISM_POD_GPU_COUNT=2`/`8`). No silent 8× B200/5090 fallback; non-pin SKUs rejected at rent | `SimLiumBackend` |
 | Reviewer | `/run/base/openrouter/api_key` exists → OpenRouter LLM | `SimReviewer` (deterministic) |
 | Agentic | same OpenRouter key → `OpenRouterAgent` | `SimAgent` (AST + metrics heuristics) |
 | Store | `BASE_DATABASE_URL` set → Postgres w/ migrations | in-memory (dev only) |

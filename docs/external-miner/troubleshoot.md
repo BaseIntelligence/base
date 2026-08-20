@@ -30,14 +30,14 @@
 | Wrong / unknown pin id | `automodel.base` ≠ recipe `automodel_pin_id` | Copy `automodel_pin_id` (live: `automodel@v0.5.0`) byte-identical from `/v1/recipe` |
 | Binary / path-escape / oversized patch | Fail-closed apply rules | Text-only unified diff; no path escape outside allowlisted roots; keep diff within intake budgets |
 | Tokenizer / hub errors on pod | No network; Hub download from miner code | Stay offline; use pin/harness tokenizer paths — do not `from_pretrained("<hub id>")` |
-| `CAP_EXCEEDED` / Score 0 | Model > 350M params | Terminal — resize model config in your patch; not auto-retried |
+| `CAP_EXCEEDED` / Score 0 | Model outside 850M–1B params | Terminal — widen or shrink; 215M packs fail the floor; not auto-retried |
 | Score 0 after review | `Copied` / high-confidence `Suspicious` (≥0.9, non-trope) | Similarity on **your delta**; rewrite unique hunks; tropes alone are not plagiarism |
 | `similar: true` on precheck | Would hit intake copy gate | Change the patch vs prior champions; starting from the operator pin is fine |
 | `429 precheck_quota_exceeded` | 3 prechecks/coldkey/UTC day used | Wait until next UTC day; rotating hotkeys does not reset |
 | `400 missing_lium_api_key` | Live path needs miner-funded Lium | Pass `X-Lium-Api-Key` (your Lium account); see [`prism.md`](prism.md) |
 | `409 not_failed` on `/retry` | Row is not `failed` (queued/running/scored) | `/retry` is only for failed rows. In-flight identical ZIP re-POST → `already-queued`. Failed infra: `/retry` or same-ZIP POST recovers the row |
 | `400 missing_lium_api_key` on `/retry` | Failed infra row needs another GPU rent | Send `X-Lium-Api-Key` (hotkey / Bearer alone is not enough) |
-| Stuck `Provisioning` | Lium market / underfunded key / no 1×5090 | Check Lium balance; Prism hard-pins **1× RTX 5090** (non-5090 rejected) |
+| Stuck `Provisioning` | Lium market / underfunded key / no pin SKU | Check Lium balance; default pin is **2× RTX PRO 6000 Blackwell** (`PRISM_POD_GPU_COUNT=4` → 4×5090). Non-pin / 8×5090 rejected |
 | Idempotent replay | Same `submission_id` (pin id + patch bytes) | Expected — returns prior row |
 
 ## Shared

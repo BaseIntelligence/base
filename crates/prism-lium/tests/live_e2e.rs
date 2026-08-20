@@ -14,7 +14,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use prism_lium::{EvalJobBackend, InstanceSpec, LiumClient, LiumSshConfig, MIN_LIFETIME_HOURS};
+use prism_lium::{
+    EvalJobBackend, GpuPreference, InstanceSpec, LiumClient, LiumSshConfig, MIN_LIFETIME_HOURS,
+};
 
 fn load_api_key() -> String {
     if let Ok(k) = std::env::var("LIUM_API_KEY") {
@@ -65,9 +67,14 @@ async fn live_rent_ssh_eval_terminate() {
     ssh.private_key_path = Some(PathBuf::from(
         "/root/.config/prism-mission/lium_ssh_ed25519",
     ));
-    ssh.running_timeout_secs = 300;
+    let default_running_timeout_secs = ssh.running_timeout_secs;
+    ssh.running_timeout_secs = std::env::var("PRISM_LIVE_RUNNING_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default_running_timeout_secs);
     ssh.ssh_attempts = 10;
     ssh.ssh_retry_secs = 5;
+    let running_timeout_secs = ssh.running_timeout_secs;
 
     let client =
         LiumClient::with_config(api_key, prism_lium::LIUM_API_BASE_URL, ssh).expect("client");
@@ -85,6 +92,8 @@ async fn live_rent_ssh_eval_terminate() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1.5_f64);
+    let gpu_count = prism_lium::pod_gpu_count_from_env();
+    trace["requested_gpu_count"] = serde_json::json!(gpu_count);
 
     let offers = client
         .list_offers(Some(max_price))
@@ -96,13 +105,13 @@ async fn live_rent_ssh_eval_terminate() {
         "no offers under ${max_price}/gpu/hr — widen PRISM_LIVE_MAX_PRICE"
     );
 
-    // Prefer cheapest
+    // Fail closed to the ranked SKU and requested width before any billable call.
     let mut sorted = offers;
-    sorted.sort_by(|a, b| {
-        a.price_per_hour
-            .partial_cmp(&b.price_per_hour)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    GpuPreference::for_request(gpu_count).filter_sort_offers(&mut sorted, gpu_count);
+    assert!(
+        !sorted.is_empty(),
+        "no {gpu_count}-GPU pin offer under ${max_price}/gpu/hr"
+    );
     let top: Vec<_> = sorted
         .iter()
         .take(5)
@@ -110,6 +119,7 @@ async fn live_rent_ssh_eval_terminate() {
             serde_json::json!({
                 "id": o.id,
                 "gpu_type": o.gpu_type,
+                "gpu_count": o.gpu_count,
                 "price_per_hour": o.price_per_hour,
             })
         })
@@ -129,24 +139,34 @@ async fn live_rent_ssh_eval_terminate() {
     let mut last_err = String::new();
     let mut rented = None;
     let mut attempts = Vec::new();
+    let max_attempts = std::env::var("PRISM_LIVE_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8)
+        .clamp(1, 8);
+    trace["max_rent_attempts"] = serde_json::json!(max_attempts);
+    trace["running_timeout_secs"] = serde_json::json!(running_timeout_secs);
 
-    for offer in sorted.into_iter().take(8) {
+    for offer in sorted.into_iter().take(max_attempts) {
         let attempt_name = format!("{name}-{}", &offer.id[..8.min(offer.id.len())]);
         let spec = InstanceSpec {
             name: attempt_name,
             max_lifetime_hours: MIN_LIFETIME_HOURS,
             max_price_per_hour: max_price,
-            gpu_count: 1,
+            gpu_count,
             image_digest: None,
             ssh_public_keys: vec![pub_key.clone()],
             ssh_key_name: Some("prism-mission-worker".into()),
             preferred_offer_id: Some(offer.id.clone()),
             template_id: None,
-            template_name: Some("prism-mission-e2e".into()),
+            // Exercise digest-only `PRISM_POD_IMAGE_REF` resolution, not a
+            // historical provider-side template.
+            template_name: None,
         };
         let mut att = serde_json::json!({
             "offer_id": offer.id,
             "gpu_type": offer.gpu_type,
+            "gpu_count": offer.gpu_count,
             "price": offer.price_per_hour,
         });
         match client.provision(&spec).await {
@@ -182,8 +202,43 @@ async fn live_rent_ssh_eval_terminate() {
     trace["selected_gpu"] = serde_json::json!(offer.gpu_type);
     trace["selected_price"] = serde_json::json!(offer.price_per_hour);
 
-    let arch = "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
-    let train = "def train(model, ctx):\n    return {'loss': 1.0}\n";
+    let arch = r#"
+import torch
+import transformer_engine.pytorch as te
+from transformer_engine.common.recipe import NVFP4BlockScaling
+
+class TinyLM(torch.nn.Module):
+    def __init__(self, vocab):
+        super().__init__()
+        self.embed = torch.nn.Embedding(vocab, 16)
+        self.head = torch.nn.Linear(16, vocab, bias=False)
+
+    def forward(self, input_ids):
+        return self.head(self.embed(input_ids))
+
+def build_model(ctx):
+    assert torch.cuda.device_count() >= 4, torch.cuda.device_count()
+    assert te is not None and NVFP4BlockScaling is not None
+    return TinyLM(int(ctx["vocab_size"]))
+"#;
+    let train = r#"
+import torch
+
+def train(model, ctx):
+    width = min(4, int(ctx["gpu_count"]))
+    assert width == 4, width
+    inputs, labels = next(iter(ctx["train_stream"]))
+    parallel = torch.nn.DataParallel(model, device_ids=list(range(width)))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    logits = parallel(inputs)
+    loss = torch.nn.functional.cross_entropy(
+        logits.reshape(-1, logits.shape[-1]), labels.reshape(-1)
+    )
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+    return {"loss": float(loss.detach()), "data_parallel_width": width}
+"#;
 
     let eval_result = {
         let r = client.exec_eval(&pod_id, arch, train, None).await;
@@ -209,7 +264,11 @@ async fn live_rent_ssh_eval_terminate() {
             trace["gpu_type"] = serde_json::json!(metrics.gpu_type);
             trace["notes"] = serde_json::json!(metrics.notes);
             trace["tokens_seen"] = serde_json::json!(metrics.tokens_seen);
+            trace["pod_manifest"] = serde_json::json!(metrics.pod_manifest);
+            trace["battery"] = metrics.extra.get("battery").cloned().unwrap_or_default();
             assert!(metrics.bpb.is_finite() && metrics.bpb > 0.0);
+            assert!(metrics.tokens_seen > 0, "train stream was not consumed");
+            assert_eq!(metrics.netns, Some(true), "train/eval netns was not active");
             assert!(
                 metrics.notes.contains("live") || metrics.gpu_type.is_some(),
                 "expected live-attested metrics"

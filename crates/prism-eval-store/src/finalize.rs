@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use prism_pipeline::composite::{
-    self, BudgetFacts, CompositeAnchors, CompositeError, CompositeOutcome, MetricSeries,
-    MirrorPair, SubmissionMetrics,
+    self, BindingCap, BudgetFacts, CompositeAnchors, CompositeError, CompositeOutcome,
+    MetricSeries, MirrorPair, SubmissionMetrics,
 };
 use prism_pipeline::score::ScoringMode;
 use prism_store::eval::{
@@ -57,6 +57,81 @@ impl AnchorInput {
             ))
             .to_owned(),
             status: "placeholder".into(),
+        }
+    }
+
+    /// The embedded v1 placeholder set (Prism v2.1 battery additions:
+    /// `org.g7.reasoning_throughput` + `org.g8.mup_scaling_slope`; canonical
+    /// bytes shared with `prism-recipe/anchors/v1.json`).
+    #[must_use]
+    pub fn v1_placeholder() -> Self {
+        Self {
+            canonical_json: include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../prism-recipe/anchors/v1.json"
+            ))
+            .to_owned(),
+            status: "placeholder".into(),
+        }
+    }
+
+    /// The embedded v2 placeholder set (Prism v2.2 swap: saturated MC
+    /// `org.g2.lambada_acc` replaced by canonical strict
+    /// `org.g2.lambada_strict_acc`; canonical bytes shared with
+    /// `prism-recipe/anchors/v2.json`).
+    #[must_use]
+    pub fn v2_placeholder() -> Self {
+        Self {
+            canonical_json: include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../prism-recipe/anchors/v2.json"
+            ))
+            .to_owned(),
+            status: "placeholder".into(),
+        }
+    }
+
+    /// The embedded v3 placeholder set (Prism v3 **measurement**: the
+    /// confounded `org.g8.mup_scaling_slope` dropped from the scored set,
+    /// byte/compute-denominated G6 keys added, the inert `conf` confirmation
+    /// tier added, and the dual-cap compute gates `max_flops` +
+    /// `min_spend_fraction` added; canonical bytes shared with
+    /// `prism-recipe/anchors/v3.json`).
+    ///
+    /// The battery emits every scored v3 G1–G8 key. `org.conf.*` remains a
+    /// structurally inert, weight-zero operator record outside `GROUP_KEYS`.
+    /// v3 nevertheless stays default-off while numeric anchors are
+    /// placeholders; calibration + pre-registration must precede selection.
+    #[must_use]
+    pub fn v3_placeholder() -> Self {
+        Self {
+            canonical_json: include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../prism-recipe/anchors/v3.json"
+            ))
+            .to_owned(),
+            status: "placeholder".into(),
+        }
+    }
+
+    /// Anchor set selected by `PRISM_ANCHOR_VERSION` (`0` default → v0,
+    /// bit-identical live behavior; `1` → the v2.1 set; `2` → the v2.2
+    /// LAMBADA-strict set; `3` → the v3 measurement set). Unknown values fail
+    /// safe to v0 with a warning — never a new scoring surface by accident.
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("PRISM_ANCHOR_VERSION").ok().as_deref() {
+            Some("1") => Self::v1_placeholder(),
+            Some("2") => Self::v2_placeholder(),
+            Some("3") => Self::v3_placeholder(),
+            None | Some("0") => Self::v0_placeholder(),
+            Some(other) => {
+                tracing::warn!(
+                    value = other,
+                    "unknown PRISM_ANCHOR_VERSION; falling back to v0"
+                );
+                Self::v0_placeholder()
+            }
         }
     }
 
@@ -124,8 +199,10 @@ pub async fn finalize_composite(
 /// Orchestrator-facing wrapper (E7): `None` when no store is attached (the
 /// default — the v2 path stays bit-identical) or the blob is absent, and
 /// warn + `None` on store/finalize faults — shadow mode is unaffected and
-/// composite mode fails closed to 0 in `final_lattice` by design. Uses the
-/// embedded v0 placeholder anchor set until registry-driven anchors land.
+/// composite mode fails closed to 0 in `final_lattice` by design. The
+/// anchor set follows `PRISM_ANCHOR_VERSION` (default 0 = the embedded v0
+/// placeholder; `1` selects the v2.1 set) until registry-driven anchors
+/// land.
 pub async fn finalize_for_submission(
     store: Option<&Arc<dyn EvalStore>>,
     submission_id: &str,
@@ -134,7 +211,7 @@ pub async fn finalize_for_submission(
     let (Some(store), Some(blob)) = (store, metrics_v2) else {
         return None;
     };
-    match finalize_composite(store, submission_id, blob, &AnchorInput::v0_placeholder()).await {
+    match finalize_composite(store, submission_id, blob, &AnchorInput::from_env()).await {
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::warn!(submission_id, error = %e, "composite finalize failed (skipped)");
@@ -246,8 +323,19 @@ fn submission_metrics(v: &Value) -> Option<SubmissionMetrics> {
     let battery = v.get("battery")?;
     let mut metrics = BTreeMap::new();
     for (k, raw) in battery.get("metrics")?.as_object()? {
-        if k.starts_with("org.") {
-            metrics.insert(k.clone(), series_from(raw)?);
+        if !k.starts_with("org.") {
+            continue;
+        }
+        // Skip an entry that is not a number or `{value, clusters}` rather
+        // than abandoning the whole submission. Aborting here used to mean a
+        // single malformed `org.*` value (e.g. a string diagnostic) made
+        // `submission_metrics` return `None`, which SKIPS the composite
+        // silently — a scoring bypass triggered by a typo. Skipping instead
+        // is fail-closed: if the key is *declared* by the anchor set its
+        // absence is a hard `MissingMetric` → `Ineligible`, and if it is not
+        // declared it was inert anyway (`unknown_metrics_are_ignored`).
+        if let Some(series) = series_from(raw) {
+            metrics.insert(k.clone(), series);
         }
     }
     if metrics.is_empty() {
@@ -297,18 +385,41 @@ fn mirror_from(v: &Value) -> Option<MirrorPair> {
 
 /// Budget facts for the fixed-recipe gates; `tokens` is recorded (not
 /// gated) and only meaningful when the harness counted the train stream.
+///
+/// FLOPs attestation (`budget.flops_attested`, `budget.binding_cap`) is read
+/// from the harness's `budget` block, which is written by
+/// `prismlib/stream.py` — never by miner code. It is deliberately gated on
+/// the same `tokens_seen_source == "train_stream"` discriminator as `tokens`:
+/// `flops_attested = flops_per_token × tokens_seen`, so an unauthoritative
+/// token count makes the product unauthoritative too. Treating a
+/// bypassed-stream run's FLOPs as attested would let a miner with their own
+/// dataloader choose their own budget.
 fn budget_facts(v: &Value) -> BudgetFacts {
+    let stream_owned = v.get("tokens_seen_source").and_then(Value::as_str) == Some("train_stream");
+    let budget = v.get("budget");
     BudgetFacts {
         params: v.get("n_params").and_then(Value::as_u64).unwrap_or(0),
         wall_s: v
             .get("wall_clock_seconds")
             .and_then(Value::as_f64)
             .unwrap_or(0.0),
-        tokens: if v.get("tokens_seen_source").and_then(Value::as_str) == Some("train_stream") {
+        tokens: if stream_owned {
             v.get("tokens_seen").and_then(Value::as_u64).unwrap_or(0)
         } else {
             0
         },
+        flops_attested: if stream_owned {
+            budget
+                .and_then(|b| b.get("flops_attested"))
+                .and_then(Value::as_f64)
+                .filter(|f| f.is_finite() && *f > 0.0)
+        } else {
+            None
+        },
+        binding_cap: budget
+            .and_then(|b| b.get("binding_cap"))
+            .and_then(Value::as_str)
+            .map_or(BindingCap::None, BindingCap::parse),
     }
 }
 
@@ -528,6 +639,62 @@ mod tests {
             reports[0].verdict_reasons
         );
         assert_eq!(reports[0].schema_version, "1.3.0");
+    }
+
+    /// A malformed `org.*` entry must not disable scoring. It used to: a
+    /// single non-numeric value made `submission_metrics` return `None`,
+    /// which skips the composite entirely — a scoring bypass reachable by a
+    /// typo (or by a harness emitting a string diagnostic into the battery).
+    #[tokio::test]
+    async fn non_numeric_org_metric_is_skipped_not_fatal() {
+        let st = store();
+        let mut blob = v2_blob();
+        let mut battery = perfect_battery();
+        // A string where a number is contracted, plus an undeclared numeric
+        // diagnostic that must simply be ignored.
+        battery["metrics"]["org.diag.binding_cap"] = json!("flops");
+        battery["metrics"]["org.diag.mfu_achieved"] = json!(0.23);
+        blob["battery"] = battery;
+        let out = finalize_composite(&st, "sub-skip", &blob, &AnchorInput::v0_placeholder())
+            .await
+            .unwrap()
+            .expect("battery present: the composite must still run");
+        let CompositeOutcome::Scored(s) = &out else {
+            panic!("a stray non-numeric diagnostic must not break scoring: {out:?}");
+        };
+        assert!(s.composite > 0.95, "composite {}", s.composite);
+    }
+
+    /// The dual-cap attestation reaches the gates through the top-level
+    /// `budget` block, and only when the token count is authoritative.
+    #[tokio::test]
+    async fn budget_block_feeds_the_compute_gates() {
+        let mut blob = v2_blob();
+        blob["budget"] = json!({
+            "flops_attested": 2.9e18,
+            "binding_cap": "flops",
+            "spend_fraction": 0.97,
+        });
+        let facts = budget_facts(&blob);
+        assert_eq!(facts.flops_attested, Some(2.9e18));
+        assert_eq!(facts.binding_cap, BindingCap::Flops);
+
+        // A bypassed stream makes the product unauthoritative: `flops` is
+        // `flops_per_token × tokens_seen`, so an untrusted token count
+        // untrusts the FLOPs too.
+        blob["tokens_seen_source"] = json!("legacy");
+        let bypassed = budget_facts(&blob);
+        assert_eq!(bypassed.flops_attested, None, "legacy stream ⇒ unattested");
+        assert_eq!(bypassed.tokens, 0);
+
+        // Garbage never becomes a budget.
+        for bad in [json!(0.0), json!(-1.0), json!("lots"), json!(null)] {
+            let mut b = v2_blob();
+            b["budget"] = json!({ "flops_attested": bad });
+            assert_eq!(budget_facts(&b).flops_attested, None, "{bad:?}");
+        }
+        // Absent budget block ⇒ pre-attestation run, gates skipped.
+        assert_eq!(budget_facts(&v2_blob()).flops_attested, None);
     }
 
     #[tokio::test]

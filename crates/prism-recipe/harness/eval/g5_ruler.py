@@ -191,7 +191,12 @@ def run(model, ctx, grid=None, n_items=None, probes=None, probe_grid=None, budge
         else common.eval_g5_n_items(default_full=2, default_tiny=1)
     )
     budget = common.Budget(
-        budget_s if budget_s is not None else common.group_budget_s("g5_ruler", 1200.0)
+        # g5_longctx always passes `budget_s` (its share of the G5 budget);
+        # this fallback is the direct-call path (tests / focused runs) and
+        # stays inside the same global battery budget.
+        budget_s
+        if budget_s is not None
+        else common.group_budget_s("g5") * common.G5_RULER_SHARE
     )
     probe_cap = common.float_env(
         "PRISM_EVAL_G5_RULER_PROBE_BUDGET_S", budget.seconds / max(1, len(probes))

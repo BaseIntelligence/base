@@ -7,7 +7,8 @@
 //! ids start with `baseline` (`BASELINE_CORPUS_PREFIX` in `challenge-agentic`)
 //! so the copy gate exempts them as published prior art.
 
-/// Submission id for the Transformer++ anchor (modern GPT at the 350M cap).
+/// Submission id for the Transformer++ anchor (modern GPT, ~341M params;
+/// the recipe cap is now 1B, the reference geometry is unchanged).
 pub const BASELINE_V3_TRANSFORMER_PP_ID: &str = "baseline-transformer-pp";
 
 /// Submission id for the 3:1 gated delta-net/attention hybrid anchor.
@@ -108,12 +109,13 @@ mod tests {
         // `count_params.py` convention (see each baseline's NOTES.md):
         // prints a per-component breakdown plus `TOTAL (static math)` and,
         // when torch is available, `TOTAL (torch build)` which must equal
-        // the static figure; then a `cap check: <total> <= 350,000,000:
+        // the static figure; then a `cap check: <total> <= 1,000,000,000:
         // True` line and a non-zero exit on overflow. The anchor runs MUST
-        // pass under the production 350M cap.
+        // pass under the production 1B cap (the reference geometries stay at
+        // ~341M — the raised cap is headroom, not a resize).
         for (id, tree) in baselines_v3() {
             let cp = file(tree, "count_params.py").expect("count_params");
-            assert!(cp.contains("350_000_000"), "{id} cap constant");
+            assert!(cp.contains("1_000_000_000"), "{id} cap constant");
             assert!(cp.contains("cap check"), "{id} cap check line");
             assert!(cp.contains("TOTAL (static math)"), "{id} static total");
         }

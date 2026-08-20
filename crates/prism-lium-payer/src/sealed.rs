@@ -17,10 +17,24 @@ use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-/// Recipe train wall (6h = 21600s). Overridden by `PRISM_TRAIN_HOURS_CAP` when set.
-pub const TRAIN_WALL_SECS: u64 = 6 * 3600;
-/// Post-train eval / harvest / terminate budget.
-pub const EVAL_BUDGET_SECS: u64 = 2 * 3600;
+/// Recipe train wall, **derived from the recipe** rather than duplicated.
+///
+/// This constant used to be a hardcoded 6 h next to a hardcoded 2 h eval,
+/// which is how the payer came to model an 8 h pod while
+/// `prism_recipe::POD_LIFETIME_HOURS_CAP` said 7 h. Deriving it means the
+/// dual-cap reconciliation (train 4 h, pod 7.0 h) cannot leave the payer
+/// behind. Overridden by `PRISM_TRAIN_HOURS_CAP` when set.
+// The recipe caps are small positive hour counts, so the second counts are
+// exact in u64; the casts cannot truncate or lose a sign in practice.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub const TRAIN_WALL_SECS: u64 = (prism_recipe::TRAIN_HOURS_CAP * 3600.0) as u64;
+
+/// Post-train eval / harvest / terminate budget: everything the pod cap
+/// reserves beyond the train wall, so the seal outlives whatever the
+/// orchestrator is still allowed to do after training ends.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub const EVAL_BUDGET_SECS: u64 =
+    ((prism_recipe::POD_LIFETIME_HOURS_CAP - prism_recipe::TRAIN_HOURS_CAP) * 3600.0) as u64;
 /// Queue, pre-pod screens, restart skew, and clock margin.
 pub const SEAL_SKEW_SECS: u64 = 4 * 3600;
 /// Default TTL floor (≥36h): covers full-budget runs with substantial queue wait.
@@ -238,6 +252,35 @@ mod tests {
             "ttl {ttl} must be at least the 36h floor"
         );
         assert!(ttl >= 36 * 3600);
+    }
+
+    /// The payer's pod model must equal the recipe's, not merely resemble it.
+    /// A silent disagreement here is how a seal expires mid-run (or a pod is
+    /// killed mid-eval) without anything failing a test.
+    #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    fn payer_model_matches_the_recipe_pod_cap() {
+        let recipe_pod_s = (prism_recipe::POD_LIFETIME_HOURS_CAP * 3600.0) as u64;
+        assert_eq!(
+            TRAIN_WALL_SECS + EVAL_BUDGET_SECS,
+            recipe_pod_s,
+            "payer train+eval must reconstruct POD_LIFETIME_HOURS_CAP exactly"
+        );
+        assert_eq!(
+            TRAIN_WALL_SECS,
+            (prism_recipe::TRAIN_HOURS_CAP * 3600.0) as u64
+        );
+        // The post-train reserve must still contain the eval phase ceiling.
+        assert!(
+            EVAL_BUDGET_SECS as f64 >= prism_recipe::HARNESS_EVAL_TIMEOUT_S,
+            "post-train reserve {EVAL_BUDGET_SECS}s must cover the eval phase \
+             ceiling {}s",
+            prism_recipe::HARNESS_EVAL_TIMEOUT_S
+        );
     }
 
     #[test]

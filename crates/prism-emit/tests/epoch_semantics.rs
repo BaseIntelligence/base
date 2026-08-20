@@ -76,7 +76,7 @@ fn scored_row(id: &str, hotkey: &str, accept_epoch: u64, score: FinalScore) -> S
         pod_provider: None,
         receipt: None,
         // Emission tests exercise AutoModel / recipe 2.0 weight eligibility.
-        metrics_json: Some(serde_json::json!({"recipe": "2.0.0"})),
+        metrics_json: Some(serde_json::json!({"recipe": "2.1.0"})),
         bpb: Some(2.0),
         arch_id: None,
         review: None,

@@ -22,6 +22,7 @@ pub use store::{MemoryPrismStore, PrismStore};
 // The data contract lives in `prism-store-types` (per-crate LOC cap); it is
 // re-exported wholesale so `prism_store::…` stays the single import path.
 pub use prism_store_types::{
-    submission_weight_eligible, ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome,
-    Stage, StageEvent, StatePatch, StoreError, SubmissionId, SubmissionState, TopModelPublication,
+    stamp_v21_competition, submission_weight_eligible, ArchitectureRecord, EpochScoreRow,
+    FinalScore, PublishArchOutcome, Stage, StageEvent, StatePatch, StoreError, SubmissionId,
+    SubmissionState, TopModelPublication, PRISM_COMPETITION_ID, PRISM_SCORING_GENERATION,
 };

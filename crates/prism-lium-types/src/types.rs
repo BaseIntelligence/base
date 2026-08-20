@@ -24,6 +24,39 @@ fn plausible_gpu_count(n: u32) -> bool {
     (2..=16).contains(&n)
 }
 
+/// GPUs to rent per Prism eval pod, from `PRISM_POD_GPU_COUNT`.
+///
+/// Bounded to `1..=8`; anything absent, unparseable or out of range falls back
+/// to the default **1** (recipe-v10 1B path: 1× NVIDIA B200).
+///
+/// Profiles, never mixed in one job:
+/// - default / 1B dense: `1` + [`GpuPreference::profile_b200`]
+/// - explicit env fallbacks: `4` + [`GpuPreference::profile_5090`],
+///   `2`/`8` + [`GpuPreference::profile_6000`]
+///
+/// Miners may train across the rented width (`ctx["gpu_count"]`); the eval
+/// battery stays on GPU 0 so G7 timings stay comparable.
+#[must_use]
+pub fn pod_gpu_count_from_env() -> u32 {
+    parse_pod_gpu_count(std::env::var("PRISM_POD_GPU_COUNT").ok().as_deref())
+}
+
+/// Default GPUs per Prism eval pod when unset (1× NVIDIA B200, 1B dense).
+pub const DEFAULT_POD_GPU_COUNT: u32 = 1;
+
+/// Default USD/GPU-hour cap. B200 inventory is ~$5.5/gpu-hr; 8.0 leaves
+/// headroom without opening 8× host totals.
+pub const DEFAULT_MAX_PRICE_PER_HOUR: f64 = 8.0;
+
+/// Pure core of [`pod_gpu_count_from_env`] (kept separate so bounds and
+/// garbage-fallback are testable without mutating process env).
+#[must_use]
+pub fn parse_pod_gpu_count(raw: Option<&str>) -> u32 {
+    raw.and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| (1..=8).contains(n))
+        .unwrap_or(DEFAULT_POD_GPU_COUNT)
+}
+
 /// Parse a multi-GPU multiplier from a provider label (`8x RTX 5090`,
 /// `RTX 5090 x8`, `8×GeForce`, `8 x RTX`, …). Returns `None` when the label
 /// does not clearly encode a count. SKU digits like `5090` / `H100` are
@@ -90,14 +123,19 @@ impl Offer {
     }
 
     /// Whether this offer may be rented for `requested` GPUs.
-    /// Prism requests exactly one GPU; multi-GPU hosts are hard-rejected.
+    ///
+    /// A 1-GPU request still hard-rejects multi-GPU hosts (live SKU pin).
+    /// A multi-GPU request accepts a larger host (`effective >= requested`)
+    /// when no exact-width offer is listed. Lium rejects GPU splitting, so the
+    /// client rents `gpu_count = effective` (the whole host); the miner caps
+    /// DDP at the requested width. 8×5090 is never a silent fallback.
     #[must_use]
     pub fn matches_gpu_count(&self, requested: u32) -> bool {
         let effective = effective_gpu_count(self.gpu_count, &self.gpu_type);
         if requested <= 1 {
             return effective == 1;
         }
-        effective == requested
+        effective >= requested
     }
 }
 
@@ -131,8 +169,8 @@ impl Default for InstanceSpec {
         Self {
             name: "prism-eval".into(),
             max_lifetime_hours: 1.0,
-            max_price_per_hour: 2.5,
-            gpu_count: 1,
+            max_price_per_hour: DEFAULT_MAX_PRICE_PER_HOUR,
+            gpu_count: DEFAULT_POD_GPU_COUNT,
             image_digest: None,
             ssh_public_keys: vec![],
             ssh_key_name: Some("prism-mission-worker".into()),
@@ -167,16 +205,82 @@ pub struct GpuPreference {
     pub prefer: Vec<String>,
 }
 
+/// Parse `PRISM_POD_GPU_NAME` (comma-separated case-insensitive needles).
+#[must_use]
+pub fn parse_pod_gpu_name(raw: Option<&str>) -> Option<Vec<String>> {
+    let needles: Vec<String> = raw?
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    if needles.is_empty() {
+        None
+    } else {
+        Some(needles)
+    }
+}
+
+/// SKU pin for `requested` GPUs: `PRISM_POD_GPU_NAME` or the count profile.
+#[must_use]
+pub fn pod_gpu_preference_from_env() -> GpuPreference {
+    GpuPreference::for_request(pod_gpu_count_from_env())
+}
+
 impl GpuPreference {
-    /// Default PRISM pin: **1× RTX 5090 only** (fail-closed).
+    /// Default 1B SKU pin: **1× NVIDIA B200** (fail-closed).
     ///
-    /// Ranking fairness requires a single SKU: wall-capped trains on a slower
-    /// card (e.g. 4090) see fewer tokens → worse bpb. Non-5090 / multi-GPU
-    /// offers are rejected at rent time, not normalized after the fact.
+    /// Ranking fairness requires a single SKU per profile. Width is enforced
+    /// separately by [`Offer::matches_gpu_count`]. Override needles with
+    /// `PRISM_POD_GPU_NAME`. Count `4` → 5090; `2`/`8` → RTX PRO 6000.
     #[must_use]
     pub fn default_prism() -> Self {
+        Self::profile_b200()
+    }
+
+    /// Primary 1B train SKU: 1× NVIDIA B200 (~180–192 GiB).
+    ///
+    /// Needles are `B200` / `NVIDIA B200` only — not 5090, not RTX PRO 6000.
+    #[must_use]
+    pub fn profile_b200() -> Self {
+        Self {
+            prefer: vec!["NVIDIA B200".into(), "B200".into()],
+        }
+    }
+
+    /// Explicit env fallback: 2×/8× NVIDIA RTX PRO 6000 Blackwell.
+    #[must_use]
+    pub fn profile_6000() -> Self {
+        Self {
+            prefer: vec![
+                "RTX PRO 6000 Blackwell Server".into(),
+                "Blackwell Server".into(),
+                "RTX PRO 6000".into(),
+            ],
+        }
+    }
+
+    /// Explicit env fallback: RTX 5090 (typically 4×).
+    #[must_use]
+    pub fn profile_5090() -> Self {
         Self {
             prefer: vec!["RTX 5090".into()],
+        }
+    }
+
+    /// Pin for a rent request. `PRISM_POD_GPU_NAME` wins; else count `4` →
+    /// 5090, `2`/`8` → 6000, any other in-band count (default `1`) → B200.
+    #[must_use]
+    pub fn for_request(requested_gpus: u32) -> Self {
+        if let Some(prefer) =
+            parse_pod_gpu_name(std::env::var("PRISM_POD_GPU_NAME").ok().as_deref())
+        {
+            return Self { prefer };
+        }
+        match requested_gpus {
+            4 => Self::profile_5090(),
+            2 | 8 => Self::profile_6000(),
+            _ => Self::profile_b200(),
         }
     }
 
@@ -351,7 +455,9 @@ impl LiumSshConfig {
     pub fn default_live() -> Self {
         Self {
             private_key_path: None, // resolve via LIUM_SSH_PRIVATE_KEY / default path
-            running_timeout_secs: 300,
+            // The digest-pinned CUDA/TE image is large and a cold provider
+            // cache can spend over 15 minutes pulling layers before RUNNING.
+            running_timeout_secs: 1_800,
             ssh_attempts: 8,
             ssh_retry_secs: 5,
             train_hours_cap: prism_recipe::train_hours_cap(),
@@ -365,14 +471,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_prism_hard_pins_5090_only() {
+    fn default_prism_pins_b200() {
         let p = GpuPreference::default_prism();
-        assert_eq!(p.prefer.as_slice(), ["RTX 5090"]);
-        assert!(p.matches_pin("NVIDIA GeForce RTX 5090"));
-        assert!(!p.matches_pin("NVIDIA GeForce RTX 4090"));
+        assert_eq!(p.prefer.as_slice(), ["NVIDIA B200", "B200"]);
+        assert!(p.matches_pin("NVIDIA B200"));
+        assert!(p.matches_pin("NVIDIA RTX BLACKWELL B200"));
+        assert!(!p.matches_pin("NVIDIA GeForce RTX 5090"));
+        assert!(!p.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
         assert!(!p.matches_pin("NVIDIA H100"));
-        assert!(!p.matches_pin("NVIDIA A100-SXM4-80GB"));
-        assert!(p.rank("NVIDIA GeForce RTX 5090") < p.rank("NVIDIA GeForce RTX 4090"));
+        assert!(p.rank("NVIDIA B200") < p.rank("NVIDIA GeForce RTX 5090"));
+    }
+
+    #[test]
+    fn for_request_profiles_from_count_and_name() {
+        let p1 = GpuPreference::for_request(1);
+        assert!(p1.matches_pin("NVIDIA B200"));
+        assert!(!p1.matches_pin("NVIDIA GeForce RTX 5090"));
+        assert!(!p1.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
+        let p2 = GpuPreference::for_request(2);
+        assert!(p2.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
+        assert!(!p2.matches_pin("NVIDIA GeForce RTX 5090"));
+        assert!(!p2.matches_pin("NVIDIA B200"));
+        let p8 = GpuPreference::for_request(8);
+        assert!(p8.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
+        let p4 = GpuPreference::profile_5090();
+        assert!(p4.matches_pin("NVIDIA GeForce RTX 5090"));
+        assert!(!p4.matches_pin("NVIDIA RTX PRO 6000 Blackwell Server Edition"));
+        assert!(!p4.matches_pin("NVIDIA B200"));
+        let named = parse_pod_gpu_name(Some(" RTX 5090 , RTX PRO 6000 "));
+        assert_eq!(
+            named.as_deref(),
+            Some(["RTX 5090".to_string(), "RTX PRO 6000".to_string()].as_slice())
+        );
+        assert!(parse_pod_gpu_name(None).is_none());
+        assert!(parse_pod_gpu_name(Some("  ,  ")).is_none());
     }
 
     #[test]
@@ -384,6 +516,135 @@ mod tests {
         assert_eq!(gpu_count_from_label("RTX 5090 x 8"), Some(8));
         assert_eq!(gpu_count_from_label("NVIDIA GeForce RTX 5090"), None);
         assert_eq!(gpu_count_from_label("H100x8"), Some(8));
+    }
+
+    #[test]
+    fn pod_gpu_count_defaults_to_one_b200_and_bounds() {
+        // Default when unset / empty / garbage (1× NVIDIA B200).
+        assert_eq!(parse_pod_gpu_count(None), 1);
+        assert_eq!(parse_pod_gpu_count(Some("")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("   ")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("four")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("2.5")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("-1")), 1);
+        // Out of the 1..=8 band falls back to the default, never clamps.
+        assert_eq!(parse_pod_gpu_count(Some("0")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("9")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("64")), 1);
+        // In-band values are honored (with surrounding whitespace).
+        assert_eq!(parse_pod_gpu_count(Some("1")), 1);
+        assert_eq!(parse_pod_gpu_count(Some("4")), 4);
+        assert_eq!(parse_pod_gpu_count(Some("8")), 8);
+        assert_eq!(parse_pod_gpu_count(Some(" 2 ")), 2);
+        assert_eq!(DEFAULT_POD_GPU_COUNT, 1);
+    }
+
+    #[test]
+    fn one_gpu_b200_request_excludes_5090_and_8x() {
+        let mk = |id: &str, gpu_type: &str, gpu_count: u32, price: f64| Offer {
+            id: id.into(),
+            gpu_type: gpu_type.into(),
+            gpu_count,
+            price_per_hour: price,
+            provider: "lium".into(),
+        };
+        let pin = mk("1xb200", "NVIDIA B200", 1, 5.5);
+        let eight = mk("8xb200", "NVIDIA B200", 8, 5.6);
+        let rtx = mk("1x5090", "NVIDIA GeForce RTX 5090", 1, 0.65);
+        let pro = mk(
+            "2x6000",
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            2,
+            3.2,
+        );
+        let pref = GpuPreference::profile_b200();
+        let mut offers = vec![eight.clone(), rtx.clone(), pro.clone(), pin.clone()];
+        pref.filter_sort_offers(&mut offers, 1);
+        let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["1xb200"], "exact 1× B200 only; never 5090 or 8× B200");
+        assert!(pin.matches_gpu_count(1));
+        assert!(!eight.matches_gpu_count(1));
+        assert!(!pref.matches_pin(&rtx.gpu_type));
+        assert!(!pref.matches_pin(&pro.gpu_type));
+    }
+
+    #[test]
+    fn four_gpu_request_matches_only_four_gpu_offers() {
+        let mk = |id: &str, gpu_type: &str, gpu_count: u32, price: f64| Offer {
+            id: id.into(),
+            gpu_type: gpu_type.into(),
+            gpu_count,
+            price_per_hour: price,
+            provider: "lium".into(),
+        };
+        let one = mk("1x", "NVIDIA GeForce RTX 5090", 1, 2.0);
+        let four = mk("4x", "NVIDIA GeForce RTX 5090", 4, 1.0);
+        let four_label = mk("4x-label", "4x RTX 5090", 1, 0.9);
+        let eight = mk("8x", "NVIDIA GeForce RTX 5090", 8, 0.48);
+
+        // A request for 4 must not silently land on a 1×GPU offer.
+        assert!(!one.matches_gpu_count(4));
+        assert!(four.matches_gpu_count(4));
+        assert!(four_label.matches_gpu_count(4), "label multiplier wins");
+        assert!(
+            eight.matches_gpu_count(4),
+            "8x host can rent 4 cards when no exact 4× offer exists"
+        );
+
+        // Prefer exact 4× (smaller count first, then cheaper). 8× is listed
+        // but the client refuses to rent it as a 5090 fallback.
+        let pref = GpuPreference::profile_5090();
+        let mut offers = vec![one.clone(), four.clone(), four_label.clone(), eight.clone()];
+        pref.filter_sort_offers(&mut offers, 4);
+        let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["4x-label", "4x", "8x"],
+            "exact 4× first, then larger 5090 hosts"
+        );
+
+        // Sanity: the historical single-GPU path is unchanged.
+        let mut single_req = vec![one, four, four_label, eight];
+        pref.filter_sort_offers(&mut single_req, 1);
+        let ids: Vec<&str> = single_req.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["1x"]);
+    }
+
+    #[test]
+    fn two_gpu_6000_request_excludes_5090() {
+        let mk = |id: &str, gpu_type: &str, gpu_count: u32, price: f64| Offer {
+            id: id.into(),
+            gpu_type: gpu_type.into(),
+            gpu_count,
+            price_per_hour: price,
+            provider: "lium".into(),
+        };
+        let two_6000 = mk(
+            "2x6000",
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            2,
+            3.2,
+        );
+        let four_6000 = mk("4x6000", "4x RTX PRO 6000 Blackwell Server Edition", 4, 3.0);
+        let eight_5090 = mk("8x5090", "NVIDIA GeForce RTX 5090", 8, 0.48);
+        let four_5090 = mk("4x5090", "NVIDIA GeForce RTX 5090", 4, 1.1);
+        let pref = GpuPreference::profile_6000();
+        let mut offers = vec![
+            eight_5090.clone(),
+            four_5090.clone(),
+            four_6000.clone(),
+            two_6000.clone(),
+        ];
+        pref.filter_sort_offers(&mut offers, 2);
+        let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["2x6000", "4x6000"],
+            "exact 2×6000 first; never fall through to 5090"
+        );
+        assert!(two_6000.matches_gpu_count(2));
+        assert!(!four_5090.matches_gpu_count(2) || !pref.matches_pin(&four_5090.gpu_type));
+        assert!(!pref.matches_pin(&eight_5090.gpu_type));
     }
 
     #[test]

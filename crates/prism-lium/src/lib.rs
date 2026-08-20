@@ -1,36 +1,25 @@
 //! Lium GPU rental client for PRISM master-centralized eval.
 //!
-//! **No Phala CVM.** Live GPU eval is **miner-funded by default** (see
-//! `prism-lium-payer` for `X-Lium-Api-Key` vault + factory). The operator may
-//! still hold `LIUM_API_KEY` for Sim fallback / opt-in operator billing
-//! (`PRISM_ALLOW_OPERATOR_LIUM=1`). Rents are **not** serialized through a
-//! process-wide queue (each BYOK key has its own Lium budget). Cost guardrails
-//! refuse unbounded lifetime / price **before** any rent call. Every provision
-//! path terminates + verifies on failure.
-//!
-//! # Backends
-//!
-//! * [`LiumClient`] — real HTTPS to `https://lium.io/api` (`X-API-Key`) + SSH exec.
-//! * [`SimLiumBackend`] — offline deterministic metrics for CI (no network).
-//!
-//! # Secrets
-//!
-//! The API key is never logged, never placed in `Debug`/`Display`, never sent to
-//! the pod environment. SSH private key path only; key material never logged.
+//! Miner-funded by default (`prism-lium-payer`); optional operator
+//! `LIUM_API_KEY` when `PRISM_ALLOW_OPERATOR_LIUM=1`. Guardrails refuse
+//! unbounded lifetime/price before rent; provision fails closed.
+//! [`LiumClient`] talks to `https://lium.io/api`; [`SimLiumBackend`] is
+//! offline CI. API keys and SSH material are never logged.
 
 #![forbid(unsafe_code)]
-// Pedantic noise matching hypertraining-eval / thin HTTP wrappers.
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-#![allow(clippy::cast_lossless)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::missing_fields_in_debug)] // api_key intentionally redacted
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::redundant_closure_for_method_calls)]
-#![allow(clippy::duration_suboptimal_units)]
-#![allow(clippy::manual_clamp)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::missing_errors_doc,
+    clippy::missing_fields_in_debug,
+    clippy::too_many_lines,
+    clippy::doc_markdown,
+    clippy::redundant_closure_for_method_calls,
+    clippy::duration_suboptimal_units,
+    clippy::manual_clamp
+)]
 
 mod artifacts;
 mod client;
@@ -52,9 +41,10 @@ pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
 // The data contract lives in `prism-lium-types` (per-crate LOC cap); it is
 // re-exported wholesale so `prism_lium::…` stays the single import path.
 pub use prism_lium_types::{
-    effective_gpu_count, gpu_count_from_label, CostGuardrailError, EvalReceipt, EvalTelemetry,
-    GpuPreference, Instance, InstanceSpec, LiumError, LiumSshConfig, NoScoreGate, Offer,
-    ProbePoint, RemoteExecResult, TelemetryPoint,
+    effective_gpu_count, gpu_count_from_label, pod_gpu_count_from_env, pod_gpu_preference_from_env,
+    CostGuardrailError, EvalReceipt, EvalTelemetry, GpuPreference, Instance, InstanceSpec,
+    LiumError, LiumSshConfig, NoScoreGate, Offer, ProbePoint, RemoteExecResult, TelemetryPoint,
+    DEFAULT_MAX_PRICE_PER_HOUR, DEFAULT_POD_GPU_COUNT,
 };
 
 use async_trait::async_trait;
@@ -83,43 +73,22 @@ pub trait EvalJobBackend: Send + Sync {
         tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError>;
 
-    async fn harvest_logs(&self, _instance_id: &str) -> Result<String, LiumError> {
-        Ok(String::new())
+    #[rustfmt::skip]
+    async fn harvest_logs(&self, _: &str) -> Result<String, LiumError> { Ok(String::new()) }
+    #[rustfmt::skip]
+    async fn harvest_artifacts(&self, _: &str, _: &std::path::Path, _: &[u8], _: Option<u64>) -> Result<std::path::PathBuf, LiumError> {
+        Err(LiumError::Exec("artifact harvest not supported on this backend".into()))
     }
-
-    async fn harvest_artifacts(
-        &self,
-        _instance_id: &str,
-        _dest_dir: &std::path::Path,
-        _seed: &[u8],
-        _n_params: Option<u64>,
-    ) -> Result<std::path::PathBuf, LiumError> {
-        Err(LiumError::Exec(
-            "artifact harvest not supported on this backend".into(),
-        ))
-    }
-
-    /// True when the provider still lists the instance as rentable/running.
-    async fn instance_running(&self, _instance_id: &str) -> Result<bool, LiumError> {
-        Ok(false)
-    }
-
-    /// Reattach to a detached harness already on `instance_id` (no re-upload).
-    ///
-    /// Returns [`LiumError::Exec`] containing [`HARNESS_ABSENT`] when the pod
-    /// is up but no harness log/pid exists — caller may start a fresh
-    /// [`Self::exec_eval`] on the same pod.
+    #[rustfmt::skip]
+    async fn instance_running(&self, _: &str) -> Result<bool, LiumError> { Ok(false) }
+    /// Reattach to a detached harness (no re-upload). `HARNESS_ABSENT` → fresh exec.
+    #[rustfmt::skip]
     async fn resume_eval(&self, instance_id: &str) -> Result<RemoteExecResult, LiumError> {
-        Err(LiumError::Exec(format!(
-            "{HARNESS_ABSENT}: resume unsupported on this backend ({instance_id})"
-        )))
+        Err(LiumError::Exec(format!("{HARNESS_ABSENT}: resume unsupported on this backend ({instance_id})")))
     }
 }
 
-/// Tail bytes retained for harness stderr / error_detail snippets.
-///
-/// Live poll harvest uses [`HARNESS_HARVEST_CMD`] (sidecar / full
-/// `METRICS_JSON=` line) and must not apply this cap to the metrics blob.
+/// Tail bytes for harness stderr snippets (not the metrics sidecar).
 pub const HARNESS_LOG_RETAIN_BYTES: usize = 32_768;
 /// Default Lium API base URL.
 pub const LIUM_API_BASE_URL: &str = "https://lium.io/api";

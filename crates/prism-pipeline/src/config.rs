@@ -35,7 +35,7 @@ impl PrismConfig {
     pub fn production() -> Self {
         Self {
             require_image_digest: false, // pin when operator supplies digest
-            max_price_per_hour: 2.5,
+            max_price_per_hour: 8.0,
             max_lifetime_hours: 2.0,
             max_concurrent_evals: 8,
             ssh_public_keys: vec![],
@@ -67,7 +67,7 @@ impl PrismConfig {
     pub fn sim() -> Self {
         Self {
             require_image_digest: false,
-            max_price_per_hour: 2.5,
+            max_price_per_hour: 8.0,
             max_lifetime_hours: 1.0,
             max_concurrent_evals: 1,
             ssh_public_keys: Vec::new(),

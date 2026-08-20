@@ -90,7 +90,7 @@ def main():
         m = json.loads(metrics_line[-1].split("=", 1)[1])
         assert m.get("automodel_stub") is True
         assert m.get("real_train") is False
-        assert m.get("recipe") == "2.0.0"
+        assert m.get("recipe") == "2.1.0"
 
     # --- pin+patch env path (non-fixture applied dir simulation) ---
     with tempfile.TemporaryDirectory(prefix="prism-am-pin-") as td:

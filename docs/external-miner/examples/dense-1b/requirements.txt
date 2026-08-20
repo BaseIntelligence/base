@@ -1,0 +1,4 @@
+# 32 GB: BF16 + ckpt. 96 GB-class / 1× B200: TE NVFP4 default (DENSE1B_TE=0 to off).
+# Do not install AutoModel pyproject (debian blinker has no RECORD).
+# Do not put pip option lines here.
+# submission_nonce: dense-1b-b200-20260819T1952Z

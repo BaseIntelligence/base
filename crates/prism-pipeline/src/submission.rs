@@ -14,7 +14,7 @@ use thiserror::Error;
 pub type SubmissionId = String;
 
 /// Miner submit body (AutoModel ZIP/JSON fields, or transitional 1.x sources).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubmissionRequest {
     pub miner_hotkey: String,
     #[serde(default)]
@@ -34,6 +34,11 @@ pub struct SubmissionRequest {
     #[serde(default)]
     pub prism_toml: Option<String>,
     /// Packed applied AutoModel tree (set by expand; not on the wire).
+    ///
+    /// Custom deps: a miner ships `requirements.txt` / `pyproject.toml` by
+    /// adding it in their `automodel.patch` (it becomes a touched file that
+    /// slim delivery keeps); the pod harness installs any manifest found in
+    /// the tree (network-on install phase, see `prismlib/deps.py`).
     #[serde(skip)]
     pub packed_tree: Option<Vec<u8>>,
 }
@@ -374,13 +379,8 @@ pub fn example_legacy_request() -> SubmissionRequest {
             "    return {'loss': 1.0}\n",
         )
         .into(),
-        zip_base64: None,
-        arch_id: None,
         label: Some("tiny".into()),
-        automodel_base: None,
-        automodel_patch: None,
-        prism_toml: None,
-        packed_tree: None,
+        ..Default::default()
     }
 }
 
@@ -396,15 +396,9 @@ pub fn example_automodel_request() -> SubmissionRequest {
     let zip = prism_automodel::fixture_automodel_zip().expect("fixture zip");
     let mut req = SubmissionRequest {
         miner_hotkey: "11".repeat(32),
-        architecture_py: String::new(),
-        training_py: String::new(),
         zip_base64: Some(base64::engine::general_purpose::STANDARD.encode(zip)),
-        arch_id: None,
         label: Some("automodel-fixture".into()),
-        automodel_base: None,
-        automodel_patch: None,
-        prism_toml: None,
-        packed_tree: None,
+        ..Default::default()
     };
     expand_zip_fields(&mut req).expect("automodel fixture expand");
     req

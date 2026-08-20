@@ -13,6 +13,12 @@ pub const RECOVERY_WINDOW_MS: u64 = 6 * 60 * 60 * 1000;
 /// True when a failed row should re-enter the rent queue (429 within window).
 #[must_use]
 pub fn should_recover(error_detail: &str, updated_at_ms: u64, now_ms: u64) -> bool {
+    let l = error_detail.to_ascii_lowercase();
+    // HuggingFace / FineWeb 429s are not Lium rent 429s — re-renting an
+    // 8×5090 pod does not fix a dataset CDN throttle.
+    if l.contains("huggingface") || l.contains("fineweb") || l.contains("\"stage\": \"dataset\"") {
+        return false;
+    }
     is_rate_limited(error_detail) && now_ms.saturating_sub(updated_at_ms) <= RECOVERY_WINDOW_MS
 }
 
@@ -70,5 +76,10 @@ mod tests {
         ));
         assert!(should_recover("provision: 429 rate limit", 100, 100 + 1));
         assert!(!should_recover("provision: 429", 0, RECOVERY_WINDOW_MS + 1));
+        assert!(!should_recover(
+            "measure: exec: HTTP Error 429: huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+            100,
+            100 + 1
+        ));
     }
 }

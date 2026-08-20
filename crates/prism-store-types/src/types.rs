@@ -225,61 +225,88 @@ pub enum PublishArchOutcome {
     Duplicate(String),
 }
 
-/// Packed-tree / USTAR path marker for recipe 2.0 `AutoModel` patch artifacts.
-const AUTOMODEL_PATCH_MARKER: &[u8] = b".prism/automodel.patch";
+/// Live Prism contest id. Pre-v2.1 harvests are a **different competition**.
+pub const PRISM_COMPETITION_ID: &str = "prism-v2.1";
+/// Scoring generation for [`PRISM_COMPETITION_ID`] (recipe `2.1.x` lattice).
+pub const PRISM_SCORING_GENERATION: u16 = 21;
 
-/// Fail-closed emission eligibility: recipe **2.0 / `AutoModel`** only.
+/// Stamp live contest identity onto a newly harvested **2.1** metrics blob.
 ///
-/// Legacy 1.x (`architecture.py` / `training.py` era) may remain visible on
-/// the site FE and in the DB, but must not win WTA leaf emission or displace
-/// an `AutoModel` champion via score carry. Unknown / missing signals are
-/// **not** eligible.
+/// No-ops on recipe 1.x / 2.0 so a rematerialized old harvest cannot gain
+/// generation 21. Does not overwrite an existing id/generation.
+pub fn stamp_v21_competition(metrics: &mut serde_json::Value) {
+    if !recipe_is_v21(metrics) {
+        return;
+    }
+    let Some(obj) = metrics.as_object_mut() else {
+        return;
+    };
+    obj.entry("competition_id")
+        .or_insert_with(|| serde_json::Value::String(PRISM_COMPETITION_ID.into()));
+    obj.entry("scoring_generation")
+        .or_insert_with(|| serde_json::json!(PRISM_SCORING_GENERATION));
+}
+
+/// Fail-closed emission eligibility: **recipe 2.1 / generation 21 only**.
+///
+/// Recipe `2.0.0`, `AutoModel` pin alone, and `.prism/automodel.patch` trees
+/// are the previous contest — they must not win WTA or carry. Unknown /
+/// missing signals are **not** eligible.
 #[must_use]
 pub fn submission_weight_eligible(
     metrics_json: Option<&serde_json::Value>,
-    tree_blob: Option<&[u8]>,
+    _tree_blob: Option<&[u8]>,
 ) -> bool {
-    if let Some(m) = metrics_json {
-        if recipe_major_ge2(m) || automodel_pin_signal(m) {
-            return true;
-        }
-    }
-    tree_blob.is_some_and(tree_blob_has_automodel_patch)
+    metrics_json.is_some_and(metrics_are_v21_competition)
 }
 
-fn recipe_major_ge2(m: &serde_json::Value) -> bool {
+fn metrics_are_v21_competition(m: &serde_json::Value) -> bool {
+    competition_id_is_live(m) || scoring_generation_is_live(m) || recipe_is_v21(m)
+}
+
+fn metric_str<'a>(m: &'a serde_json::Value, path: &str) -> Option<&'a str> {
+    if path.starts_with('/') {
+        m.pointer(path).and_then(serde_json::Value::as_str)
+    } else {
+        m.get(path).and_then(serde_json::Value::as_str)
+    }
+}
+
+fn recipe_is_v21(m: &serde_json::Value) -> bool {
     for path in ["recipe", "/pod_manifest/recipe"] {
-        let raw = if path.starts_with('/') {
-            m.pointer(path).and_then(|v| v.as_str())
-        } else {
-            m.get(path).and_then(|v| v.as_str())
-        };
-        if let Some(s) = raw {
-            if let Some(maj) = s
-                .trim()
-                .split('.')
-                .next()
-                .and_then(|p| p.parse::<u32>().ok())
-            {
-                if maj >= 2 {
-                    return true;
-                }
+        if let Some(s) = metric_str(m, path) {
+            let mut parts = s.trim().split('.');
+            if parts.next() == Some("2") && parts.next() == Some("1") {
+                return true;
             }
         }
     }
     false
 }
 
-fn automodel_pin_signal(m: &serde_json::Value) -> bool {
-    for path in [
-        "/pod_manifest/automodel_base",
-        "/pod_manifest/pin_id",
-        "/pin_id",
-        "/automodel_base",
-    ] {
-        if m.pointer(path)
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s.trim().starts_with("automodel@"))
+fn competition_id_is_live(m: &serde_json::Value) -> bool {
+    for path in ["competition_id", "/pod_manifest/competition_id"] {
+        if metric_str(m, path).is_some_and(|s| s.trim() == PRISM_COMPETITION_ID) {
+            return true;
+        }
+    }
+    false
+}
+
+fn scoring_generation_is_live(m: &serde_json::Value) -> bool {
+    for path in ["scoring_generation", "/pod_manifest/scoring_generation"] {
+        let v = if path.starts_with('/') {
+            m.pointer(path)
+        } else {
+            m.get(path)
+        };
+        let Some(v) = v else { continue };
+        if v.as_u64() == Some(u64::from(PRISM_SCORING_GENERATION)) {
+            return true;
+        }
+        if v.as_str()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .is_some_and(|n| n == PRISM_SCORING_GENERATION)
         {
             return true;
         }
@@ -287,13 +314,8 @@ fn automodel_pin_signal(m: &serde_json::Value) -> bool {
     false
 }
 
-fn tree_blob_has_automodel_patch(blob: &[u8]) -> bool {
-    blob.windows(AUTOMODEL_PATCH_MARKER.len())
-        .any(|w| w == AUTOMODEL_PATCH_MARKER)
-}
-
 impl SubmissionState {
-    /// Whether this row may receive on-chain Prism weight (`AutoModel` 2.0).
+    /// Whether this row may receive on-chain Prism weight (v2.1 contest).
     #[must_use]
     pub fn weight_eligible(&self) -> bool {
         submission_weight_eligible(self.metrics_json.as_ref(), self.tree_blob.as_deref())
@@ -311,7 +333,7 @@ pub struct EpochScoreRow {
     pub arch_id: Option<String>,
     /// Final lattice score (or absence).
     pub final_score: FinalScore,
-    /// Recipe 2.0 / `AutoModel` only — legacy positive scores must not win WTA.
+    /// Recipe 2.1 / generation 21 only — older contests must not win WTA.
     pub weight_eligible: bool,
 }
 
@@ -322,27 +344,60 @@ mod weight_eligible_tests {
     use serde_json::json;
 
     #[test]
-    fn recipe_2_metrics_eligible() {
+    fn recipe_21_metrics_eligible() {
         assert!(submission_weight_eligible(
+            Some(&json!({"recipe": "2.1.0"})),
+            None
+        ));
+        assert!(submission_weight_eligible(
+            Some(&json!({"pod_manifest": {"recipe": "2.1.3"}})),
+            None
+        ));
+    }
+
+    #[test]
+    fn competition_id_and_generation_eligible() {
+        assert!(submission_weight_eligible(
+            Some(&json!({"competition_id": PRISM_COMPETITION_ID})),
+            None
+        ));
+        assert!(submission_weight_eligible(
+            Some(&json!({"scoring_generation": PRISM_SCORING_GENERATION})),
+            None
+        ));
+        assert!(submission_weight_eligible(
+            Some(&json!({"scoring_generation": "21"})),
+            None
+        ));
+    }
+
+    #[test]
+    fn old_gen_and_automodel_pin_are_ineligible() {
+        assert!(!submission_weight_eligible(
             Some(&json!({"recipe": "2.0.0"})),
             None
         ));
-    }
-
-    #[test]
-    fn automodel_pin_eligible() {
-        assert!(submission_weight_eligible(
+        assert!(!submission_weight_eligible(
             Some(&json!({"pod_manifest": {"automodel_base": "automodel@v0.5.0"}})),
             None
         ));
+        let mut blob = b"ustar....".to_vec();
+        blob.extend_from_slice(b".prism/automodel.patch");
+        assert!(!submission_weight_eligible(None, Some(&blob)));
     }
 
     #[test]
-    fn tree_patch_marker_eligible() {
-        let mut blob = b"ustar....".to_vec();
-        blob.extend_from_slice(b".prism/automodel.patch");
-        blob.extend_from_slice(b"....tail");
-        assert!(submission_weight_eligible(None, Some(&blob)));
+    fn stamp_skips_old_recipe_and_fills_new() {
+        let mut old = json!({"recipe": "2.0.0"});
+        stamp_v21_competition(&mut old);
+        assert!(old.get("competition_id").is_none());
+        assert!(old.get("scoring_generation").is_none());
+        assert!(!submission_weight_eligible(Some(&old), None));
+        let mut new = json!({"recipe": "2.1.0"});
+        stamp_v21_competition(&mut new);
+        assert_eq!(new["competition_id"], PRISM_COMPETITION_ID);
+        assert_eq!(new["scoring_generation"], PRISM_SCORING_GENERATION);
+        assert!(submission_weight_eligible(Some(&new), None));
     }
 
     #[test]

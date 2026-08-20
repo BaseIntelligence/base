@@ -20,12 +20,12 @@ pub mod submission;
 pub use composite::{
     evaluate, BootstrapInfo, BudgetFacts, CompositeAnchors, CompositeError, CompositeOutcome,
     CompositeScore, GateFailure, GateReport, GateThresholds, GroupScore, Ineligible, MetricSeries,
-    MirrorPair, NormDesc, SubmissionMetrics, GROUP_KEYS, N_GROUPS,
+    MirrorPair, NormDesc, SubmissionMetrics, G3_HARD_FLOOR_ARMED, GROUP_KEYS, N_GROUPS,
 };
 pub use config::PrismConfig;
 pub use pipeline::{
-    measurement_patch, mid_pod_resume, resume_measurement, run_eval_pipeline, run_sim_pipeline,
-    PipelineError, PipelineInput, PipelineResult,
+    measurement_patch, mid_pod_resume, recipe_descriptor_json, resume_measurement,
+    run_eval_pipeline, run_sim_pipeline, PipelineError, PipelineInput, PipelineResult,
 };
 pub use precheck::{
     corpus_from_rows, ephemeral_candidate, evaluate_copy_precheck, gate_corpus_from_rows,

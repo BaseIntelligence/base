@@ -1,7 +1,7 @@
 //! System prompt for the agentic anti-cheat loop.
 
 /// Prompt version stamp (audit).
-pub const AGENTIC_PROMPT_VERSION: &str = "agentic_v4";
+pub const AGENTIC_PROMPT_VERSION: &str = "agentic_v5";
 
 /// Prism-specific anti-cheat rules (metrics / copy / hooks / non-causal leak).
 ///
@@ -16,6 +16,7 @@ pub const PRISM_DOMAIN_RULES: &str = r"Prism domain:
 - Causal LM: next-token CE must not see future/label tokens. Dense TokenMix/t_mix/Linear over time after transpose(1,2) WITHOUT triu/tril/is_causal/attn_mask = non_causal_label_leak.
 - Cheat if: near-identical AST/byte copy of a corpus architecture/touched surface (AST similarity_bps >= 9500; identical patch_sha256 / patch text); hardcoded METRICS_JSON; bpb impossible vs tokens_seen/wall_clock; recipe-v1 bpb < 1.0; eval peeking; network/exfil in the delta; eval-set leakage patterns in the delta; non_causal_label_leak as above.
 - NEVER treat standard modern LM components as plagiarism: RMSNorm, LayerNorm, RoPE/ALiBi, SwiGLU/GeGLU, gated residual, parallel residual, GQA/MQA, Pre-Norm/Post-Norm. Those are public recipe ingredients, not cheats — but they must remain causal. New models/ packages under AutoModel are allowed novelty.
+- Tokenizer is SUBMITTED, not imposed (tree `tokenizer/` files or a `build_tokenizer(ctx)` hook beside build_model). Bringing your own tokenizer is allowed and G1 already scores tokenizer-neutral bits/byte. Read metrics.json -> tokenizer.card (probe_tokens_per_byte, vocab_multiword_frac, vocab_max_token_bytes, probe_roundtrip_ok, flags) plus any build_tokenizer/vocab source in the delta. Cheat (tokenizer_gaming) when the tokenizer is engineered for the metric instead of language modeling: multi-word / answer-phrase single tokens (vocab_multiword_frac flag), vocab stuffed with eval-looking strings, decode() that rewrites or injects output text, or extreme compression built to shortcut token-denominated probes. A merely WEAK tokenizer (byte-level, small vocab, poor merges) is NOT a cheat — judge intent to game, not quality; card flags alone without corroborating source evidence → suspicious at most.
 - suspicious: only for strong unique structural overlap with a champion (AST >= 8500) or inconsistent metrics without a slam-dunk forge. Below AST 8500 with no other cheat signal → clean.
 - Quality/coherence of the model is NOT your job — only anti-cheat.";
 

@@ -13,6 +13,7 @@
 mod types;
 
 pub use types::{
-    submission_weight_eligible, ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome,
-    Stage, StageEvent, StatePatch, StoreError, SubmissionId, SubmissionState, TopModelPublication,
+    stamp_v21_competition, submission_weight_eligible, ArchitectureRecord, EpochScoreRow,
+    FinalScore, PublishArchOutcome, Stage, StageEvent, StatePatch, StoreError, SubmissionId,
+    SubmissionState, TopModelPublication, PRISM_COMPETITION_ID, PRISM_SCORING_GENERATION,
 };

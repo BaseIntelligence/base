@@ -23,7 +23,7 @@ use prism_pipeline::{
 };
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
-use submission_gating::GatingStore;
+use submission_gating::{classify_eval_fail, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -50,13 +50,18 @@ pub struct OrchestratorConfig {
     pub auto_retry_max: u32,
     pub scoring_mode: ScoringMode,
     pub orphan_grace_secs: u64,
+    /// GPUs rented per eval pod (`PRISM_POD_GPU_COUNT`, default 1× B200).
+    ///
+    /// Miners may train across all of them; the eval battery stays pinned to
+    /// GPU 0 so G7 timings stay comparable across submissions.
+    pub pod_gpu_count: u32,
 }
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             netuid: 1,
-            max_price_per_hour: 2.5,
+            max_price_per_hour: prism_lium::DEFAULT_MAX_PRICE_PER_HOUR,
             max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
             ssh_public_keys: vec![],
             image_digest: None,
@@ -69,6 +74,7 @@ impl Default for OrchestratorConfig {
             auto_retry_max: 3,
             scoring_mode: ScoringMode::from_env(),
             orphan_grace_secs: DEFAULT_ORPHAN_GRACE_SECS,
+            pod_gpu_count: prism_lium::pod_gpu_count_from_env(),
         }
     }
 }
@@ -365,16 +371,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     ) -> Result<(), String> {
         let msg = format!("measure: {err}");
         // Harness EVAL_FAIL is miner/model code, not Lium infra — do not burn
-        // auto-retries (BYOK seal is kept on Err; see finish_measure).
+        // auto-retries (BYOK seal is kept on Err; see finish_measure). The
+        // miner-fixable phases (`install_deps` custom-deps install,
+        // `train_script` training crash) additionally fail terminal under
+        // their own class, which grants unbounded resubmit. Every other
+        // EVAL_FAIL phase (eval / battery / score) stays the historical
+        // windowed `install` class. Non-EVAL_FAIL failures are Lium infra and
+        // keep `install` + operator-paid auto-retry.
         if msg.contains("EVAL_FAIL") {
-            fail_terminal(
-                self.store.as_ref(),
-                self.gating.as_ref(),
-                row,
-                "install",
-                &msg,
-            )
-            .await;
+            let class = classify_eval_fail(&msg);
+            fail_terminal(self.store.as_ref(), self.gating.as_ref(), row, class, &msg).await;
             return Ok(());
         }
         if self.maybe_auto_retry(row, "install", &msg).await {
@@ -709,7 +715,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 name: format!("prism-{}", &id[..12.min(id.len())]),
                 max_lifetime_hours: self.cfg.max_lifetime_hours,
                 max_price_per_hour: self.cfg.max_price_per_hour,
-                gpu_count: 1,
+                gpu_count: self.cfg.pod_gpu_count,
                 image_digest: self.cfg.image_digest.clone(),
                 ssh_public_keys: self.cfg.ssh_public_keys.clone(),
                 ssh_key_name: Some("prism-mission-worker".into()),

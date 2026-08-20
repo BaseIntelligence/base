@@ -3,8 +3,9 @@
 # Prism challenge — HTTP AutoModel patch submit
 
 **challenge_id:** `prism`  
+**competition_id:** `prism-v2.1` (`scoring_generation` `21`) — **new competition**. Old recipe `2.0.0` / 1.x scores are dead: they are not rescored and cannot win weights. Until the first eligible 2.1 submission terminates, subnet weights stay **burn** (uid 0 = 100%).  
 **scoring_version:** `4` live (equal-weight G2 public-suite accuracies → lattice; LLM review is an anti-cheat gate, not a grader). **v3 harness (default):** every scored run executes the **G1–G8 battery**; the leaf uses G2 benches while `PRISM_SCORING_MODE=benchmarks` (default). Legacy `shadow` = bits/token bpb; `composite` = full G1–G8 lattice when anchors are ready.  
-**recipe_version:** `2.0.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) base + miner unified diff; legacy 1.x layouts rejected on live)  
+**recipe_version:** `2.1.0` (pinned [NeMo AutoModel](https://github.com/NVIDIA-NeMo/Automodel) diff + 4-GPU CUDA 13/TE pod + attested dual cap; legacy 1.x layouts rejected)
 **Path:** HTTP only — **no Phala/CVM**
 
 Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../PRISM_RECIPE.md).
@@ -12,7 +13,7 @@ Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../P
 ## What you submit
 
 A **ZIP** (preferred) — or JSON with the same members / `zip_base64` — that is
-**not** a free-form `architecture.py` / `training.py` project. Recipe **2.0.0**
+**not** a free-form `architecture.py` / `training.py` project. Recipe **2.1.0**
 accepts only an AutoModel pin id plus your git diff against that pin:
 
 ```text
@@ -34,9 +35,64 @@ prism.toml              # optional — entry / model-config knobs
 5. Write `automodel.base` as a single line equal to `automodel_pin_id`, pack
    the ZIP, and `POST /v1/submissions` with your hotkey + **`X-Lium-Api-Key`**.
 
-Models must stay **≤ 350M parameters**. The pod has **no network**
-(`unshare --net`) beyond the operator-owned dataset pull — do not call Hub
-downloads from miner code.
+Models must stay in **850M–1B parameters** (total unique; tied embeddings
+once). A 215M pack is **invalid** for recipe 2.1. Miner **model code** (build/train/
+eval) runs with **no network** (`unshare --net`) beyond the operator-owned
+dataset pull — do not call Hub downloads from `build_model` / `train`.
+
+**Bring your own dependencies (recipe-v10).** The pod image is a complete
+CUDA 13 base with PyTorch, a build toolchain (`nvcc`, `ninja`), Transformer
+Engine (NVFP4 training), and common accelerators. You may additionally ship
+**one** of:
+
+- `requirements.txt` — installed with `pip install -r requirements.txt`
+- `pyproject.toml` — installed with `pip install .`
+
+by **adding the file at the repo root in your `automodel.patch`** (or at
+the ZIP root on the legacy two-script path). It is installed in a
+**network-on install phase before** your model code is sandboxed — so
+`flash-attn`, `mamba-ssm`, custom Triton/CUDA kernels, etc. compile and
+install, then train/eval run offline. `requirements.txt` wins if you ship
+both. Check `GET /v1/recipe` for `pod_image_ref`, `miner_install_supported`,
+`miner_deps_members`, and `install_timeout_secs`.
+
+**GPU train contract.** Recipe-v10 1B pods default to **one NVIDIA B200**
+(`ctx["gpu_count"]==1`, ~180–192 GB, TE on, mb≥8, world=1). Set
+`PRISM_POD_GPU_COUNT=4` for the **four RTX 5090** fallback, or `2`/`8` for
+**RTX PRO 6000**. The organizer eval stays on GPU 0.
+Training must consume global batches from the harness-owned
+`ctx["train_stream"]`, because that stream enforces step/wall/FLOPs caps and
+owns token/byte accounting for G6. For DDP/ZeRO/FSDP, keep rank 0 as the
+stream owner and scatter/shard each accounted global batch to workers over
+the local process group. At 850M–1B, default the example pack to ZeRO-1. Do not let each worker create an independent dataset stream:
+v3 rejects a trainer that returns with zero harness-accounted tokens. The
+isolated network namespace brings `127.0.0.1` loopback up for rendezvous but
+has no external route. Rank 0 should write `dense_1b_ddp/telemetry.json`
+(loss series + probe curve): spawned workers do not share the parent
+`prism_telemetry` hook, and without that sidecar G6/G8 used to omit keys.
+
+**Resubmit at will on your own failures.** If your dependency install fails
+(`install_deps`) or your `training.py` crashes at build/train time
+(`train_script`), the run fails **without burning your one-submission
+slot** — fix the manifest or the script and resubmit immediately, no time
+window. (Operator-side infra hiccups keep the existing 30-minute resubmit
+window.)
+
+**Bring your own tokenizer — verified.** The tokenizer is part of your
+submission: ship `tokenizer/` files in your tree (≤ 12 files, ≤ 8 MiB,
+loaded offline with `AutoTokenizer.from_pretrained(dir,
+local_files_only=True)`) or export `def build_tokenizer(ctx)` next to
+`build_model` in `architecture.py` (train/wrap anything, offline). The
+harness hands it back as `ctx["tokenizer"]` / `ctx["vocab_size"]`; the
+`gpt2` pin is only the default when you ship nothing. Two things keep this
+fair: (1) G1 scores **bits/byte**, tokenizer-neutral — exotic vocabularies
+buy you nothing on the headline metric; (2) every run emits an objective
+**tokenizer card** (compression on a fixed probe, roundtrip fidelity,
+vocab-shape scan) that the LLM anti-cheat review reads. A tokenizer
+engineered to game metrics — multi-word answer phrases as single tokens,
+vocab stuffed with eval-looking strings, a `decode()` that rewrites output,
+memorizing compression — is a **cheat** (`tokenizer_gaming`, Score 0). A
+merely weak tokenizer is not a cheat; it just hurts your own score.
 
 **Legacy recipe 1.x rejected on live.** Two-script ZIPs
 (`architecture.py` + `training.py`), 1.3 source-tree ZIPs, and training-only
@@ -48,6 +104,17 @@ frameworks.
 `finish_evaluation` under the AutoModel train entry. Patches that remove or
 bypass those hooks fail review (`missing_telemetry_hooks`, zero score,
 terminal).
+
+**Example: dense 1B (1× B200, NVFP4).** A reference AutoModel patch
+that honors `ctx["train_stream"]`, rank-0 stream ownership, and NVFP4 TE
+on 180 GB-class (mb≥8, ckpt off; 4×5090 stays BF16 + activation checkpoint)
+lives at
+[`examples/dense-1b/`](examples/dense-1b/). It is a **dense** ~975M
+transformer (GQA + SwiGLU). The harness uses analytic 6N for the parent
+FLOPs cap so GPU0 stays free for spawn. Fine-grained MoE at 1B is a miner
+experiment, not the reference. Pack `automodel.base` + `automodel.patch`
+(+ optional `prism.toml` / `requirements.txt`) as in this document. It is
+an example, not a scored baseline.
 
 **Diff visibility.** After intake, inspect your applied delta at
 `GET /v1/submissions/{id}/diff` (full unified diff + diffstat / classification).
@@ -68,10 +135,19 @@ X-Lium-Api-Key: <your Lium API key>
 The key is held in master memory for that submission and may also land in a
 **TTL-bounded encrypted seal file** on the master host (default ≥36h; never in
 Postgres, never logged). Master **re-seals** on measure start and heartbeats
-so a full 6h train wall cannot outlive the seal across a control-plane
+so a full 4h train wall cannot outlive the seal across a control-plane
 restart. Missing key on live → `400 missing_lium_api_key`. Cost guardrails
 (`max_price_per_hour`, lifetime) still apply so a bad key cannot rent
 unbounded SKUs through the orchestrator.
+
+**Pod lifetime ceiling is 7.0h.** You are billed for time actually used, not
+the ceiling. It must contain build (≤15m) + the **4.0 h / 240 min** train
+wall + checkpoint (≤30m) + eval (≤1.5h) ≈ 6.28 h. Isolated proofs set
+`PRISM_TEST_TRAIN_MINUTES=60`; unset or `240` is the operator default (same
+as the recipe constant). The eval battery itself runs under one global 1h
+budget with per-group shares, and if a group hits its ceiling the run
+reports it (`budget.truncated` / `budget.partial_groups` in the battery
+blob) rather than silently scoring fewer items.
 
 If the challenge process restarts mid-run while your Lium pod is still
 training/evaling, master **reattaches** quietly (same submission id; pod is
@@ -111,12 +187,20 @@ Inspect recipe + AutoModel pin before coding:
 curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe"
 ```
 
-Live recipe **2.0.0** advertises `version: "2.0.0"` and AutoModel pin fields
+Live recipe **2.1.0** advertises `version: "2.1.0"` and AutoModel pin fields
 (`automodel_pin_id` = `automodel@v0.5.0`, `automodel_repo_url`,
 `automodel_git_ref`, `automodel_git_commit`, `automodel_content_sha256`),
-plus caps such as `train_hours_cap: 6.0`, `max_train_steps: 20000`,
-`max_params: 350000000`, FineWeb dataset pin, and `pin_hex` (sha over the
-versioned descriptor). Trust `/v1/recipe`, not marketing chart labels.
+plus caps such as `train_flops_cap: 3.0e18` (the budget currency),
+`train_hours_cap: 4.0` (240 min anti-DoS wall; operator default
+`PRISM_TEST_TRAIN_MINUTES=240` is the same as unset), `min_spend_fraction: 0.5`
+(voluntary-stop floor; a step/wall/FLOPs-bound run stays eligible),
+`max_train_steps: 20000`, `min_params: 850000000`, `max_params: 1000000000`, FineWeb dataset pin,
+and `pin_hex` (sha over the versioned descriptor). Trust `/v1/recipe`,
+not marketing chart labels.
+
+The FLOPs probe retries OOM at progressively smaller row counts down to one
+sequence and reports whether it reduced the batch; a deliberately
+memory-heavy model cannot turn probe OOM into an unmetered train.
 
 `POST /v1/submissions` is idempotent by `submission_id` (hash of **pin id ‖
 `0x00` ‖ patch bytes**).
@@ -217,12 +301,27 @@ baseline — not every past submission — and still exclude your own prior art
 LayerNorm, gated/parallel residual, …) are **not** plagiarism signals. LLM
 quality is coherence-only, not a grader.
 Public gallery/leaderboard show champions only.
+**New competition (`prism-v2.1`).** Only harvests finalized under recipe
+**2.1.0** / `scoring_generation` **21** can receive leaves. A prior 2.0
+AutoModel run — even a high lattice score — is a different contest and
+does not carry, win WTA, or get paid. Re-submit under 2.1 if you want to
+compete. Until someone finishes an eligible 2.1 run, weights burn.
+
 **Competition (temporary):** emission uses **your own best training score
 only** — architecture-owner credit (rewarding arch owners when others train
 well on their code) is **disabled** for now so the best-scoring trainer keeps
 Prism's weights. Emission remains **winner-take-all**: only the single highest
 own score that epoch receives Prism's share (50% of the subnet); ties break by
-lexicographically smallest hotkey. Scores first land in the leaf
+lexicographically smallest hotkey. Two **v2.1 opt-in** emission knobs exist
+but are **off by default** (operators announce any flip): `top3` mode pays
+the top three positive scores at 100 % / 50 % / 25 % of their own lattice
+score instead of winner-take-all, and an architecture-owner split can carve
+up to 50 % of the winner's leaf to the **registry owner** of the winning
+architecture — publishing a strong architecture that someone else trains to
+the top then earns you a share. A third mode, `sig` (**significance-gated**,
+also off by default), is described in
+[what actually earns emission](#what-actually-earns-emission-significance-gating)
+below. Scores first land in the leaf
 set emitted at the first chain-epoch boundary **after** your run finalizes (a
 long train that crosses epochs is normal — outbox assignment is exactly once).
 Positive scores then keep participating in later epochs' competition sets until
@@ -233,6 +332,110 @@ checkpoint release) is published to
 `top-model/` and (when configured) a HuggingFace model repo
 `BaseIntelligence/top-prism-architecture` (custom-arch / AutoModel novelty +
 weights, `trust_remote_code`). See [`PRISM.md`](../PRISM.md).
+
+## What Prism does and does not claim about your architecture
+
+Read this before optimizing anything, because it tells you what the ranking
+means.
+
+**Prism ranks architectures at a pinned, small budget.** Every submission trains
+under the same fixed recipe, the same fixed data, the same wall-clock cap, on the
+same GPU class. That is a genuine, well-controlled comparison — the pinned-recipe
+discipline is what makes it meaningful at all — and it is the thing the leaderboard
+measures.
+
+**Prism does not claim to select architectures that will scale.** This is not
+modesty; it is a measured result we would rather publish than hide. Tay et al.,
+*Scaling Laws vs Model Architectures* (EMNLP Findings 2023,
+[arXiv 2207.10551](https://arxiv.org/abs/2207.10551)) pretrained **>100 models
+across 10 architectures from 15 M to 40 B parameters** and found:
+
+- "**The best performing model can fluctuate at different scales.**"
+- The **vanilla Transformer has the best scaling exponent** while *not* being the
+  best at every individual compute point — the winner at one budget is not
+  necessarily the best scaler.
+- **Concrete rank flips:** Evolved Transformer beats vanilla at small scale on
+  downstream tasks and falls behind when scaled up; **ALBERT scales negatively
+  downstream** (α = −0.12), and ALBERT's mechanism is cross-layer weight sharing,
+  the same family as looped / recurrent-depth designs.
+
+So a win here is evidence that your architecture is better **at this budget**, not
+a prediction about 70 B. The authors also state the converse, which is Prism's
+honest positive claim: not every practitioner needs models that scale to billions,
+and inductive biases tailored to small or low-compute regimes are valuable in
+their own right. That is the regime Prism measures.
+
+Two practical consequences for you:
+
+- Improvements that only appear at larger scale will not be visible here, and
+  that is a limitation of the instrument, not a judgement on your idea.
+- Tuning tricks that exploit the pinned budget specifically may win here without
+  transferring. We would rather you know that than discover it later.
+
+## What actually earns emission (significance gating)
+
+Live emission today is **winner-take-all**: the single highest own score takes
+Prism's share. The `sig` mode described here is **implemented but off by
+default** — operators announce any flip, and it cannot be enabled until the
+run-to-run (seed) noise floor has been measured and published. It is documented
+now so you can see where the incentives are going.
+
+Under `sig`, **beating the champion requires clearing a measurement-uncertainty
+margin, not just posting a better point estimate.**
+
+**Why.** Two runs of the *same* architecture do not produce the same number.
+Eval sampling and training-seed noise both move the score. So a challenger that
+scores 0.1 % better has not shown it is better — it may simply have drawn a
+luckier run. Under the old rule that coin flip won the entire share, which is
+also exactly what makes copying the champion profitable: a copy has the *same*
+true quality, so it wins the flip about half the time. Requiring real evidence of
+improvement removes that.
+
+**How the comparison works, in plain terms.**
+
+1. You and the champion are scored on the **same** private eval slice.
+2. Your scores are compared **example by example**, not as two totals. Hard
+   examples are hard for both models, and pairing cancels that out.
+3. Differences smaller than a fixed **dead zone** (0.01 in absolute metric units
+   — bits/byte, or accuracy) are treated as *undecided*. Hairline differences do
+   not vote.
+4. You must win **≥ 55 % of the decided examples** — and not on the point
+   estimate: on a **99 % lower confidence bound** from a 10 000-resample
+   bootstrap with a fixed, published seed. Anyone can recompute the verdict.
+5. Your **average margin** on decided examples must also clear the dead zone, so
+   you cannot win a majority of near-ties while being much worse where you lose.
+6. There must be at least **100 decided examples**. Below that the win rate
+   cannot be estimated closely enough to mean anything, and the champion holds.
+   On a task where everyone scores nearly the same, that is the normal outcome:
+   the comparison refuses rather than crowning a coin flip.
+
+One consequence worth knowing: you and the champion must have been measured on
+the **same** eval slice for any of this to run. If the slice rotated between the
+champion's run and yours, there is no valid comparison and the champion holds
+until it is re-measured on your slice. That re-measurement is the operator's job,
+not yours.
+
+The bar is 55 % rather than something higher on purpose: a genuinely better
+architecture with a wide per-example spread sits near 55 %, so demanding much
+more would select for **low-variance submissions instead of good ones**.
+
+**What you get paid.** Prism's share splits: **60 %** champion (dropping toward
+a 50 % floor if the win is real but marginal, with the difference **burned**),
+**15 / 10 / 5 %** to ranks 2–4, and **10 %** split across up to five entries that
+pass every gate and **hold the best measured value on any single axis** `g1..g8`.
+
+That last pool is the one worth understanding. You do **not** have to win overall
+to earn from it. If you are third on the composite but **first on G3**
+(associative recall) or **first on G7** (inference cost), you produced real
+information and you are paid for it. Note what this is not: there is **no reward
+for being different**. Renaming variables, reordering statements, or otherwise
+looking novel earns nothing — the axes are real measurements, and you have to
+actually be best on one. Anything unallocated **burns** rather than being
+redistributed.
+
+Also under `sig`: the champion is **re-measured** on fresh private slices at
+unannounced times (operator-funded, eval-only). If a champion's score was propped
+up by fitting the public anchors, that shows up and costs it the title.
 
 ## v3 scoring (battery always; leaf mode via env)
 
@@ -245,6 +448,20 @@ long-context (G5), sample efficiency from the train probe curve (G6),
 inference efficiency (G7), and training stability/µP (G8). Everything the
 battery reports is organizer-measured (**Zone A**, `org.*`) and is computed
 inside the harness — your code never emits it.
+
+The v3 metric surface is structurally complete: G1 includes code, prose,
+math, fresh crawl, and key-token bits/byte (news/crawl alias into prose/fresh
+when a pack omitted those files; otherwise a chance-floor bits/byte so the
+org keys are never silently dropped); G6 includes byte-denominated AUC,
+bytes-to-threshold, and bpb at half of the organizer FLOPs cap, plus
+fail-closed `org.g6.auc_log_tokens` / `org.g6.tokens_to_threshold` when the
+probe curve is empty; G7 includes measured-or-censored 32k TTFT/TPOT/state,
+board energy, throughput, and reasoning throughput (32k is skipped without
+allocating when a shorter length OOM'd); G8 emits `org.g8.loss_spike_score`
+and µP LR-transfer. Unsupported 32k/OOM/power cases receive explicit
+worst-case censored values rather than silently disappearing. Live emission nevertheless remains G2 benchmarks +
+WTA until operators announce calibrated v3 anchors and a separate governance
+flip.
 
 **G5 is pretrain-only (recipe ≥ 1.4.0).** The long-context group scores a
 **base LM**, not an instruction-tuned chat model: completion-style /
@@ -286,7 +503,8 @@ bpb (v2). After the reference baselines (**Transformer++** and
 are measured and the anchor set is pre-registered, governance may flip to
 `composite`: group scores are anchor-normalized (**arithmetic** mean within
 each group; a single zero sub-metric does not zero the group), gate-filtered
-(`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget + CI gates), combined as a weighted
+(`g3 ≥ 0.25` currently **disarmed** until G3 item counts stabilize;
+`g8 ≥ 0.5`, budget + CI gates), combined as a weighted
 **geometric** mean across groups (`C = ∏ g_k^{w_k}` — a full group score of 0
 collapses C), and ranked by the bootstrap lower-confidence bound
 (`lattice = round(SCORE_MAX × max(0, C − 1.645·SE))`). Inspect the anchor
@@ -295,10 +513,76 @@ registry and pre-registration commits at `GET /v1/anchors` and
 `GET /v1/submissions/{id}/metrics?zone=a|b`.
 
 **G8 µP probe.** The stability sweep builds 1× and 4× width from a **fixed
-small** width/depth base (not your full ≤350M scored model), then scales with
+small** width/depth base (not your full 850M–1B scored model), then scales with
 `ctx["prism_width_multiplier"]`. Honor top-level / `arch` geometry overrides
 and that multiplier in `build_model` (reference baselines do) or the sweep
 fail-closes `org.g8.mup_lr_stability = 0.0`.
+
+### v2.1 battery additions (anchor set v1, opt-in)
+
+Two extra organizer-measured keys ship with the v2.1 harness on every real
+run (inert until operators select anchor set v1; you will see them in
+`GET /v1/submissions/{id}/metrics?zone=a`):
+
+- `org.g7.reasoning_throughput` — mean G4 accuracy × decode toks/s.
+  Compute-normalized reasoning: architectures that spend extra inference
+  compute to reason (loops, adaptive depth, recursion) are credited for
+  the accuracy they buy in the same key that charges its cost — raw
+  throughput alone no longer structurally penalizes them.
+- `org.g8.mup_scaling_slope` — a local scaling-exponent probe measured on
+  the existing µP 1×/4× width sweep (how fast your architecture improves
+  with scale). Support the `prism_width_multiplier` build knob (already
+  required for G8) and this costs you nothing extra; a failed sweep
+  fail-closes the key to 0.0.
+
+Practical consequence for architecture design: under anchor set v1,
+"thinks more when it's hard" designs and "scales steeper" designs earn
+score on dedicated axes instead of only paying G7/G6 penalties.
+
+### v2.2: LAMBADA scored strict (anchor set v2, opt-in)
+
+The G2 LAMBADA item used to be a 4-way multiple choice against random
+distractor words — nearly free points (0.95+ for everyone, 0.985 for the
+GPT-2 Large reference), because LAMBADA's gold word is uniquely determined
+by its long context. The harness now **also** emits
+`org.g2.lambada_strict_acc`: unconstrained **greedy last-word exact match**
+(the canonical protocol — GPT-2 Large lands around 0.52–0.60, small 1-hour
+models around 0.10–0.30). Under anchor set v2 the strict key replaces the
+saturated MC key in the composite; v0/v1 scoring is unchanged. For your
+model this means last-word prediction quality is measured for real: test
+locally by greedy-decoding the final word of LAMBADA passages, not by
+ranking four candidate words.
+
+### v2.2: G6 sample-efficiency scoring corrected (anchor set v2, opt-in)
+
+Two G6 defects are fixed. Both only affect anchor set **v2**; v0 and v1 are
+pre-registered and byte-frozen, so their scoring is unchanged.
+
+- **Never reaching the CE threshold no longer scores well.**
+  `org.g6.tokens_to_threshold` is lower-better, and a curve that never
+  reaches CE 4.0 used to report the small token count it stopped at — so
+  training *less* scored **better**. A right-censored curve now scores the
+  **0.0 floor**. There is no longer any advantage in stopping early; get the
+  probe loss down and actually cross the threshold. The raw endpoint is
+  still reported for you as `g6.tokens_to_ce4.0.observed`, and
+  `g6.tokens_to_ce4.0.censored` tells you it happened.
+- **`org.g6.auc_log_tokens` now discriminates.** It is the mean probe
+  cross-entropy per decade of tokens — **lower is better**. The v0/v1 anchor
+  treated it as higher-better over `[0.5, 0.95]`, so every plausible run
+  clipped to a perfect 1.0 and the metric measured nothing. Under v2 the
+  **shape** of your learning curve is scored: reaching a low loss early, and
+  staying low, beats a late crossover with the same final loss.
+
+### G2 item counts raised on the tasks that discriminate
+
+LAMBADA, HellaSwag, PIQA and ARC-easy are now scored over **~1000 items**
+each instead of 200. At 850M–1B params / 6h, Winogrande and OpenBookQA sit at
+chance and ARC-challenge / BoolQ at or below their floors, so those keep 200
+items — more items there would not separate two submissions. **No group or
+task weights changed.** Practical consequence: a 2–3 point difference on a
+G2 task was inside the noise floor at 200 items; on the four raised tasks
+the floor is roughly 3× tighter, so real gains there now show up in your
+score instead of being washed out.
 
 ## Useful routes
 

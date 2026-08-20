@@ -8,7 +8,8 @@
 //! 2. two-level means (within sub-metric, then across) → group scores,
 //!    then the step-2.5 mirror-gap penalty `max(0, (x_public − x_mirror) −
 //!    τ_m)` deducted from G2/G4 pre-composite,
-//! 3. lexicographic gates (g3 ≥ 0.25, g8 ≥ 0.5, budgets, CI half-width ≤ δ),
+//! 3. lexicographic gates (g3 floor **disarmed** — see [`G3_HARD_FLOOR_ARMED`];
+//!    g8 ≥ 0.5, budgets, CI half-width ≤ δ),
 //! 4. weighted geometric mean `C = ∏ g_k^{w_k}`,
 //! 5. clustered bootstrap (B ≥ 1000) recomputing the entire pipeline per
 //!    resample → `SE(C)` and per-axis percentile CIs,
@@ -30,6 +31,22 @@ pub const N_GROUPS: usize = 8;
 
 /// Group keys in canonical order.
 pub const GROUP_KEYS: [&str; N_GROUPS] = ["g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"];
+
+/// Whether the hard G3 eligibility floor (`gates.g3_min`, 0.25 in v0–v3) is
+/// live.
+///
+/// Phase 0 (`docs/evidence/prism-v3-phase0/`) measured the placeholder
+/// floor flipping on **training seed alone**: seed 1001 scored g3 = 0.197
+/// (ineligible) while 1002/1003 cleared 0.25, driven by 1–2-cluster probes
+/// (`passkey` 0.0→0.5, `induction` 0.5→1.0). Live emission is
+/// `PRISM_SCORING_MODE=benchmarks` (v4 G2 lattice) so this never zeros
+/// weights today — but `evaluate()` always applied the floor against the
+/// live v0 set, which is a production fairness bug the moment anyone
+/// reads composite eligibility or flips `composite`.
+///
+/// v0/v1/v2 stay **byte-frozen** (hash-committed). Re-arm only after G3
+/// item counts stabilize; do not rewrite those JSON files to "fix" this.
+pub const G3_HARD_FLOOR_ARMED: bool = false;
 
 /// Clip to `[0, 1]`; non-finite values fail closed to 0.
 fn clip01(x: f64) -> f64 {
@@ -141,20 +158,12 @@ pub struct GroupSpec {
     pub metrics: BTreeMap<String, MetricSpec>,
 }
 
-/// Lexicographic gate thresholds (step 3).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct GateThresholds {
-    /// Minimum G3 (recall probes) group score.
-    pub g3_min: f64,
-    /// Minimum G8 (stability) group score.
-    pub g8_min: f64,
-    /// Max per-axis clustered 95% CI half-width δ.
-    pub ci_half_width_delta: f64,
-    /// Fixed-recipe parameter budget.
-    pub max_params: u64,
-    /// Fixed-recipe wall-clock budget in seconds (6h = 21600).
-    pub max_wall_s: f64,
-}
+/// Budget facts, gate thresholds, gate failures and the budget-gate check
+/// live in `prism-budget`: this module was within a few lines of the 1500
+/// non-test LOC cap when the dual-cap gates landed, and the budget gates are
+/// a self-contained concern with no dependency on scoring. Re-exported here,
+/// so the public API and the serialized JSON are unchanged.
+pub use prism_budget::{BindingCap, BudgetFacts, GateFailure, GateReport, GateThresholds};
 
 /// Mirror-gap penalty parameters (step 2.5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,17 +277,6 @@ pub struct MetricSeries {
     pub clusters: BTreeMap<String, f64>,
 }
 
-/// Budget facts for the fixed-recipe gates (step 3).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct BudgetFacts {
-    /// Trained parameter count.
-    pub params: u64,
-    /// Wall-clock seconds.
-    pub wall_s: f64,
-    /// Real training tokens consumed (recorded, not gated).
-    pub tokens: u64,
-}
-
 /// A public/private mirror pair for the contamination-gap penalty (step 2.5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MirrorPair {
@@ -306,98 +304,6 @@ pub struct SubmissionMetrics {
     /// Mirror pairs for the G2/G4 contamination gap.
     #[serde(default)]
     pub mirrors: Vec<MirrorPair>,
-}
-
-/// One gate failure (structured; serialized for the dashboard/audit).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "gate", rename_all = "snake_case")]
-pub enum GateFailure {
-    /// A whole group's metrics are absent from the submission.
-    MissingGroup {
-        /// Group key (`g1`..`g8`).
-        group: String,
-    },
-    /// A declared sub-metric is absent from the submission.
-    MissingMetric {
-        /// Metric key (`org.<group>.<name>`).
-        key: String,
-    },
-    /// `g3 < g3_min` (recall floor).
-    G3BelowFloor {
-        /// Observed g3.
-        g: f64,
-        /// Required floor.
-        floor: f64,
-    },
-    /// `g8 < g8_min` (stability floor).
-    G8BelowFloor {
-        /// Observed g8.
-        g: f64,
-        /// Required floor.
-        floor: f64,
-    },
-    /// Parameter budget exceeded.
-    ParamsOverBudget {
-        /// Observed params.
-        params: u64,
-        /// Budget.
-        max: u64,
-    },
-    /// Wall-clock budget exceeded.
-    WallClockOverBudget {
-        /// Observed seconds.
-        wall_s: f64,
-        /// Budget seconds.
-        max_s: f64,
-    },
-    /// An axis's clustered 95% CI half-width exceeds δ.
-    CiHalfWidthTooWide {
-        /// Group key.
-        group: String,
-        /// Observed half-width.
-        half_width: f64,
-        /// Pre-registered δ.
-        delta: f64,
-    },
-}
-
-/// Per-gate pass/fail flags (all true ⇔ eligible).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct GateReport {
-    /// Every declared group/metric present.
-    pub complete: bool,
-    /// g3 floor passed.
-    pub g3_ok: bool,
-    /// g8 floor passed.
-    pub g8_ok: bool,
-    /// Budget gates passed.
-    pub budgets_ok: bool,
-    /// CI-sufficiency gate passed.
-    pub ci_ok: bool,
-}
-
-impl GateReport {
-    fn from_failures(failures: &[GateFailure]) -> Self {
-        let has = |f: fn(&GateFailure) -> bool| failures.iter().any(f);
-        Self {
-            complete: !has(|f| {
-                matches!(
-                    f,
-                    GateFailure::MissingGroup { .. } | GateFailure::MissingMetric { .. }
-                )
-            }),
-            g3_ok: !has(|f| matches!(f, GateFailure::G3BelowFloor { .. })),
-            g8_ok: !has(|f| matches!(f, GateFailure::G8BelowFloor { .. })),
-            budgets_ok: !has(|f| {
-                matches!(
-                    f,
-                    GateFailure::ParamsOverBudget { .. } | GateFailure::WallClockOverBudget { .. }
-                )
-            }),
-            ci_ok: !has(|f| matches!(f, GateFailure::CiHalfWidthTooWide { .. })),
-        }
-    }
 }
 
 /// One group's score with its bootstrap CI.
@@ -716,7 +622,7 @@ pub fn evaluate(
     let (g, penalty, mut failures) = run_groups(sub, anchors, &norms, &mut Draw::Point);
 
     // Step 3 — lexicographic gates on point estimates: g3, g8, budgets.
-    if g[2] < anchors.gates.g3_min {
+    if G3_HARD_FLOOR_ARMED && g[2] < anchors.gates.g3_min {
         failures.push(GateFailure::G3BelowFloor {
             g: g[2],
             floor: anchors.gates.g3_min,
@@ -728,18 +634,10 @@ pub fn evaluate(
             floor: anchors.gates.g8_min,
         });
     }
-    if sub.budget.params > anchors.gates.max_params {
-        failures.push(GateFailure::ParamsOverBudget {
-            params: sub.budget.params,
-            max: anchors.gates.max_params,
-        });
-    }
-    if sub.budget.wall_s > anchors.gates.max_wall_s {
-        failures.push(GateFailure::WallClockOverBudget {
-            wall_s: sub.budget.wall_s,
-            max_s: anchors.gates.max_wall_s,
-        });
-    }
+    // Budget gates (params, wall bound, attested-FLOPs currency, underspend
+    // floor) live in `prism-budget`; see that crate for why underspend is a
+    // gate rather than a discount.
+    prism_budget::check(&sub.budget, &anchors.gates, &mut failures);
 
     // Step 4 — composite on point estimates.
     let composite = composite_of(&g, anchors);
@@ -839,7 +737,7 @@ mod tests {
             "g8": { "weight": 0.05,  "metrics": { "org.g8.loss_spike": { "kind": "accuracy", "chance": 0.0 } } }
         },
         "gates": { "g3_min": 0.25, "g8_min": 0.5, "ci_half_width_delta": 0.05,
-                   "max_params": 350000000, "max_wall_s": 21600.0 },
+                   "max_params": 1000000000, "max_wall_s": 21600.0 },
         "mirror": { "tau_m": 0.05, "groups": ["g2", "g4"] },
         "bootstrap": { "b": 1000, "lcb_z": 1.645 }
     }"#;
@@ -882,6 +780,7 @@ mod tests {
                 params: 300_000_000,
                 wall_s: 20_000.0,
                 tokens: 1_000_000,
+                ..BudgetFacts::default()
             },
             mirrors: Vec::new(),
         }
@@ -1090,21 +989,50 @@ mod tests {
         // Fail g3 (recall floor) AND budgets: g3 reason must come first.
         sub.metrics
             .insert("org.g3.mqar_acc".to_string(), series(0.1, &[0.1]));
-        sub.budget.params = 500_000_000;
+        // Over the 1B `max_params` gate in TEST_ANCHORS_JSON.
+        sub.budget.params = 1_500_000_000;
         let out = evaluate(&sub, &anchors, 5);
         match out {
             CompositeOutcome::Ineligible(i) => {
-                assert!(matches!(i.reasons[0], GateFailure::G3BelowFloor { .. }));
-                assert!(i
-                    .reasons
-                    .iter()
-                    .any(|r| matches!(r, GateFailure::ParamsOverBudget { .. })));
-                assert!(!i.gates.g3_ok);
+                // G3 floor is disarmed (`G3_HARD_FLOOR_ARMED = false`); the
+                // params breach is what makes this ineligible.
+                assert!(
+                    !i.reasons
+                        .iter()
+                        .any(|r| matches!(r, GateFailure::G3BelowFloor { .. })),
+                    "disarmed G3 floor must not fire: {:?}",
+                    i.reasons
+                );
+                assert!(matches!(i.reasons[0], GateFailure::ParamsOverBudget { .. }));
+                assert!(i.gates.g3_ok);
                 assert!(!i.gates.budgets_ok);
                 assert!(i.gates.ci_ok, "bootstrap never runs when gates fail");
                 assert!(i.groups.iter().all(|g| g.ci_lo.is_none()));
             }
             CompositeOutcome::Scored(_) => panic!("must be ineligible"),
+        }
+    }
+
+    /// Phase 0 seed 1001: g3 = 0.19792 vs placeholder floor 0.25. While
+    /// the hard floor is disarmed this must not force Ineligible.
+    #[test]
+    fn phase0_g3_seed_flip_is_not_ineligible() {
+        const {
+            assert!(
+                !G3_HARD_FLOOR_ARMED,
+                "re-arming the G3 floor requires raising item counts first"
+            );
+        }
+        let anchors = test_anchors();
+        let mut sub = uniform_submission(0.9);
+        sub.metrics
+            .insert("org.g3.mqar_acc".to_string(), series(0.19792, &[0.19792]));
+        match evaluate(&sub, &anchors, 5) {
+            CompositeOutcome::Scored(_) => {}
+            CompositeOutcome::Ineligible(i) => panic!(
+                "Phase-0 g3=0.19792 must score while the floor is disarmed: {:?}",
+                i.reasons
+            ),
         }
     }
 
@@ -1154,6 +1082,7 @@ mod tests {
                 params: 300_000_000,
                 wall_s: 20_000.0,
                 tokens: 0,
+                ..BudgetFacts::default()
             },
             mirrors: Vec::new(),
         };
@@ -1245,6 +1174,201 @@ mod tests {
         let back: CompositeOutcome = serde_json::from_str(&json).expect("parse");
         assert_eq!(out, back);
         assert!(json.contains("\"status\":\"scored\""));
+    }
+
+    /// Regression for the G1/G2 bootstrap-clustering defect: the harness
+    /// recorded every G1 doc and G2 row under a CONSTANT cluster id, so
+    /// `value_of` resampled a single value and those axes contributed
+    /// exactly zero variance to `SE(C)` — 40% of composite weight, since
+    /// G1 carries 0.25 and G2 carries 0.15. That understated SE, inflated
+    /// the LCB, and made the `ci_half_width_delta` gate vacuous precisely
+    /// where it mattered most. Per-item cluster ids in
+    /// `eval/g1_intrinsic.py` and `eval/g2_downstream.py` restore real
+    /// resampling units.
+    #[test]
+    fn single_cluster_series_is_degenerate_but_per_item_is_not() {
+        let anchors = test_anchors();
+        // Tight per-item spread: enough variance to be measurable, still
+        // inside `ci_half_width_delta` so the run stays eligible. (A WIDE
+        // spread now correctly trips the CI gate — that gate was vacuous on
+        // these axes before, which is the whole point of the fix.)
+        let spread = [0.48, 0.50, 0.52, 0.49, 0.51, 0.50, 0.52, 0.48];
+        let mean = spread.iter().sum::<f64>() / spread.len() as f64;
+
+        // Pre-fix shape: one cluster per metric ⇒ nothing to resample.
+        let mut degenerate = uniform_submission(0.5);
+        degenerate.metrics.insert(
+            "org.g1.bits_per_byte_code".to_string(),
+            series(mean, &[mean]),
+        );
+        degenerate
+            .metrics
+            .insert("org.g2.lambada_acc".to_string(), series(mean, &[mean]));
+        let se_degenerate = scored(&evaluate(&degenerate, &anchors, 21)).se;
+        assert!(
+            se_degenerate.abs() < 1e-12,
+            "constant cluster id must produce zero variance: {se_degenerate}"
+        );
+
+        // Post-fix shape: per-item clusters on the same aggregate value.
+        let mut clustered = uniform_submission(0.5);
+        clustered.metrics.insert(
+            "org.g1.bits_per_byte_code".to_string(),
+            series(mean, &spread),
+        );
+        clustered
+            .metrics
+            .insert("org.g2.lambada_acc".to_string(), series(mean, &spread));
+        let out = evaluate(&clustered, &anchors, 21);
+        let s = scored(&out);
+        assert!(
+            s.se > 1e-6,
+            "per-item clusters must produce real variance: {}",
+            s.se
+        );
+        // The point estimate is unchanged (it reads `series.value`); only
+        // the uncertainty — and therefore the payable LCB — moves.
+        assert!(
+            (s.composite - scored(&evaluate(&degenerate, &anchors, 21)).composite).abs() < 1e-12,
+            "clustering must not move the point estimate"
+        );
+        assert!(s.lcb < s.composite, "honest SE must lower the payable LCB");
+        // And the CI gate is no longer vacuous on those axes.
+        let g1 = &s.groups[0];
+        assert!(
+            g1.ci_hi.expect("ci_hi") - g1.ci_lo.expect("ci_lo") > 0.0,
+            "g1 CI must have non-zero width"
+        );
+
+        // A genuinely noisy G1/G2 now FAILS the CI-sufficiency gate instead
+        // of passing it for free — the gate can finally bind on the two
+        // heaviest axes.
+        let noisy = [0.2, 0.8, 0.3, 0.7, 0.25, 0.75, 0.4, 0.6];
+        let noisy_mean = noisy.iter().sum::<f64>() / noisy.len() as f64;
+        let mut loud = uniform_submission(0.5);
+        loud.metrics.insert(
+            "org.g1.bits_per_byte_code".to_string(),
+            series(noisy_mean, &noisy),
+        );
+        match evaluate(&loud, &anchors, 21) {
+            CompositeOutcome::Ineligible(i) => assert!(
+                i.reasons.iter().any(
+                    |r| matches!(r, GateFailure::CiHalfWidthTooWide { group, .. } if group == "g1")
+                ),
+                "noisy g1 must trip the CI gate: {:?}",
+                i.reasons
+            ),
+            CompositeOutcome::Scored(s) => {
+                panic!("noisy g1 must be ineligible, got se={}", s.se)
+            }
+        }
+    }
+
+    /// The dual-cap gates must bind through `evaluate`, not just in
+    /// `prism-budget`'s unit tests: the wiring is the part that can rot.
+    #[test]
+    fn compute_gates_bind_through_the_full_pipeline() {
+        let with_flops = |json: &str| {
+            CompositeAnchors::from_json(
+                &TEST_ANCHORS_JSON
+                    .replace("\"max_params\": 1000000000, \"max_wall_s\": 21600.0", json),
+            )
+            .expect("anchors parse")
+        };
+        let anchors = with_flops(
+            "\"max_params\": 1000000000, \"max_wall_s\": 18000.0, \
+             \"max_flops\": 3.0e18, \"min_spend_fraction\": 0.5",
+        );
+        assert_eq!(anchors.gates.max_flops, Some(3.0e18));
+
+        let spend = |flops: Option<f64>, cap: BindingCap| {
+            let mut sub = uniform_submission(0.9);
+            sub.budget.wall_s = 15_000.0;
+            sub.budget.flops_attested = flops;
+            sub.budget.binding_cap = cap;
+            evaluate(&sub, &anchors, 7)
+        };
+
+        // A full-budget FLOPs-bound run is eligible.
+        assert!(spend(Some(2.9e18), BindingCap::Flops).is_eligible());
+
+        // Overspending the currency is ineligible.
+        match spend(Some(4.0e18), BindingCap::Flops) {
+            CompositeOutcome::Ineligible(i) => {
+                assert!(i
+                    .reasons
+                    .iter()
+                    .any(|r| matches!(r, GateFailure::FlopsOverBudget { .. })));
+                assert!(!i.gates.budgets_ok);
+            }
+            CompositeOutcome::Scored(_) => panic!("overspend must be ineligible"),
+        }
+
+        // Voluntary underspend (no protocol cap bound) is ineligible.
+        match spend(Some(0.9e18), BindingCap::None) {
+            CompositeOutcome::Ineligible(i) => {
+                assert!(i
+                    .reasons
+                    .iter()
+                    .any(|r| matches!(r, GateFailure::SpendBelowFloor { .. })));
+                assert!(!i.gates.budgets_ok);
+                assert!(i.composite > 0.0);
+            }
+            CompositeOutcome::Scored(_) => panic!("underspend must be ineligible"),
+        }
+
+        // Protocol-bound runs stay eligible even below the fraction —
+        // small-batch honest / wall-bound / step-capped reference.
+        assert!(spend(Some(0.9e18), BindingCap::Wall).is_eligible());
+        assert!(spend(Some(1.82e17), BindingCap::Steps).is_eligible());
+        assert!(spend(Some(1.6e18), BindingCap::Wall).is_eligible());
+
+        // Emit-then-declare: a run with no attestation is not failed for a
+        // measurement that did not exist when it ran.
+        assert!(spend(None, BindingCap::None).is_eligible());
+
+        // And an anchor set without compute gates ignores attestation
+        // entirely — v0/v1/v2 must stay bit-identical.
+        let legacy = test_anchors();
+        assert_eq!(legacy.gates.max_flops, None);
+        let mut tiny = uniform_submission(0.9);
+        tiny.budget.flops_attested = Some(1.0e12);
+        assert!(evaluate(&tiny, &legacy, 7).is_eligible());
+    }
+
+    /// The `conf` group of anchors v3 must be structurally inert: a group
+    /// outside `GROUP_KEYS` is never validated, scored, or required.
+    #[test]
+    fn anchor_group_outside_group_keys_is_inert() {
+        let json = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../prism-recipe/anchors/v3.json"
+        ));
+        let anchors = CompositeAnchors::from_json(json).expect("v3 parses");
+        assert!(
+            anchors.groups.contains_key("conf"),
+            "v3 carries the confirmation tier"
+        );
+        assert_eq!(anchors.groups.len(), N_GROUPS + 1);
+        // Validation passes even though the raw group weights sum to 1.0 only
+        // when `conf` (weight 0) is included — because validate() walks
+        // GROUP_KEYS, not the map.
+        let scored_sum: f64 = GROUP_KEYS.iter().map(|k| anchors.groups[*k].weight).sum();
+        assert!((scored_sum - 1.0).abs() < 1e-9);
+        // No org.conf.* key is required for completeness.
+        let required: Vec<&str> = GROUP_KEYS
+            .iter()
+            .flat_map(|k| anchors.groups[*k].metrics.keys().map(String::as_str))
+            .collect();
+        assert!(
+            !required.iter().any(|k| k.starts_with("org.conf.")),
+            "confirmation-tier keys must never be required by the Stage-1 gate"
+        );
+        // The demoted slope is not scored anywhere in v3.
+        assert!(
+            !required.contains(&"org.g8.mup_scaling_slope"),
+            "the confounded slope must not be scored"
+        );
     }
 
     #[test]

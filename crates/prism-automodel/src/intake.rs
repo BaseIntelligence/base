@@ -24,6 +24,15 @@ pub const MEMBER_BASE: &str = "automodel.base";
 pub const MEMBER_PATCH: &str = "automodel.patch";
 /// Optional entry / recipe knobs.
 pub const MEMBER_TOML: &str = "prism.toml";
+/// Optional miner dependency manifest: pip `requirements.txt` installed on
+/// the pod (network-on install phase) before the netns-isolated train/eval.
+/// Delivered to the pod when the miner's patch adds it to the applied tree
+/// (it becomes a touched file, so slim delivery keeps it); the harness
+/// installs any manifest it finds in the tree (see `prismlib/deps.py`).
+pub const MEMBER_REQUIREMENTS: &str = "requirements.txt";
+/// Optional miner dependency manifest: `pyproject.toml` (PEP 621) installed
+/// with `pip install .` on the pod's install phase.
+pub const MEMBER_PYPROJECT: &str = "pyproject.toml";
 
 /// Persisted under the packed tree for `GET …/diff`.
 pub const META_BASE: &str = ".prism/automodel.base";
@@ -149,22 +158,16 @@ pub fn extract_automodel_zip(zip_bytes: &[u8]) -> Result<AutomodelMembers, Intak
         .map_err(|_| IntakeError::Invalid(format!("non-utf8: {MEMBER_BASE}")))?
         .trim()
         .to_owned();
-    if pin_id.is_empty() {
-        return Err(IntakeError::Invalid(format!("empty {MEMBER_BASE}")));
-    }
-    if pin_id.chars().any(char::is_whitespace) {
+    if pin_id.is_empty() || pin_id.chars().any(char::is_whitespace) {
         return Err(IntakeError::Invalid(format!(
-            "{MEMBER_BASE} must be a single-line pin id without whitespace"
+            "{MEMBER_BASE} must be a non-empty single-line pin id without whitespace"
         )));
     }
-    let prism_toml = match files.get(MEMBER_TOML) {
-        Some(b) => Some(
-            std::str::from_utf8(b)
-                .map_err(|_| IntakeError::Invalid(format!("non-utf8: {MEMBER_TOML}")))?
-                .to_owned(),
-        ),
-        None => None,
-    };
+    let prism_toml = files
+        .get(MEMBER_TOML)
+        .map(|b| std::str::from_utf8(b).map(str::to_owned))
+        .transpose()
+        .map_err(|_| IntakeError::Invalid(format!("non-utf8: {MEMBER_TOML}")))?;
     Ok(AutomodelMembers {
         pin_id,
         patch,
@@ -309,6 +312,8 @@ fn slim_delivery_files(mat: &MaterializedAutomodel) -> BTreeMap<String, Vec<u8>>
         META_DIFFSTAT,
         mat.entry.as_str(),
         MEMBER_TOML,
+        MEMBER_REQUIREMENTS,
+        MEMBER_PYPROJECT,
     ]
     .into_iter()
     .chain(mat.diffstat.files.iter().map(|entry| entry.path.as_str()))

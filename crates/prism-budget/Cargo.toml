@@ -1,0 +1,18 @@
+[package]
+name = "prism-budget"
+description = "PRISM dual-cap budget facts + lexicographic budget gates (split out of prism-pipeline::composite for the per-crate LOC cap; re-exported there)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

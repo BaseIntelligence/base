@@ -12,6 +12,7 @@ publish = false
 base64 = "0.22"
 hex = "0.4"
 prism-artifacts = { path = "../prism-artifacts" }
+prism-competition = { path = "../prism-competition" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-store = { path = "../prism-store" }
 prism-tree = { path = "../prism-tree" }
