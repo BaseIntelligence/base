@@ -11,11 +11,6 @@ use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::prism_enrich::{
-    enrich_leaderboard_row_from_detail_with_zone, enrich_submission_from_detail_with_zone,
-    infer_recipe_era_with_live, map_benchmarks, payload_is_v21_contest, pin_id_from_payload,
-    prism_reference_baselines, prism_submission_detail_with_zone,
-};
 use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
 use site_data::map::{
@@ -24,6 +19,11 @@ use site_data::map::{
     is_prism_champion_submission, leaderboard_matches_query, list_arenas, prism_arena_from_live,
     prism_bpb_leaderboard, prism_submission, prism_telemetry, prism_window,
     submission_matches_query, uid_index_from_hotkeys,
+};
+use site_prism::{
+    enrich_leaderboard_row_from_detail_with_zone, enrich_submission_from_detail_with_zone,
+    infer_recipe_era_with_live, map_benchmarks, payload_is_v21_contest, pin_id_from_payload,
+    prism_reference_baselines, prism_submission_detail_with_zone,
 };
 use site_types::coding_arena;
 use site_types::page_slice;
