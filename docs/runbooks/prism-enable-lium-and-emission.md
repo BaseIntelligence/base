@@ -91,8 +91,9 @@ PRISM_POD_DOCKER_CREDENTIAL_ID=<lium-docker-credential-id>
 The credential ID is a non-secret reference; the registry username/password
 remain stored in Lium. It is needed **only** to create a new private provider
 template (digest- and credential-scoped). If it is unset, provision reuses
-`PRISM_POD_TEMPLATE_ID` or an existing public `prism-recipe-v9` / `v10`
-template instead of failing every miner submit. To pin private images later,
+`PRISM_POD_TEMPLATE_ID` (prod: official public `345273fa…` CUDA 13 DIND) or
+another **non-private** `prism-recipe-v9-public` / official Pytorch template
+instead of failing every miner submit. Private `f2f5e84c` 400s for BYOK. To pin private images later,
 create the Lium docker credential, set `PRISM_POD_DOCKER_CREDENTIAL_ID` to
 that id, and restart `prism-challenge`. Lium needs the tag as a pull locator,
 but records and checks the digest separately; malformed or missing digest

@@ -641,7 +641,7 @@ into the pod where applicable):
 | `PRISM_POD_IMAGE_REF` | optional staged pod image, required form `repository@sha256:<64 lowercase hex>` |
 | `PRISM_POD_IMAGE_TAG` | Lium pull locator (default `v10-cuda13-te`); never accepted without the separate digest pin |
 | `PRISM_POD_DOCKER_CREDENTIAL_ID` | non-secret Lium reference required only when **creating** a new private DigitalOcean registry template. Unset is fine when `PRISM_POD_TEMPLATE_ID` is set or public `prism-recipe-v9`/`v10` already exists on Lium |
-| `PRISM_POD_TEMPLATE_ID` | optional existing Lium template id (public v9 `f2f5e84c…` is the known-good B200/5090 boot path) |
+| `PRISM_POD_TEMPLATE_ID` | optional **public** Lium template id. Prod pin is official `daturaai/pytorch` CUDA 13 DIND `345273fa…`. Private v9 `f2f5e84c…` 400s for miner BYOK; provision retries a rentable public template |
 
 **Anchor set v1 battery keys** (emitted by the harness on every real run;
 inert under v0 since unknown `org.*` keys are ignored):
