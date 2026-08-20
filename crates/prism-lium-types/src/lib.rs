@@ -14,12 +14,15 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::redundant_closure_for_method_calls)]
 
 mod error;
+mod json;
 mod receipt;
 mod types;
 
 pub use error::{CostGuardrailError, LiumError};
+pub use json::{extract_pod_id, get_array, get_str, parse_instance, parse_one_offer};
 pub use receipt::{EvalReceipt, NoScoreGate};
 pub use types::{
     effective_gpu_count, gpu_count_from_label, parse_pod_gpu_count, parse_pod_gpu_name,

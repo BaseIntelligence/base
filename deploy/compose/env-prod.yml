@@ -60,7 +60,9 @@ services:
       # so pods never silently fall back to BPB-only even on older images.
       PRISM_FLOW: "v3"
       # Public v9 boots B200/5090; avoids private DO template create without cred.
-      PRISM_POD_TEMPLATE_ID: "f2f5e84c-3b09-4090-be83-1913eabd009e"
+      # Official public daturaai/pytorch CUDA 13 DIND (miner BYOK can rent).
+      # Do not pin private prism-recipe-v9 f2f5e84c — rent 400s for other accounts.
+      PRISM_POD_TEMPLATE_ID: "345273fa-4818-46f7-a8fa-32f0e331713c"
       # Full public pack (not tiny caps). Host path staged by
       # deploy/scripts/prism-overnight-battery.sh / build_private_pack.
       PRISM_EVAL_ASSETS_DIR: "/var/lib/prism/eval-assets"

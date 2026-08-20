@@ -16,14 +16,14 @@ use crate::ssh::{
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 use prism_lium_harness::{
     classify_log, detach_launch_cmd, eval_assets_dir, harness_env_pairs, harness_upload_tar,
-    listed_template_id, lium_template_create_body, parse_harness_probe, parse_metrics_output,
-    random_seed_hex, resolved_pod_image, HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT,
-    HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD, HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD,
-    RECIPES_TEMPLATE_STARTUP, TRAIN_DONE_MARKER,
+    is_template_rent_forbidden, listed_template_id, lium_template_create_body, parse_harness_probe,
+    parse_metrics_output, random_seed_hex, rentable_fallback_template_id, resolved_pod_image,
+    HarnessProgress, EVAL_ASSETS_POD_DIR, HARNESS_ABSENT, HARNESS_BOOTSTRAP, HARNESS_EXTRACT_CMD,
+    HARNESS_HARVEST_CMD, HARNESS_PROBE_CMD, RECIPES_TEMPLATE_STARTUP, TRAIN_DONE_MARKER,
 };
 use prism_lium_types::{
-    CostGuardrailError, GpuPreference, Instance, InstanceSpec, LiumError, LiumSshConfig, Offer,
-    RemoteExecResult,
+    extract_pod_id, get_array, get_str, parse_instance, parse_one_offer, CostGuardrailError,
+    GpuPreference, Instance, InstanceSpec, LiumError, LiumSshConfig, Offer, RemoteExecResult,
 };
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
@@ -288,7 +288,6 @@ impl LiumClient {
                 return Ok(id.clone());
             }
         }
-        // Explicit public id (v9 f2f5e84c) skips private-template create.
         if let Ok(id) = std::env::var("PRISM_POD_TEMPLATE_ID") {
             let id = id.trim();
             if !id.is_empty() {
@@ -312,6 +311,18 @@ impl LiumClient {
             docker_credential_id.as_deref(),
         )
         .await
+    }
+
+    async fn fallback_rentable_template(&self, forbidden: &str) -> Option<String> {
+        let v = self
+            .request(reqwest::Method::GET, "/templates", None)
+            .await
+            .ok()?;
+        let t = v
+            .as_array()
+            .cloned()
+            .unwrap_or_else(|| get_array(&v, &["templates"]));
+        rentable_fallback_template_id(&t, Some(forbidden))
     }
 
     /// Account balance (USD) when available.
@@ -698,70 +709,6 @@ impl LiumClient {
     }
 }
 
-/// First string value found at any of `keys` (top-level object lookups).
-fn get_str<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|k| v.get(k).and_then(|x| x.as_str()))
-}
-
-/// First array found at any of `keys` (bare arrays pass through at call sites).
-fn get_array(v: &Value, keys: &[&str]) -> Vec<Value> {
-    keys.iter()
-        .find_map(|k| v.get(k).and_then(|x| x.as_array()))
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn parse_one_offer(item: &Value) -> Option<Offer> {
-    let id = get_str(item, &["id", "executor_id"])?.to_owned();
-    // Live API uses machine_name + price_per_gpu (not gpu_type / price_per_hour).
-    let gpu_type = get_str(item, &["gpu_type", "gpu_name", "machine_name"])
-        .or_else(|| item.pointer("/machine/gpu_type").and_then(|x| x.as_str()))
-        .unwrap_or("UNKNOWN")
-        .to_owned();
-    let raw_count = item
-        .get("gpu_count")
-        .and_then(|x| x.as_u64())
-        .or_else(|| item.get("available_gpu_count").and_then(|x| x.as_u64()))
-        .or_else(|| item.get("gpus").and_then(|x| x.as_u64()))
-        .unwrap_or(1) as u32;
-    // Prefer the higher of the numeric field and any `8x` / `x8` label so a
-    // lying `gpu_count: 1` on a multi-GPU host cannot pass the single-GPU filter.
-    let gpu_count = prism_lium_types::effective_gpu_count(raw_count, &gpu_type);
-    let price = item
-        .get("price_per_hour")
-        .or_else(|| item.get("price_per_gpu"))
-        .or_else(|| item.get("price"))
-        .or_else(|| item.pointer("/price/per_gpu_hour"))
-        .and_then(|x| x.as_f64())
-        .or_else(|| {
-            get_str(item, &["price_per_hour", "price_per_gpu"]).and_then(|s| s.parse().ok())
-        })
-        .unwrap_or(f64::MAX);
-    Some(Offer {
-        id,
-        gpu_type,
-        gpu_count,
-        price_per_hour: price,
-        provider: "lium".into(),
-    })
-}
-
-fn parse_instance(v: &Value, fallback_id: &str) -> Instance {
-    Instance {
-        id: get_str(v, &["id", "pod_id"])
-            .unwrap_or(fallback_id)
-            .to_owned(),
-        status: get_str(v, &["status", "state"])
-            .unwrap_or("UNKNOWN")
-            .to_owned(),
-        provider: "lium".into(),
-        gpu_type: get_str(v, &["gpu_type"])
-            .or_else(|| v.pointer("/executor/gpu_type").and_then(|x| x.as_str()))
-            .map(str::to_owned),
-        ssh_connect_cmd: get_str(v, &["ssh_connect_cmd"]).map(str::to_owned),
-    }
-}
-
 fn sanitize_err(msg: &str, key: &str) -> String {
     if key.is_empty() {
         msg.to_owned()
@@ -776,14 +723,6 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         format!("{}…", &s[..n])
     }
-}
-
-fn extract_pod_id(v: &Value) -> Option<String> {
-    v.get("id")
-        .or_else(|| v.get("pod_id"))
-        .or_else(|| v.pointer("/pod/id"))
-        .and_then(|x| x.as_str())
-        .map(str::to_owned)
 }
 
 #[async_trait]
@@ -840,10 +779,11 @@ impl EvalJobBackend for LiumClient {
         }
 
         let lifetime = spec.max_lifetime_hours.ceil() as u64;
-        let template_id = self.resolve_template_id(spec).await?;
+        let mut template_id = self.resolve_template_id(spec).await?;
+        let mut swapped_forbidden_template = false;
 
         let mut last_err = String::from("no offer tried");
-        for selected in &candidates {
+        'offers: for selected in &candidates {
             if selected.price_per_hour > spec.max_price_per_hour {
                 continue;
             }
@@ -860,70 +800,85 @@ impl EvalJobBackend for LiumClient {
                     "abort: refusing {rent_gpu_count}× 5090 rent (no 8×5090 fallback)"
                 )));
             }
-            info!(
-                offer_id = %selected.id,
-                gpu = %selected.gpu_type,
-                gpu_count = effective,
-                rent_gpu_count,
-                price = selected.price_per_hour,
-                %template_id,
-                "lium rent"
-            );
-            let body = serde_json::json!({
-                "pod_name": spec.name,
-                "user_public_key": spec.ssh_public_keys,
-                "termination_hours": lifetime.max(1),
-                "gpu_count": rent_gpu_count,
-                "template_id": template_id,
-            });
-            // Fire rent immediately — BYOK keys must not share a process-wide
-            // queue with each other or with an operator fallback key.
-            let rented = self
-                .request(
-                    reqwest::Method::POST,
-                    &format!("/executors/{}/rent", selected.id),
-                    Some(&body),
-                )
-                .await;
-            match rented {
-                Ok(v) => {
-                    let id = match extract_pod_id(&v) {
-                        Some(id) => Some(id),
-                        None => self.find_pod_id_by_name(&spec.name).await,
-                    };
-                    let Some(id) = id else {
-                        last_err = "could not determine provisioned pod id from rent".into();
+            loop {
+                info!(
+                    offer_id = %selected.id,
+                    gpu = %selected.gpu_type,
+                    gpu_count = effective,
+                    rent_gpu_count,
+                    price = selected.price_per_hour,
+                    %template_id,
+                    "lium rent"
+                );
+                let body = serde_json::json!({
+                    "pod_name": spec.name,
+                    "user_public_key": spec.ssh_public_keys,
+                    "termination_hours": lifetime.max(1),
+                    "gpu_count": rent_gpu_count,
+                    "template_id": template_id,
+                });
+                // Fire rent immediately — BYOK keys must not share a process-wide
+                // queue with each other or with an operator fallback key.
+                let rented = self
+                    .request(
+                        reqwest::Method::POST,
+                        &format!("/executors/{}/rent", selected.id),
+                        Some(&body),
+                    )
+                    .await;
+                match rented {
+                    Ok(v) => {
+                        let id = match extract_pod_id(&v) {
+                            Some(id) => Some(id),
+                            None => self.find_pod_id_by_name(&spec.name).await,
+                        };
+                        let Some(id) = id else {
+                            last_err = "could not determine provisioned pod id from rent".into();
+                            self.reclaim_pods_named(&spec.name).await;
+                            continue 'offers;
+                        };
+                        match self.wait_until_running(&id).await {
+                            Ok(inst) => {
+                                let labeled = inst.gpu_type.as_deref().unwrap_or("");
+                                if !labeled.is_empty() && !pref.matches_pin(labeled) {
+                                    warn!(pod_id = %id, gpu = %labeled, "non-pin GPU after rent");
+                                    let _ = self.terminate(&id).await;
+                                    last_err = format!("non-pin GPU after rent: {labeled}");
+                                    continue 'offers;
+                                }
+                                return Ok(inst);
+                            }
+                            Err(e) => {
+                                last_err = format!("offer {} wait_running: {e}", selected.id);
+                                self.cleanup_after_rent(&id).await;
+                                self.reclaim_pods_named(&spec.name).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        last_err = e.to_string();
+                        // 429/transport can still leave a PENDING pod under our name.
                         self.reclaim_pods_named(&spec.name).await;
-                        continue;
-                    };
-                    match self.wait_until_running(&id).await {
-                        Ok(inst) => {
-                            let labeled = inst.gpu_type.as_deref().unwrap_or("");
-                            if !labeled.is_empty() && !pref.matches_pin(labeled) {
-                                warn!(pod_id = %id, gpu = %labeled, "non-pin GPU after rent");
-                                let _ = self.terminate(&id).await;
-                                last_err = format!("non-pin GPU after rent: {labeled}");
+                        // A rent 429 consumed one call on *this* API key's budget.
+                        // Return after orphan cleanup — do not walk more offers.
+                        if lium_rent_pool::is_rate_limited(&last_err) {
+                            return Err(LiumError::Api(last_err));
+                        }
+                        if !swapped_forbidden_template && is_template_rent_forbidden(&last_err) {
+                            if let Some(alt) = self.fallback_rentable_template(&template_id).await {
+                                warn!(
+                                    from = %template_id,
+                                    to = %alt,
+                                    "lium template not rentable; retrying"
+                                );
+                                template_id = alt;
+                                swapped_forbidden_template = true;
                                 continue;
                             }
-                            return Ok(inst);
-                        }
-                        Err(e) => {
-                            last_err = format!("offer {} wait_running: {e}", selected.id);
-                            self.cleanup_after_rent(&id).await;
-                            self.reclaim_pods_named(&spec.name).await;
                         }
                     }
                 }
-                Err(e) => {
-                    last_err = e.to_string();
-                    // 429/transport can still leave a PENDING pod under our name.
-                    self.reclaim_pods_named(&spec.name).await;
-                    // A rent 429 consumed one call on *this* API key's budget.
-                    // Return after orphan cleanup — do not walk more offers.
-                    if lium_rent_pool::is_rate_limited(&last_err) {
-                        return Err(LiumError::Api(last_err));
-                    }
-                }
+                break;
             }
         }
         self.reclaim_pods_named(&spec.name).await;
@@ -1255,6 +1210,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(id, "f2f5e84c-public-v9");
+    }
+
+    #[tokio::test]
+    async fn provision_retries_on_template_rent_forbidden() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"name": "prism-recipe-v9", "id": "f2f5e84c-3b09-4090-be83-1913eabd009e", "is_private": true},
+                {"name": "Pytorch (Cuda + DinD)", "id": "345273fa-4818-46f7-a8fa-32f0e331713c",
+                 "is_private": false, "docker_image": "daturaai/pytorch"}
+            ])))
+            .mount(&server)
+            .await;
+        mount_common(
+            &server,
+            serde_json::json!([{
+                "id": "pin-b200",
+                "gpu_type": "NVIDIA B200",
+                "gpu_count": 1,
+                "price_per_hour": 5.5
+            }]),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/executors/pin-b200/rent"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "success": false,
+                "message": "You don't have permission to rent this template."
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        mount_rent_path(&server, "pin-b200", "pod-public").await;
+        Mock::given(method("GET"))
+            .and(path("/pods"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let mut spec = provision_spec();
+        spec.template_id = Some("f2f5e84c-3b09-4090-be83-1913eabd009e".into());
+        let inst = c.provision(&spec).await.unwrap();
+        assert_eq!(inst.id, "pod-public");
     }
 
     #[tokio::test]

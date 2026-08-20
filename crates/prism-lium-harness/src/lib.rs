@@ -30,10 +30,15 @@ pub const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v10-digest-fe1197b26e30-ta
 /// must ship under a new name or pods would keep the old template).
 pub const RECIPES_TEMPLATE_NAME_V10: &str = "prism-recipe-v10";
 /// Public Lium templates that already boot B200/5090 (daturaai/pytorch).
-/// Used when the private DO pin cannot be created (no docker credential).
-pub const PUBLIC_TEMPLATE_FALLBACK_NAMES: &[&str] = &["prism-recipe-v10", "prism-recipe-v9"];
-/// Known-good public template id prefix (`prism-recipe-v9` / daturaai).
-pub const PUBLIC_TEMPLATE_FALLBACK_ID_PREFIXES: &[&str] = &["f2f5e84c"];
+/// Private `prism-recipe-v9` (`f2f5e84c…`) is **not** rentable by miner BYOK.
+pub const PUBLIC_TEMPLATE_FALLBACK_NAMES: &[&str] = &[
+    "prism-recipe-v9-public",
+    "prism-recipe-v10",
+    "prism-recipe-v9",
+    "Pytorch (Cuda + DinD)",
+];
+/// Official / account-owned **public** ids (CUDA 13 DIND, then CUDA 12.8).
+pub const PUBLIC_TEMPLATE_FALLBACK_ID_PREFIXES: &[&str] = &["345273fa", "5982b998", "e03e4d64"];
 /// Lium replaces `USER_PUBLIC_KEY` before launching this command. The image
 /// deliberately uses `CMD` so this bootstrap can install the rental key,
 /// signal readiness, and keep sshd as the container's foreground process.
@@ -185,16 +190,34 @@ pub fn reuse_public_template_if_uncreatable(
     }
 }
 
-/// First allowlisted public template already present on the Lium account.
+/// `false` only when Lium marks the template private (other accounts 400).
+#[must_use]
+pub fn template_is_rentable(tmpl: &serde_json::Value) -> bool {
+    tmpl.get("is_private") != Some(&serde_json::Value::Bool(true))
+        && tmpl
+            .get("id")
+            .and_then(|x| x.as_str())
+            .is_some_and(|id| !id.is_empty())
+}
+
+/// Rent 400: this API key cannot use the pinned template (typical miner BYOK).
+#[must_use]
+pub fn is_template_rent_forbidden(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("permission to rent this template")
+        || (err.contains("permission") && err.contains("rent") && err.contains("template"))
+}
+
+/// First allowlisted **non-private** template already present on Lium.
 #[must_use]
 pub fn public_template_fallback_id(templates: &[serde_json::Value]) -> Option<(String, String)> {
     let named = |want: &str| {
         templates.iter().find_map(|tmpl| {
+            if !template_is_rentable(tmpl) {
+                return None;
+            }
             let name = tmpl.get("name").and_then(|x| x.as_str())?;
-            let id = tmpl
-                .get("id")
-                .and_then(|x| x.as_str())
-                .filter(|s| !s.is_empty())?;
+            let id = tmpl.get("id").and_then(|x| x.as_str())?;
             (name == want).then(|| (want.to_owned(), id.to_owned()))
         })
     };
@@ -203,16 +226,40 @@ pub fn public_template_fallback_id(templates: &[serde_json::Value]) -> Option<(S
         .find_map(|name| named(name))
         .or_else(|| {
             templates.iter().find_map(|tmpl| {
-                let id = tmpl
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())?;
+                if !template_is_rentable(tmpl) {
+                    return None;
+                }
+                let id = tmpl.get("id").and_then(|x| x.as_str())?;
                 PUBLIC_TEMPLATE_FALLBACK_ID_PREFIXES
                     .iter()
                     .any(|prefix| id.starts_with(prefix))
                     .then(|| (id.to_owned(), id.to_owned()))
             })
         })
+}
+
+/// Rentable template after a permission 400 (`skip` = the id that just failed).
+#[must_use]
+pub fn rentable_fallback_template_id(
+    templates: &[serde_json::Value],
+    skip: Option<&str>,
+) -> Option<String> {
+    if let Some((_, id)) = public_template_fallback_id(templates) {
+        if skip != Some(id.as_str()) {
+            return Some(id);
+        }
+    }
+    templates.iter().find_map(|tmpl| {
+        if !template_is_rentable(tmpl) {
+            return None;
+        }
+        let id = tmpl.get("id").and_then(|x| x.as_str())?;
+        if skip == Some(id) {
+            return None;
+        }
+        (tmpl.get("docker_image").and_then(|x| x.as_str()) == Some("daturaai/pytorch"))
+            .then(|| id.to_owned())
+    })
 }
 
 fn template_name_for_image(image: &str) -> String {
@@ -411,9 +458,9 @@ pub fn random_seed_hex() -> Result<String, LiumError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        credential_scoped_template_name, is_digest_image_ref, lium_template_create_body,
-        private_registry_needs_credential, public_template_fallback_id, template_name_for_image,
-        RECIPES_TEMPLATE_STARTUP,
+        credential_scoped_template_name, is_digest_image_ref, is_template_rent_forbidden,
+        lium_template_create_body, private_registry_needs_credential, public_template_fallback_id,
+        rentable_fallback_template_id, template_name_for_image, RECIPES_TEMPLATE_STARTUP,
     };
 
     #[test]
@@ -463,12 +510,25 @@ mod tests {
         ));
         let listed = serde_json::json!([
             {"name": "prism-recipe-v10-digest-fe1197b26e30-tagged", "id": ""},
-            {"name": "prism-recipe-v9", "id": "f2f5e84c-public-v9"}
+            {"name": "prism-recipe-v9", "id": "f2f5e84c-owned-private", "is_private": true},
+            {"name": "Pytorch (Cuda + DinD)", "id": "345273fa-official", "is_private": false,
+             "docker_image": "daturaai/pytorch"}
         ]);
         assert_eq!(
             public_template_fallback_id(listed.as_array().unwrap()),
-            Some(("prism-recipe-v9".into(), "f2f5e84c-public-v9".into()))
+            Some(("Pytorch (Cuda + DinD)".into(), "345273fa-official".into()))
         );
+        assert_eq!(
+            rentable_fallback_template_id(
+                listed.as_array().unwrap(),
+                Some("f2f5e84c-owned-private")
+            ),
+            Some("345273fa-official".into())
+        );
+        assert!(is_template_rent_forbidden(
+            "POST /executors/x/rent -> 400 Bad Request: permission to rent this template"
+        ));
+        assert!(!is_template_rent_forbidden("POST /executors/x/rent -> 429"));
         let err = lium_template_create_body(
             "private",
             "registry.digitalocean.com/basecrawl/prism-pod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
