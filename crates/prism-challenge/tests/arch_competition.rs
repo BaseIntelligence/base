@@ -119,7 +119,7 @@ fn row(
         pod_id: None,
         pod_provider: None,
         receipt: None,
-        metrics_json: Some(serde_json::json!({"recipe": "2.0.0"})),
+        metrics_json: Some(serde_json::json!({"recipe": "2.1.0"})),
         bpb: None,
         arch_id: arch_id.map(str::to_owned),
         review: None,
