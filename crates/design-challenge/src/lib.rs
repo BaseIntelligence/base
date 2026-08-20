@@ -47,18 +47,12 @@ pub use host_sim::{
 };
 pub use orchestrator::{ErrorClass, Orchestrator, OrchestratorConfig};
 
-#[must_use]
-pub fn crate_name() -> &'static str {
-    "design-challenge"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn identity() {
-        assert_eq!(crate_name(), "design-challenge");
         assert_eq!(CHALLENGE_ID, "design");
         assert_eq!(SCORING_VERSION, 3);
     }
