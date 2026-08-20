@@ -3,8 +3,10 @@
 //! Workers register in [`ActiveJobs`] for the whole `run_row` hold. On boot
 //! (and periodically) [`reconcile_once`] **resume-first**: mid-pod rows whose
 //! Lium instance is still alive are requeued with `pod_id` kept (no terminate).
-//! Only unreattachable rows fail-closed (`control_plane_restart` /
-//! `harness_detached`). Post-measure review stages requeue as before.
+//! [`PrismStore::claim_next`] then prefers those rows so they reattach before
+//! new submits take the concurrent slots. Only unreattachable rows fail-closed
+//! (`control_plane_restart` / `harness_detached`). Post-measure review stages
+//! requeue as before.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -241,6 +243,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn boot_reconcile_requeues_pre_pod_review_without_failing() {
+        let store: Arc<dyn PrismStore> = Arc::new(MemoryPrismStore::default());
+        let r = row("feedfacefeedface", Stage::LlmReview, None);
+        store.insert_queued(&r).await.unwrap();
+        store
+            .apply(
+                &r.id,
+                &prism_store::StatePatch {
+                    status: Some(Stage::LlmReview),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let active = Arc::new(ActiveJobs::new());
+        let be: Arc<dyn EvalJobBackend> = Arc::new(NoopBackend::dead());
+        let report = reconcile_once(store.as_ref(), &active, None, be, 0, true, None)
+            .await
+            .unwrap();
+        assert_eq!(report.requeued, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.terminate_attempts, 0);
+        let got = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(got.status, Stage::Queued);
+        assert!(got.pod_id.is_none());
+        assert!(got.final_score.is_none());
+    }
+
+    #[tokio::test]
     async fn boot_reconcile_resumes_alive_pod_without_terminate() {
         let store: Arc<dyn PrismStore> = Arc::new(MemoryPrismStore::default());
         let r = row("cafebabecafebabe", Stage::Running, Some("pod-live"));
@@ -271,6 +303,13 @@ mod tests {
         let got = store.get(&r.id).await.unwrap().unwrap();
         assert_eq!(got.status, Stage::Queued);
         assert_eq!(got.pod_id.as_deref(), Some("pod-live"));
+        store
+            .insert_queued(&row("aaaaaaaaaaaaaaaa", Stage::Queued, None))
+            .await
+            .unwrap();
+        let claimed = store.claim_next().await.unwrap().unwrap();
+        assert_eq!(claimed.id, r.id, "resume row must skip the new-submit FIFO");
+        assert_eq!(claimed.pod_id.as_deref(), Some("pod-live"));
     }
 
     #[tokio::test]

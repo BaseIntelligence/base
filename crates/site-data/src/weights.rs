@@ -167,7 +167,7 @@ mod tests {
 
     fn trust_root() -> ChallengesBody {
         ChallengesBody {
-            challenges: vec![entry("design", 5_000), entry("prism", 5_000)],
+            challenges: vec![entry("design", 0), entry("prism", 10_000)],
         }
     }
 
@@ -180,7 +180,7 @@ mod tests {
             block_hash: [1u8; 32],
             metagraph_root: [2u8; 32],
             algorithm_version: bundle::ALGORITHM_VERSION,
-            emission_shares: vec![(b"design".to_vec(), 5_000), (b"prism".to_vec(), 5_000)],
+            emission_shares: vec![(b"design".to_vec(), 0), (b"prism".to_vec(), 10_000)],
             measurements_digest: [3u8; 32],
             uid_map: vec![([0xAAu8; 32], 0), ([0xBBu8; 32], 157)],
             leaves: vec![leaf("design", 0xBB), leaf("prism", 0xBB)],
@@ -206,9 +206,9 @@ mod tests {
     fn shares_come_from_trust_root() {
         let shares = configured_shares(Some(&trust_root()));
         assert_eq!(shares.len(), 2);
-        assert!((shares[0].1 - 0.5).abs() < f64::EPSILON);
+        assert!((shares[0].1 - 0.0).abs() < f64::EPSILON);
         assert_eq!(shares[0].0, "design");
-        assert!((shares[1].1 - 0.5).abs() < f64::EPSILON);
+        assert!((shares[1].1 - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -223,8 +223,8 @@ mod tests {
         // Arena weight = configured share × non-burn fraction.
         let root = trust_root();
         let latest = sealed_bundle();
-        assert!((arena_weight(Some(&root), Some(latest.clone()), "design") - 0.5).abs() < 0.001);
-        assert!((arena_weight(Some(&root), Some(latest), "prism") - 0.5).abs() < 0.001);
+        assert!((arena_weight(Some(&root), Some(latest.clone()), "design") - 0.0).abs() < 0.001);
+        assert!((arena_weight(Some(&root), Some(latest), "prism") - 1.0).abs() < 0.001);
         let w = site_weights(100, Some(&root), Some(sealed_bundle()));
         assert!(w.sealed);
         assert_eq!(w.hotkey_weights.len(), 1);

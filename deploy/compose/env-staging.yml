@@ -21,7 +21,7 @@ services:
       BASE_VALIDATOR_WALLET: base-validator
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
-      # Staging-only trust root: mirrors prod emission (design/prism 5000/5000).
+      # Staging-only trust root: mirrors prod emission (design/prism 0/10000).
       - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
       - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro
   gateway:
@@ -45,7 +45,7 @@ services:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
       - ./deploy/secrets/gateway_admin_token:/run/secrets/gateway_admin_token:ro
       # The sealer must sign with the same staging trust root the validator
-      # verifies against (design/prism 5000/5000), or /v1/weights/latest never
+      # verifies against (design/prism 0/10000), or /v1/weights/latest never
       # shows design weight and the validator flags emission share mismatch (D23).
       - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
       - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro

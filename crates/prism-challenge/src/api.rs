@@ -19,7 +19,7 @@ use submission_gating::{resubmit_allowed, GatingState, GatingStore, MetagraphCac
 
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
-use crate::CHALLENGE_ID;
+use crate::{NoScoreReasonCode, CHALLENGE_ID};
 use prism_eval_store::{detail_view, eval_json, list_view};
 use prism_intake::{
     coldkey_of, json_err, map_submission_err, map_zip_err, materialize_arch, metagraph_uid, now_ms,
@@ -182,6 +182,13 @@ async fn gate_one_max(
     Ok(None)
 }
 
+fn is_challenge_internal(row: &SubmissionState) -> bool {
+    matches!(
+        row.final_score,
+        Some(FinalScore::NoScore(c)) if c == NoScoreReasonCode::ChallengeInternal as u8
+    )
+}
+
 /// [`prism_pipeline::queued_row`] with the coldkey resolved from the live
 /// metagraph snapshot (`None` off-chain).
 fn queued_row(
@@ -239,11 +246,20 @@ async fn post_submission(
     let id = prism_pipeline::submission_id(&req);
     let gate_challenge = prism_pipeline::gating_key(req.arch_id.as_deref());
 
-    // Idempotent duplicate: identical contract bytes never conflict gating.
-    let exists = match st.store.get(&id).await {
-        Ok(r) => r.is_some(),
+    // Identical bytes never conflict gating. A failed infra row is recovered
+    // here (same path as `/retry`) so miners are not stuck on `already-queued`
+    // while the slot stays `failed` + `blocked`.
+    let existing = match st.store.get(&id).await {
+        Ok(r) => r,
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
+    if existing
+        .as_ref()
+        .is_some_and(|r| r.status == Stage::Failed && is_challenge_internal(r))
+    {
+        return post_retry(State(st), Path(id), headers).await;
+    }
+    let exists = existing.is_some();
     let uid = if exists {
         None
     } else {
@@ -426,17 +442,9 @@ async fn post_retry(
         );
     }
     let gate_key = prism_pipeline::gating_key(row.arch_id.as_deref());
-    let mut infra = matches!(row.final_score, Some(FinalScore::NoScore(6)));
-    if infra {
-        if let Some(g) = &st.gating {
-            infra = g
-                .get(&gate_key, &row.miner_hotkey)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|gr| resubmit_allowed(&gr, now_ms()));
-        }
-    }
+    // ChallengeInternal is always miner-retryable (the 30m window only lets a
+    // *different* ZIP through intake while blocked).
+    let infra = is_challenge_internal(&row);
     if !infra {
         if let Err(resp) = verify_bearer(&st.admin_token_hashes, "admin", &headers) {
             return resp;
@@ -1301,6 +1309,103 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    }
+
+    #[tokio::test]
+    async fn challenge_internal_reposts_and_retries_after_window() {
+        let (st, gating) = gated_state(&[[0x11; 32]]);
+        let app = submission_router(Arc::clone(&st));
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let id = v["submission_id"].as_str().unwrap().to_owned();
+        let hk = "11".repeat(32);
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    final_score: Some(FinalScore::NoScore(
+                        NoScoreReasonCode::ChallengeInternal as u8,
+                    )),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        gating
+            .set_terminal(
+                "prism",
+                &hk,
+                submission_gating::GatingState::Blocked,
+                Some("install"),
+            )
+            .await
+            .unwrap();
+        assert!(gating.set_updated_at_ms(
+            "prism",
+            &hk,
+            now_ms().saturating_sub(submission_gating::INFRA_RESUBMIT_WINDOW_MS + 1),
+        ));
+        let (s, v) = call(
+            app.clone(),
+            Request::post(format!("/v1/submissions/{id}/retry"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(v["status"], "queued");
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    final_score: Some(FinalScore::NoScore(
+                        NoScoreReasonCode::ChallengeInternal as u8,
+                    )),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        gating
+            .set_terminal(
+                "prism",
+                &hk,
+                submission_gating::GatingState::Blocked,
+                Some("install"),
+            )
+            .await
+            .unwrap();
+        assert!(gating.set_updated_at_ms(
+            "prism",
+            &hk,
+            now_ms().saturating_sub(submission_gating::INFRA_RESUBMIT_WINDOW_MS + 1),
+        ));
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(v["status"], "queued");
+        assert_eq!(
+            st.store.get(&id).await.unwrap().unwrap().status,
+            Stage::Queued
+        );
     }
 
     #[tokio::test]

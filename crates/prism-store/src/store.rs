@@ -23,7 +23,8 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     async fn get(&self, id: &str) -> Result<Option<SubmissionState>, StoreError>;
 
     /// Atomically claim the next queued row for work (`SKIP LOCKED`, moves
-    /// to provisioning).
+    /// to provisioning). Prefer queued rows that already have a `pod_id`
+    /// (reattach) over brand-new submits.
     async fn claim_next(&self) -> Result<Option<SubmissionState>, StoreError>;
 
     /// Apply a partial update + journal the event (one logical step).
@@ -216,7 +217,10 @@ impl PrismStore for MemoryPrismStore {
 
     async fn claim_next(&self) -> Result<Option<SubmissionState>, StoreError> {
         let mut rows = lock(&self.rows)?;
-        let pos = rows.iter().position(|r| r.status == Stage::Queued);
+        let pos = rows
+            .iter()
+            .position(|r| r.status == Stage::Queued && r.pod_id.is_some())
+            .or_else(|| rows.iter().position(|r| r.status == Stage::Queued));
         let Some(i) = pos else { return Ok(None) };
         let mut row = rows.remove(i).ok_or(StoreError::Backend("pop".into()))?;
         row.status = Stage::Provisioning;
@@ -624,6 +628,21 @@ mod tests {
         assert_eq!(first.status, Stage::Provisioning);
         let row = s.get("a").await.unwrap().unwrap();
         assert_eq!(row.status, Stage::Provisioning);
+    }
+
+    #[tokio::test]
+    async fn claim_prefers_queued_row_with_pod() {
+        let s = MemoryPrismStore::new();
+        s.insert_queued(&row("new", "11")).await.unwrap();
+        let mut resume = row("resume", "22");
+        resume.pod_id = Some("pod-live".into());
+        s.insert_queued(&resume).await.unwrap();
+        let first = s.claim_next().await.unwrap().unwrap();
+        assert_eq!(first.id, "resume");
+        assert_eq!(first.pod_id.as_deref(), Some("pod-live"));
+        let second = s.claim_next().await.unwrap().unwrap();
+        assert_eq!(second.id, "new");
+        assert!(second.pod_id.is_none());
     }
 
     #[tokio::test]

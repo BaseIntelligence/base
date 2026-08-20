@@ -6,7 +6,7 @@
 
 **recipe_version:** `2.1.0` (pinned NeMo AutoModel diff + 4-GPU CUDA 13/TE pod + attested dual cap + complete v3 battery; legacy **1.x** layouts rejected — see [`PRISM_RECIPE.md`](PRISM_RECIPE.md))
 **port:** `8092`  
-**emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
+**emission_share_bps:** `10000` (100% prism; sum `10000`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
 
 ## What it is
@@ -83,10 +83,14 @@ not SIGHUP GPU work. On boot (and every ~30s) orphan reconcile is
 still alive and whose BYOK key can be restored from the sealed vault
 (`PRISM_PAYER_VAULT_DIR`, default TTL ≥**36h** / train+eval+skew; heartbeats
 re-seal; measure start refreshes the seal and **measure Err keeps the vault
-entry** so auto-/miner-retry can re-rent) are requeued with `pod_id` kept — the
+entry** so auto-/miner-retry can re-rent) are requeued with `pod_id` kept. `claim_next` prefers those resume rows over
+new submits so they do not wait behind the FIFO (and so workers call
+`resume_eval` instead of a second `lium rent`). The
 orchestrator reattaches
 (log/event poll → wait terminal → harvest → score) without terminating the
-pod. Only unreattachable rows fail-closed (`control_plane_restart` /
+pod. `GET /v1/submissions` lists omit source trees / telemetry series so the
+control plane cannot OOM the master host by hydrating hundreds of `tree_blob`
+columns. Only unreattachable rows fail-closed (`control_plane_restart` /
 `harness_detached`) with best-effort terminate. Post-measure review stages
 still requeue. Residual gap: expired seal + no operator fallback ⇒ cannot
 call Lium API ⇒ fail-orphan (miner must stop the pod and resubmit). The stuck
@@ -124,18 +128,21 @@ special: each miner `X-Lium-Api-Key` has its **own** Lium budget (no shared
 process-wide rent serialize queue). The orchestrator **requeues without
 burning** `retry_count` / gating attempts. A background tick re-queues
 failed 429 rows from the last **6 hours**. After an infra `blocked`, the
-miner may **resubmit for up to 30 minutes** (new `POST /v1/submissions` or
-`POST /v1/submissions/{id}/retry` for `ChallengeInternal`); after the window
-the slot stays blocked until the metagraph watcher reopens it (hotkey left /
-replaced).
+miner may **`/retry` or re-POST the same bytes** for `ChallengeInternal`
+without a time cutoff. A *different* ZIP is only accepted inside the
+**30-minute** infra window; after that the slot stays blocked until the
+metagraph watcher reopens it (hotkey left / replaced).
 
 **Training-only entries** gate separately under the composite challenge key
 `prism:train:<arch_id>`: one accepted entry per `(hotkey, arch_id)`, with
 the same auto-retry classes, the same terminal `rejected`/`blocked` states,
 and the same watcher resets (reconciliation is prefix-scoped, so `prism`
 covers every `prism:train:*` row). Idempotency stays the contract-bytes
-`submission_id`: resubmitting identical bytes is an `already-queued` no-op,
-never a gate conflict.
+`submission_id`: resubmitting identical in-flight / successful bytes is an
+`already-queued` no-op (never a gate conflict). A failed `ChallengeInternal`
+row is recovered by that same POST or `/retry`. Pre-pod mid-flight rows
+(`llm_review` / `similarity` / `provisioning` with no `pod_id`) requeue on
+control-plane restart instead of fail-orphan with `pod (none)`.
 
 ## Architecture registry + competition
 

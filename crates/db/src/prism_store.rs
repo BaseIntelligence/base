@@ -92,9 +92,51 @@ pub struct NewPrismStageEvent<'a> {
     pub detail: Option<Value>,
 }
 
-/// Column list shared by all row reads.
+/// Column list shared by single-row reads (`get` / `claim` / `update`).
 const COLS: &str = "id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, \
     architecture_py, training_py, tree_blob, pod_id, pod_provider, receipt_json, metrics_json, \
+    bpb, review_json, similarity_json, kind, score, absence_reason, retry_count, error_detail";
+
+/// Listing projection: same `PrismSubmissionRow` shape without source trees,
+/// telemetry series, or review blobs. Site/reconcile list of hundreds of rows
+/// loading `tree_blob` (up to 17 MiB) + scripts was out-of-memory killing the
+/// 16 GiB master host and bouncing `prism-challenge` (`control_plane_restart`
+/// storms).
+///
+/// Presence of `receipt_json` / `metrics_json` is preserved as slim stubs so
+/// `resume_measurement` / `mid_pod_resume` still classify post-measure vs
+/// mid-pod. `n_params` is kept for the submissions list view.
+const LIST_COLS: &str = "id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, \
+    ''::text AS architecture_py, ''::text AS training_py, NULL::bytea AS tree_blob, \
+    pod_id, pod_provider, \
+    CASE WHEN receipt_json IS NULL THEN NULL ELSE jsonb_build_object(\
+      'provider', COALESCE(receipt_json->>'provider', ''), \
+      'pod_id', COALESCE(receipt_json->>'pod_id', ''), \
+      'image_digest', '', 'submission_hash', '', 'metrics_hash', '', \
+      'termination_verified', COALESCE((receipt_json->>'termination_verified')::boolean, false)\
+    ) END AS receipt_json, \
+    CASE WHEN metrics_json IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(\
+      'bpb', COALESCE(metrics_json->'bpb', '0'::jsonb), \
+      'tokens_seen', COALESCE(metrics_json->'tokens_seen', '0'::jsonb), \
+      'wall_clock_seconds', COALESCE(metrics_json->'wall_clock_seconds', '0'::jsonb), \
+      'notes', '', \
+      'n_params', metrics_json->'n_params'\
+    )) END AS metrics_json, \
+    bpb, NULL::jsonb AS review_json, NULL::jsonb AS similarity_json, \
+    kind, score, absence_reason, retry_count, error_detail";
+
+/// Champion corpus for copy/similarity: keep `architecture_py`, drop trees
+/// and training scripts (gates compare architecture only).
+const CHAMPION_COLS: &str = "id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, \
+    architecture_py, ''::text AS training_py, NULL::bytea AS tree_blob, \
+    pod_id, pod_provider, receipt_json, \
+    CASE WHEN metrics_json IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(\
+      'bpb', COALESCE(metrics_json->'bpb', '0'::jsonb), \
+      'tokens_seen', COALESCE(metrics_json->'tokens_seen', '0'::jsonb), \
+      'wall_clock_seconds', COALESCE(metrics_json->'wall_clock_seconds', '0'::jsonb), \
+      'notes', '', \
+      'n_params', metrics_json->'n_params'\
+    )) END AS metrics_json, \
     bpb, review_json, similarity_json, kind, score, absence_reason, retry_count, error_detail";
 
 /// Insert the queued row.
@@ -141,8 +183,11 @@ pub async fn prism_submission(
     Ok(row)
 }
 
-/// Atomically claim the oldest queued row (`SKIP LOCKED`), moving it to
-/// `provisioning`. Returns None when empty.
+/// Atomically claim the next queued row (`SKIP LOCKED`), moving it to
+/// `provisioning`. Prefer rows that already have a `pod_id` (control-plane
+/// resume) so they are not pushed behind a long FIFO of new submits — those
+/// would take the concurrent slots and trigger a second `lium rent`.
+/// Among the same class, oldest `created_at` first.
 ///
 /// # Errors
 /// SQL error.
@@ -151,7 +196,8 @@ pub async fn claim_prism_submission(pool: &PgPool) -> Result<Option<PrismSubmiss
         "UPDATE prism_submission SET status = 'provisioning', updated_at = now() \
          WHERE id = ( \
            SELECT id FROM prism_submission WHERE status = 'queued' \
-           ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED \
+           ORDER BY (pod_id IS NOT NULL) DESC, created_at ASC \
+           LIMIT 1 FOR UPDATE SKIP LOCKED \
          ) RETURNING {COLS}"
     );
     let row = sqlx::query_as::<_, PrismSubmissionRow>(&q)
@@ -291,7 +337,7 @@ pub async fn list_prism_submissions(
         .filter(|s| !s.is_empty())
         .map(str::to_ascii_lowercase);
     let q = format!(
-        "SELECT {COLS} FROM prism_submission \
+        "SELECT {LIST_COLS} FROM prism_submission \
          WHERE ($1::TEXT IS NULL OR status = $1) \
            AND ($2::TEXT IS NULL OR lower(miner_hotkey) = $2) \
          ORDER BY created_at DESC LIMIT $3"
@@ -314,7 +360,7 @@ pub async fn list_prism_champions(
     limit: i64,
 ) -> Result<Vec<PrismSubmissionRow>, DbError> {
     let q = format!(
-        "SELECT {COLS} FROM prism_submission \
+        "SELECT {CHAMPION_COLS} FROM prism_submission \
          WHERE kind = 'score' AND score > 0 \
          ORDER BY created_at DESC LIMIT $1"
     );

@@ -220,16 +220,18 @@ memory-heavy model cannot turn probe OOM into an unmetered train.
 - Infra failures (Lium pod, review/similarity/LLM infra) **auto-retry up to 3
   times**; harness `EVAL_FAIL` (miner/model code) is terminal for that attempt
   and is **not** auto-retried. Cheat / rejected verdicts are terminal. After an
-  infra failure (`ChallengeInternal`), you may **recover within 30 minutes**
-  via `POST /v1/submissions/{id}/retry` with **`X-Lium-Api-Key`** (required on
-  live when another GPU rent is needed). After 30 minutes the slot stays
-  blocked until your hotkey leaves the metagraph.
+  infra failure (`ChallengeInternal` / `control_plane_restart`), recover with
+  `POST /v1/submissions/{id}/retry` and **`X-Lium-Api-Key`** on live when
+  another GPU rent is needed — **no 30-minute cutoff** on `/retry` or on
+  re-POSTing the **same** pin+patch (that used to return `already-queued`
+  while the row stayed `failed`). A *different* ZIP while the slot is
+  `blocked` is still only accepted inside the 30-minute infra window.
 
 ### Retry vs re-POST
 
 | Action | When | Headers |
 |--------|------|---------|
-| Re-POST the **same** ZIP | Always safe | Same as submit | Returns `200 already-queued` — **no new GPU run**; does not recover a failed row |
+| Re-POST the **same** ZIP | Always safe | Same as submit | In-flight / scored → `200 already-queued`. Failed `ChallengeInternal` → same as `/retry` (`202 queued`) |
 | `POST /v1/submissions/{id}/retry` | Row status is **`failed`** only | **`X-Lium-Api-Key`** on live (infra recovery); admin Bearer for operator non-infra retries | Requeues measure; wrong/missing Lium key → `400 missing_lium_api_key` |
 | `/retry` on non-failed | — | — | `409 not_failed` — hotkey or Bearer alone does not change that |
 
@@ -601,6 +603,6 @@ score instead of being washed out.
 | `GET /health` | Liveness |
 
 Emission share for prism is owner-controlled via the trust root. Current split is
-`5000` bps prism / `5000` bps design (50/50) — see
+`10000` bps prism / `0` bps design (100% prism) — see
 [`../runbooks/prism-enable-lium-and-emission.md`](../runbooks/prism-enable-lium-and-emission.md)
 and [`../runbooks/design-enable-and-emission.md`](../runbooks/design-enable-and-emission.md).
