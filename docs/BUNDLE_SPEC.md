@@ -484,7 +484,8 @@ Reject if:
 | Missing leaf for any `(c,h)` in some `E_c` | Censorship / omission |
 | Bundle's implied set is a **proper subset** of `E_c` | D24 explicit |
 | Extra leaf for unknown challenge id | D18 |
-| Extra leaf for hotkey not in `E_c` | Reject (strict coverage) |
+| Extra leaf for hotkey not in `E_c` (bps > 0) | Reject (strict coverage) |
+| Leaf for a challenge with `bps == 0` | Ignored — not in any `E_c`; seal strips before merkle |
 | Duplicate `(c,h)` | Reject |
 
 Gateway seal MUST fail closed rather than publish an incomplete bundle.

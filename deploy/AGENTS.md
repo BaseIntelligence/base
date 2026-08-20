@@ -88,7 +88,9 @@ Full procedure: [`docs/runbooks/local-testnet-e2e.md`](../docs/runbooks/local-te
 
 **Weights seal smoke (default on `--smoke`):** after healthz, `local-e2e.sh` runs `weights-smoke` — signed prism leaves for the live metagraph → `POST /v1/admin/seal` → assert `GET /v1/weights/latest` is **200** with **`sealed: true`**. Skip with `--no-weights-smoke`. Pre-seal, latest is **200 burn** (`sealed: false`, uid 0 = 100%) — never 404; that is unrelated to a missing gateway owner wallet. Prefer `--burn` on mainnet when sealing without real challenge scores (all `NoScore` → uid 0).
 
-**Interim prod burn seal (until prism auto-emits):** keep a fresh sealed bundle on the master gateway so validators can Match + CRV4 submit. On the prod master this runs as a **systemd timer** (`base-burn-seal.timer`, every 21 min — above the 100-block `WeightsSetRateLimit`, inside the ~256-block Finney state-pruning window) driving [`scripts/prod-burn-seal.sh`](scripts/prod-burn-seal.sh); units live in [`systemd/`](systemd/). Install:
+**Interim prod burn seal (retired while prism auto-emits):** `weights-smoke --burn` posts all-`NoScore` at a **block-scale** epoch. That hid the live Prism 2.1 WTA winner (chain epoch ~24k) because `/v1/weights/latest` had no chain-scale bundle to prefer. Keep the script for emergency burn-only windows; **do not** enable `base-burn-seal.timer` when Prism is emitting scores. `remote-deploy` on master enables real-seal and disables the burn timer.
+
+Historical install (burn-only, no live scores):
 
 ```bash
 install -m 0755 target/release/weights-smoke /opt/base/bin/weights-smoke
@@ -106,7 +108,7 @@ cargo run -q --release -p weights-smoke -- \
 
 A seal older than ~256 blocks can never be verified by the validator (public RPC prunes state) — if `GET /v1/weights/latest` shows `metagraph_block` lagging tip by thousands of blocks, check `systemctl status base-burn-seal.timer` and `/var/log/base-burn-seal.log` on the master.
 
-**Real-epoch sealer (post burn-seal retirement):** `base-real-seal.timer` (every **2 min**) drives [`scripts/prod-real-seal.sh`](scripts/prod-real-seal.sh), which walks **current … current−N** chain epochs (`REAL_SEAL_WALK_BACK`, default 16) with `block_b = LastEpochBlock − k×tempo`. Tip reseal is expected: when design/prism tip-supersede leaves mid-epoch, seal rebuilds and appends `epoch_bundle.revision` so `/v1/weights/latest` tracks live scores; identical merkle/vector is a no-op 200. Walk-back still recovers when tip is incomplete D24 (409 continues). The gateway prefers chain-scale bundles over the reserved smoke range (`>= 8_000_000`) — retire the burn timer (`systemctl disable --now base-burn-seal.timer`) after the first real seal verifies end-to-end. Install:
+**Real-epoch sealer (default on master):** `base-real-seal.timer` (every **2 min**) drives [`scripts/prod-real-seal.sh`](scripts/prod-real-seal.sh), which walks **current … current−N** chain epochs (`REAL_SEAL_WALK_BACK`, default 16) with `block_b = LastEpochBlock − k×tempo`. Tip reseal is expected: when prism tip-supersedes leaves mid-epoch, seal rebuilds and appends `epoch_bundle.revision` so `/v1/weights/latest` tracks the WTA winner; identical merkle/vector is a no-op 200. Seal strips 0-bps challenge leftovers (design today) so they cannot 409 D24. The gateway prefers chain-scale bundles over the reserved smoke range (`>= 8_000_000`). Install / `remote-deploy` does this:
 
 ```bash
 install -m 0755 deploy/scripts/prod-real-seal.sh /opt/base/deploy/scripts/prod-real-seal.sh

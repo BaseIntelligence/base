@@ -20,6 +20,21 @@ pub struct DesignEmitPlan {
 /// Max epochs to walk back on catch-up (Finney public RPC prunes ~256 blocks).
 const MAX_CATCHUP_EPOCHS: u64 = 16;
 
+/// When true, design must not POST `/v1/weights/raw`. Trust-root `design`
+/// share is 0 bps today; leftover design leaves 409 D24 as extras.
+#[must_use]
+pub fn design_leaf_emit_enabled() -> bool {
+    match std::env::var("DESIGN_SKIP_LEAF_EMIT") {
+        Ok(v) => {
+            let v = v.trim();
+            !(v.eq_ignore_ascii_case("1")
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes"))
+        }
+        Err(_) => true,
+    }
+}
+
 /// Decide whether/which epoch the design filler should emit.
 ///
 /// - **Cold start** (`last_emitted == 0`): emit the **current** epoch immediately.
@@ -125,6 +140,11 @@ mod tests {
         let p = design_emit_plan(100, 24424, 10, 360, 8_816_047).unwrap();
         assert_eq!(p.epoch, 24424 - 16);
         assert_eq!(p.pin_block, 8_816_047 - 16 * 360);
+    }
+
+    #[test]
+    fn leaf_emit_enabled_by_default() {
+        assert!(design_leaf_emit_enabled());
     }
 
     #[test]

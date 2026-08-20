@@ -55,6 +55,17 @@ pub fn build_sealed_bundle<C: ChainClient + ?Sized>(
 
     let emission_shares = trust.challenges.emission_shares();
     validate_shares_sum(&emission_shares)?;
+    // 0-bps challenges are outside E_c (BUNDLE_SPEC §7.3). Strip leftover
+    // leaves (design at 0 bps still historically emitted) so they cannot
+    // 409 D24 as extras while the paid challenge set is complete.
+    let paid: BTreeSet<Vec<u8>> = trust
+        .challenges
+        .challenges
+        .iter()
+        .filter(|c| c.emission_share_bps > 0)
+        .map(|c| c.id.clone())
+        .collect();
+    leaves.retain(|leaf| paid.contains(&leaf.challenge_id));
     assert_participant_completeness(&trust.challenges, &rows, &leaves)?;
 
     sort_leaves(&mut leaves);
@@ -123,7 +134,16 @@ fn assert_participant_completeness(
             }
         }
     }
+    let zero_bps: BTreeSet<Vec<u8>> = challenges
+        .challenges
+        .iter()
+        .filter(|c| c.emission_share_bps == 0)
+        .map(|c| c.id.clone())
+        .collect();
     for key in &leaf_index {
+        if zero_bps.contains(&key.0) {
+            continue;
+        }
         if !expected_keys.contains(key) {
             return Err(BundleError::IncompleteParticipantSet);
         }

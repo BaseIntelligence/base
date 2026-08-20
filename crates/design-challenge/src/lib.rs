@@ -28,10 +28,10 @@ pub use challenge_common::{
 };
 pub use design_challenge_task::{
     agent_run_timeout_secs, awaiting_admin_unscored_expired, daily_run_quota, design_emit_plan,
-    manual_daily_run_quota, prompts_per_round, reject_awaiting_admin_run, round_id_at, round_secs,
-    round_win_delta, rounds_per_day_effective, scheduled_daily_run_cap, scheduled_runs_per_day,
-    score_window, unscored_epochs_elapsed, window_start, DesignEmitPlan, ScorePlan,
-    WindowScorePlan, CHALLENGE_ID, CHALLENGE_ID_BYTES, DESIGN_EMIT_LATE_BLOCKS,
+    design_leaf_emit_enabled, manual_daily_run_quota, prompts_per_round, reject_awaiting_admin_run,
+    round_id_at, round_secs, round_win_delta, rounds_per_day_effective, scheduled_daily_run_cap,
+    scheduled_runs_per_day, score_window, unscored_epochs_elapsed, window_start, DesignEmitPlan,
+    ScorePlan, WindowScorePlan, CHALLENGE_ID, CHALLENGE_ID_BYTES, DESIGN_EMIT_LATE_BLOCKS,
     MANUAL_DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS, SCORE_MAX,
     SCORING_VERSION, SCORING_WINDOW_ROUNDS, UNSCORED_EPOCH_LIMIT,
 };

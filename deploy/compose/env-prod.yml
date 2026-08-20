@@ -91,6 +91,9 @@ services:
     environment:
       # Docker-only on prod. Never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM here.
       DESIGN_FORCE_SIM: "false"
+      # Trust root is design = 0 bps. Extra design leaves 409 D24 and hide
+      # the prism WTA winner. Gate emit until design share is non-zero.
+      DESIGN_SKIP_LEAF_EMIT: "1"
       BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
   design-egress-proxy:
     environment:
