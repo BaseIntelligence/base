@@ -22,6 +22,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use design_sandbox::read_staged_bytes;
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
@@ -192,7 +193,7 @@ fn capture_once(
         let _ = std::fs::remove_file(&png_path);
         return None;
     }
-    let bytes = std::fs::read(&png_path).ok();
+    let bytes = read_staged_bytes(&png_path).ok();
     let _ = std::fs::remove_file(&png_path);
     match bytes {
         Some(b) if !b.is_empty() && b.starts_with(b"\x89PNG") => Some(b),
@@ -247,7 +248,8 @@ fn shoot(
         timeout,
     );
     let _ = std::fs::remove_dir_all(&profile);
-    matches!(res, Some(o) if o.status.success() && out.is_file())
+    matches!(res, Some(o) if o.status.success())
+        && std::fs::symlink_metadata(out).is_ok_and(|m| !m.file_type().is_symlink() && m.is_file())
 }
 
 /// Shared headless flags. `--no-sandbox`: the renderer sandbox needs userns /
@@ -421,6 +423,20 @@ mod tests {
         let stub = ok_stub(&dir);
         let png = capture_with(&test_cfg(&stub), "<p>hi</p>", &dir.join("work"));
         assert_eq!(png.as_deref(), Some(FAKE_PNG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_staged_bytes_refuses_symlink() {
+        let dir = std::env::temp_dir().join(format!("shot-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("secret.bin");
+        std::fs::write(&target, b"LEAK").unwrap();
+        let link = dir.join("shot.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(read_staged_bytes(&link).is_err());
+        assert_eq!(read_staged_bytes(&target).unwrap(), b"LEAK");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

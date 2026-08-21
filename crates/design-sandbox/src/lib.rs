@@ -7,6 +7,9 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,6 +24,10 @@ pub const DEFAULT_RUNTIME_IMAGE: &str = "design-runtime:0.1.0";
 /// Default install-phase timeout (`pip install` from `pyproject.toml`).
 /// Env-tunable on the service via `DESIGN_INSTALL_TIMEOUT_SECS`.
 pub const DEFAULT_INSTALL_TIMEOUT_SECS: u64 = 300;
+
+/// Linux `O_NOFOLLOW` (`asm-generic/fcntl.h`) — open must not traverse a symlink.
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0x20000;
 
 /// Sandbox errors.
 #[derive(Debug, Error)]
@@ -44,6 +51,59 @@ pub enum SandboxError {
     /// Missing output.
     #[error("missing output: {0}")]
     MissingOutput(String),
+    /// Symlink or non-regular file under staging (refused; do not follow).
+    #[error("unsafe output: {0}")]
+    UnsafeOutput(String),
+}
+
+/// Read a staging path without following symlinks (`O_NOFOLLOW` on Linux).
+///
+/// Miner `out/pages/*` may be symlinks into the design-challenge mount NS
+/// (`/run/base/*`, `/proc/1/environ`); collectors must not follow them (R15).
+pub fn read_staged_bytes(path: &Path) -> Result<Vec<u8>, SandboxError> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(SandboxError::MissingOutput(path.display().to_string()));
+        }
+        Err(e) => return Err(SandboxError::Io(e)),
+    };
+    let label = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    if meta.file_type().is_symlink() {
+        return Err(SandboxError::UnsafeOutput(format!(
+            "{label}: symlink refused"
+        )));
+    }
+    if !meta.file_type().is_file() {
+        return Err(SandboxError::UnsafeOutput(format!(
+            "{label}: not a regular file"
+        )));
+    }
+    let mut file = fs::OpenOptions::new();
+    file.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        file.custom_flags(O_NOFOLLOW);
+    }
+    let mut f = file.open(path)?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// UTF-8 staging read; same gates as [`read_staged_bytes`].
+pub fn read_staged_text(path: &Path) -> Result<String, SandboxError> {
+    let bytes = read_staged_bytes(path)?;
+    String::from_utf8(bytes).map_err(|_| {
+        let label = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        );
+        SandboxError::UnsafeOutput(format!("{label}: not utf-8"))
+    })
 }
 
 /// Collected `/out` pages.
@@ -221,12 +281,31 @@ impl DockerSandbox {
         let mut pages = HashMap::new();
         for req in REQUIRED_PAGES {
             let p = work.join("out/pages").join(req);
-            if !p.is_file() {
-                return Err(SandboxError::MissingOutput((*req).into()));
+            match read_staged_text(&p) {
+                Ok(body) => {
+                    pages.insert((*req).into(), body);
+                }
+                Err(SandboxError::MissingOutput(_)) => {
+                    return Err(SandboxError::MissingOutput((*req).into()));
+                }
+                Err(SandboxError::UnsafeOutput(_)) => {
+                    return Err(SandboxError::UnsafeOutput((*req).into()));
+                }
+                Err(e) => return Err(e),
             }
-            pages.insert((*req).into(), fs::read_to_string(p)?);
         }
         Ok(pages)
+    }
+}
+
+/// Optional `.miner_env.json` written at stage time (run-phase only). Refuse
+/// symlink / non-regular replacements planted during install.
+fn load_miner_env_file(work: &Path) -> Result<Option<String>, SandboxError> {
+    let path = work.join(".miner_env.json");
+    match read_staged_text(&path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(SandboxError::MissingOutput(_)) => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -304,10 +383,8 @@ echo pip-install-ok"
             format!("HTTP_PROXY={egress_proxy}"),
             format!("HTTPS_PROXY={egress_proxy}"),
         ];
-        // Re-read env from staged files is not possible; callers must put
-        // validated env on the bundle before install/run. We pass via a
-        // side channel file written at stage time when present.
-        if let Ok(raw) = fs::read_to_string(work.join(".miner_env.json")) {
+        // Side channel written at stage time; never follow miner-planted symlinks.
+        if let Some(raw) = load_miner_env_file(&work)? {
             if let Ok(map) =
                 serde_json::from_str::<std::collections::BTreeMap<String, String>>(&raw)
             {
@@ -434,7 +511,7 @@ impl SandboxBackend for SimSandbox {
             .env("DESIGN_RUN_ID", run_id)
             .env("DESIGN_ROUND_ID", round_id.to_string())
             .env("DESIGN_PROMPT", prompt);
-        if let Ok(raw) = fs::read_to_string(work.join(".miner_env.json")) {
+        if let Some(raw) = load_miner_env_file(&work)? {
             if let Ok(map) =
                 serde_json::from_str::<std::collections::BTreeMap<String, String>>(&raw)
             {
@@ -539,11 +616,66 @@ mod tests {
     use super::*;
     use design_harness::HarnessBundle;
     use std::collections::BTreeMap;
+    use std::os::unix::fs::symlink;
+    use tempfile::tempdir;
 
     const BASELINE_AGENT: &str =
         include_str!("../../../docs/external-miner/examples/design-baseline/agent.py");
     const BASELINE_PYPROJECT: &str =
         include_str!("../../../docs/external-miner/examples/design-baseline/pyproject.toml");
+
+    #[test]
+    fn collect_out_rejects_symlink_pages() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("out/pages");
+        fs::create_dir_all(&pages).unwrap();
+        // Secret outside staging (simulates /run/base/... in the challenge NS).
+        let secret = dir.path().join("secret_outside");
+        fs::write(&secret, "LEAKED_CHALLENGE_SK\n").unwrap();
+        for req in REQUIRED_PAGES {
+            if *req == "index.html" {
+                symlink(&secret, pages.join(req)).unwrap();
+            } else {
+                fs::write(pages.join(req), format!("<html>{req}</html>")).unwrap();
+            }
+        }
+        let err = DockerSandbox::collect_out(dir.path()).unwrap_err();
+        let msg = err.to_string();
+        match err {
+            SandboxError::UnsafeOutput(name) => assert_eq!(name, "index.html"),
+            other => panic!("expected UnsafeOutput, got {other:?}"),
+        }
+        // Must not have followed the link (content never enters artifacts / errors).
+        assert!(!msg.contains("LEAKED"), "error must not echo secret body");
+    }
+
+    #[test]
+    fn read_staged_text_rejects_symlink_and_accepts_regular() {
+        let dir = tempdir().unwrap();
+        let regular = dir.path().join("ok.html");
+        fs::write(&regular, "<html>ok</html>").unwrap();
+        assert_eq!(read_staged_text(&regular).unwrap(), "<html>ok</html>");
+
+        let target = dir.path().join("target");
+        fs::write(&target, "SECRET").unwrap();
+        let link = dir.path().join("evil.html");
+        symlink(&target, &link).unwrap();
+        let err = read_staged_text(&link).unwrap_err();
+        assert!(
+            matches!(err, SandboxError::UnsafeOutput(ref m) if m.contains("symlink")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn load_miner_env_refuses_symlink() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("sk");
+        fs::write(&target, r#"{"X":"1"}"#).unwrap();
+        symlink(&target, dir.path().join(".miner_env.json")).unwrap();
+        let err = load_miner_env_file(dir.path()).unwrap_err();
+        assert!(matches!(err, SandboxError::UnsafeOutput(_)), "{err:?}");
+    }
 
     #[test]
     fn install_env_carries_no_miner_secrets() {

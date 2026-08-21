@@ -107,6 +107,7 @@ A malicious owner can authorize a dishonest challenge or a backdoored measuremen
 | Malicious owner | In scope of D19(ii) / R12 — not eliminated |
 | Colluding validator set deleting evidence | D19(iv) / D5 — no public anchor |
 | Malicious miner HTML/JS (stored XSS on the site origin via `/v1/view`) | Blocked by R13 layering; any single layer suffices |
+| Malicious harness planting staging symlinks to challenge secret mounts | Blocked by R15 (no follow on collect / staging reads) |
 
 ---
 
@@ -119,6 +120,7 @@ A malicious owner can authorize a dishonest challenge or a backdoored measuremen
 | R4 | Zero emission possible | Extrinsic success + revealed weights match recompute is pass; emission is not |
 | R13 | Miner-generated design pages XSS-ing the joinbase.ai origin (cookie/session theft, phishing) when viewed | Four independent layers, each sufficient alone: (1) ammonia sanitize strips `<script>`/handlers before storage; (2) response CSP `sandbox` with **no** `allow-scripts`/`allow-same-origin` → opaque origin, scripts disabled, no cookie/storage access, `frame-ancestors` allowlist, never `Set-Cookie`; (3) gateway proxy re-applies the header floor and strips `Set-Cookie` on `/challenge/*/v1/view/*` (survives stale upstreams); (4) frontend embeds with `<iframe sandbox="">`. Browser-tested: injected `<script>` stays inert under each layer independently. Produced HTML is never served (screenshots-only). |
 | R14 | Screenshot Chromium inside design-challenge (`--no-sandbox`, `file://`) SSRF-ing control-plane targets on the `base` network (gateway admin, metadata `169.254.169.254`, socket-proxy, postgres) via missed script or static `http(s)` / CSS `url(...)` | Defense-in-depth: (1) sanitize neutralizes internal `href`/`src`; (2) Chromium forced through `design-egress-proxy` (`DESIGN_SCREENSHOT_PROXY` + `--proxy-bypass-list=<-loopback>`) with the same post-DNS blocklist as sandboxes; (3) capture-document CSP nonce + `navigate-to 'none'`. Host Sim (`BASE_ALLOW_HOST_SIM`) remains fail-closed on staging/prod. |
+| R15 | Miner replaces sandbox `out/pages/*.html` (or other staging paths) with symlinks into the **design-challenge** mount namespace (`/run/base/challenge_sk`, OpenRouter key, annotator tokens, `/proc/1/environ`) so host-side collect/read follows them into artifacts | Staging collectors refuse symlinks / non-regular files (`symlink_metadata` + Linux `O_NOFOLLOW`); miner fault (`unsafe output`). Review `run_command` also denies `/run/base` and secret path needles. Does **not** cover validator/gateway hotkeys (not mounted on design-challenge). |
 
 ---
 

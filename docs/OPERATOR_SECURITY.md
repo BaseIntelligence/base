@@ -13,7 +13,7 @@ Use this before every promote and after every incident. Architecture: [`ARCHITEC
 - [ ] Challenge signing secrets are **files** mounted into the challenge service, not env values (D11).
 - [ ] Owner and challenge mini-secrets never committed; only `*.pubkey` / TOML bodies + detached `.sig` in git.
 - [ ] Cloudflare / DO / Phala tokens live only in operator secret stores, not in docs or CI logs.
-- [ ] Design agentic review: OpenRouter key is mounted on `design-challenge` / `design-egress-proxy` as a **file**, never into miner sandboxes. The ephemeral `design-review` container must receive the key via a **file mount** (`OPENROUTER_API_KEY_FILE`), never as `OPENROUTER_API_KEY` in container env (`/proc/<pid>/environ` is boot-fixed). `run_command` must keep procfs and `/run/review-secrets` denied. Do not turn off `AGENTIC_ENABLE_RUN_COMMAND` in prod without a replacement inspection path.
+- [ ] Design agentic review: OpenRouter key is mounted on `design-challenge` / `design-egress-proxy` as a **file**, never into miner sandboxes. The ephemeral `design-review` container must receive the key via a **file mount** (`OPENROUTER_API_KEY_FILE`), never as `OPENROUTER_API_KEY` in container env (`/proc/<pid>/environ` is boot-fixed). `run_command` must keep procfs, `/run/review-secrets`, and `/run/base` secret paths denied. Staging collect must refuse symlinks (R15). Do not turn off `AGENTIC_ENABLE_RUN_COMMAND` in prod without a replacement inspection path.
 
 ---
 

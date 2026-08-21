@@ -454,7 +454,7 @@ fn tool_run_command(ctx: &ToolContext, args: &Value) -> Result<String, AgenticEr
     }
     // File-mounted OpenRouter key + parent environ must stay unread.
     let c = cmd.to_ascii_lowercase().replace('\\', "/");
-    if c.contains("/proc") || c.contains("review-secrets") || c.contains("openrouter_api_key") {
+    if c.contains("/proc") || c.contains("review-secrets") || c.contains("/run/base") {
         return Err(AgenticError::Tool("run_command: forbidden path".into()));
     }
     let rel = args.get("path").and_then(Value::as_str).unwrap_or(".");
@@ -754,6 +754,8 @@ mod tests {
             "cat /proc/1/environ",
             "python -c 'open(\"//proc/self/environ\").read()'",
             "cat /run/review-secrets/openrouter_api_key",
+            "cat /run/base/challenge_sk",
+            "cat /run/base/openrouter/api_key",
         ] {
             let err = tool_run_command(&ctx, &json!({"command": bad}))
                 .unwrap_err()
