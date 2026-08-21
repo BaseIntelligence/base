@@ -20,8 +20,9 @@ accepted on live. Novel architectures remain allowed when expressed as
 AutoModel extensions in the patch. Full pin fields and ZIP layout:
 [`PRISM_RECIPE.md`](PRISM_RECIPE.md).
 
-Each evaluation runs on a Lium GPU pod **funded by the miner** via
-`X-Lium-Api-Key` (Sim backend in CI only). Intake applies the patch
+Each evaluation runs on a Lium GPU pod **or Verda serverless job funded by
+the miner** via `X-Lium-Api-Key` **or** Verda BYOK (`X-Verda-Client-Id` /
+Secret / `X-Verda-Inference-Key`) (Sim backend in CI only). Intake applies the patch
 fail-closed onto the pin; the delta is persisted for
 `GET /v1/submissions/{id}/diff`. Copy / similarity / agentic review focus on
 the **miner delta** (touched files / hunks), then the shared **agentic**
@@ -1144,7 +1145,7 @@ the harness semantics listed above, and the baseline sources they may reuse.
 
 | Dimension | Real | Fallback |
 |-----------|------|----------|
-| Eval backend | Live Lium when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`). **Hard pin: 1× NVIDIA B200** (default). Explicit env fallbacks: **4× RTX 5090** (`PRISM_POD_GPU_COUNT=4`) or **2×/8× RTX PRO 6000** (`PRISM_POD_GPU_COUNT=2`/`8`). No silent 8× B200/5090 fallback; non-pin SKUs rejected at rent | `SimLiumBackend` |
+| Eval backend | Live Lium **or Verda** when not `PRISM_FORCE_SIM` — miners bill via `X-Lium-Api-Key` or Verda BYOK (operator `LIUM_API_KEY` optional fallback if `PRISM_ALLOW_OPERATOR_LIUM=1`). **Hard pin: 1× NVIDIA B200**. Verda uses serverless job-deployments (no SSH). Sold-out stays queued | `SimLiumBackend` |
 | Reviewer | `/run/base/openrouter/api_key` exists → OpenRouter LLM | `SimReviewer` (deterministic) |
 | Agentic | same OpenRouter key → `OpenRouterAgent` | `SimAgent` (AST + metrics heuristics) |
 | Store | `BASE_DATABASE_URL` set → Postgres w/ migrations | in-memory (dev only) |
