@@ -1,4 +1,4 @@
-//! Miner-funded Lium keys (BYOK): vault + live-client factory.
+//! Miner-funded Lium / Verda keys (BYOK): vault + live-client factory.
 //!
 //! Keys are held in process memory and optionally in a TTL-bounded
 //! encrypted seal directory (`PRISM_PAYER_VAULT_DIR` + key file). Default TTL
@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+mod dispatch;
 mod sealed;
 
 use std::collections::HashMap;
@@ -16,6 +17,70 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use prism_lium::{EvalJobBackend, LiumClient, LiumError, LiumSshConfig, LIUM_API_BASE_URL};
+use prism_verda::{VerdaClient, VerdaCreds};
+
+pub use dispatch::{
+    creds_from_headers, creds_from_parts, miner_image_override_error, IntakePayerError,
+    COMPUTE_PROVIDER_HEADER, VERDA_API_KEY_HEADER, VERDA_CLIENT_ID_HEADER,
+    VERDA_CLIENT_SECRET_HEADER, VERDA_INFERENCE_KEY_HEADER,
+};
+
+/// Miner-funded provider credentials (never logged).
+#[derive(Clone, PartialEq, Eq)]
+pub enum ProviderCreds {
+    /// Lium REST API key.
+    Lium(String),
+    /// Verda OAuth + inference token.
+    Verda {
+        /// Cloud API client id.
+        id: String,
+        /// Cloud API client secret.
+        sec: String,
+        /// Inference / tasks bearer.
+        inf: String,
+    },
+}
+
+impl fmt::Debug for ProviderCreds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lium(_) => f.debug_tuple("Lium").field(&"<redacted>").finish(),
+            Self::Verda { .. } => f.debug_struct("Verda").finish_non_exhaustive(),
+        }
+    }
+}
+
+impl ProviderCreds {
+    /// Provider label persisted on the eval row / receipt.
+    #[must_use]
+    pub const fn provider(&self) -> &'static str {
+        match self {
+            Self::Lium(_) => "lium",
+            Self::Verda { .. } => "verda",
+        }
+    }
+
+    fn encode(&self) -> String {
+        match self {
+            Self::Lium(k) => k.clone(),
+            Self::Verda { id, sec, inf } => format!("verda\u{1e}{id}\u{1e}{sec}\u{1e}{inf}"),
+        }
+    }
+
+    fn decode(raw: &str) -> Self {
+        if let Some(rest) = raw.strip_prefix("verda\u{1e}") {
+            let p: Vec<&str> = rest.split('\u{1e}').collect();
+            if p.len() == 3 {
+                return Self::Verda {
+                    id: p[0].to_owned(),
+                    sec: p[1].to_owned(),
+                    inf: p[2].to_owned(),
+                };
+            }
+        }
+        Self::Lium(raw.to_owned())
+    }
+}
 
 pub use sealed::{
     expiry_secs, recommended_ttl_secs, SealedVaultConfig, DEFAULT_TTL_SECS, DIR_ENV,
@@ -90,10 +155,15 @@ impl PayerKeyVault {
         n
     }
 
-    /// Insert or replace the payer key for `submission_id`.
+    /// Insert or replace the Lium payer key for `submission_id`.
     pub fn insert(&self, submission_id: impl Into<String>, api_key: impl Into<String>) {
+        self.insert_creds(submission_id, &ProviderCreds::Lium(api_key.into()));
+    }
+
+    /// Insert Lium or Verda creds (seal stores a tagged blob, never logged).
+    pub fn insert_creds(&self, submission_id: impl Into<String>, creds: &ProviderCreds) {
         let id = submission_id.into();
-        let key = api_key.into();
+        let key = creds.encode();
         if key.trim().is_empty() {
             return;
         }
@@ -107,12 +177,20 @@ impl PayerKeyVault {
         }
     }
 
-    /// Clone of the stored key, if any (memory, then sealed file).
-    ///
-    /// Measure / resume paths rely on this hydrate-from-seal fallback when the
-    /// in-memory map is empty after a restart (as long as the seal is unexpired).
+    /// True when a Lium or Verda seal exists for this submission.
     #[must_use]
-    pub fn get(&self, submission_id: &str) -> Option<String> {
+    pub fn has_payer(&self, submission_id: &str) -> bool {
+        self.get_creds(submission_id).is_some()
+    }
+
+    /// Decode stored creds (memory, then sealed file).
+    #[must_use]
+    pub fn get_creds(&self, submission_id: &str) -> Option<ProviderCreds> {
+        self.raw_blob(submission_id)
+            .map(|s| ProviderCreds::decode(&s))
+    }
+
+    fn raw_blob(&self, submission_id: &str) -> Option<String> {
         if let Ok(g) = self.inner.lock() {
             if let Some(k) = g.get(submission_id) {
                 return Some(k.clone());
@@ -126,12 +204,24 @@ impl PayerKeyVault {
         Some(key)
     }
 
+    /// Clone of the stored Lium key, if any (memory, then sealed file).
+    ///
+    /// Measure / resume paths rely on this hydrate-from-seal fallback when the
+    /// in-memory map is empty after a restart (as long as the seal is unexpired).
+    #[must_use]
+    pub fn get(&self, submission_id: &str) -> Option<String> {
+        match self.get_creds(submission_id) {
+            Some(ProviderCreds::Lium(k)) => Some(k),
+            _ => None,
+        }
+    }
+
     /// Re-persist the seal with a fresh TTL window (memory and/or disk).
     ///
     /// Call before measure and on heartbeats so full-budget trains cannot
     /// outlive the on-disk seal. Returns `false` when no key is available.
     pub fn refresh(&self, submission_id: &str) -> bool {
-        let Some(key) = self.get(submission_id) else {
+        let Some(key) = self.raw_blob(submission_id) else {
             return false;
         };
         if let Some(cfg) = &self.sealed {
@@ -205,15 +295,27 @@ impl PayerBackendFactory {
         submission_id: &str,
         operator: Arc<dyn EvalJobBackend>,
     ) -> Result<Arc<dyn EvalJobBackend>, String> {
-        if let Some(key) = self.vault.get(submission_id) {
-            let client = LiumClient::with_config(key, self.base_url.clone(), self.ssh.clone())
+        match self.vault.get_creds(submission_id) {
+            Some(ProviderCreds::Lium(key)) => {
+                let client = LiumClient::with_config(key, self.base_url.clone(), self.ssh.clone())
+                    .map_err(|e: LiumError| e.to_string())?;
+                return Ok(Arc::new(client));
+            }
+            Some(ProviderCreds::Verda { id, sec, inf }) => {
+                let client = VerdaClient::new(VerdaCreds {
+                    client_id: id,
+                    client_secret: sec,
+                    inference_key: inf,
+                })
                 .map_err(|e: LiumError| e.to_string())?;
-            return Ok(Arc::new(client));
+                return Ok(Arc::new(client));
+            }
+            None => {}
         }
         if self.allow_operator_fallback {
             return Ok(operator);
         }
-        Err("miner Lium API key missing for this submission — resubmit with X-Lium-Api-Key".into())
+        Err("miner compute key missing — resubmit with X-Lium-Api-Key or Verda BYOK headers".into())
     }
 }
 
@@ -325,5 +427,24 @@ mod tests {
             g.clear();
         }
         assert_eq!(v.get("onlyseal").as_deref(), Some("sk_from_disk"));
+    }
+
+    #[test]
+    fn verda_creds_do_not_look_like_lium_key() {
+        let v = PayerKeyVault::new();
+        v.insert_creds(
+            "j1",
+            &ProviderCreds::Verda {
+                id: "cid".into(),
+                sec: "csec".into(),
+                inf: "inf".into(),
+            },
+        );
+        assert!(v.get("j1").is_none());
+        assert!(v.has_payer("j1"));
+        let c = v.get_creds("j1").unwrap();
+        assert_eq!(c.provider(), "verda");
+        let dbg = format!("{v:?}");
+        assert!(!dbg.contains("csec"));
     }
 }

@@ -216,11 +216,15 @@ async fn post_submission(
     headers: axum::http::HeaderMap,
     body: bytes::Bytes,
 ) -> Response {
-    let miner_lium_key = headers
-        .get(prism_lium_payer::LIUM_API_KEY_HEADER)
-        .or_else(|| headers.get("X-Lium-Api-Key"))
-        .and_then(|v| v.to_str().ok())
-        .and_then(prism_lium_payer::normalize_lium_api_key);
+    if let Ok(v) = serde_json::from_slice::<Value>(body.as_ref()) {
+        if let Some(msg) = prism_lium_payer::miner_image_override_error(&v) {
+            return json_err(StatusCode::BAD_REQUEST, "miner_image_override", msg);
+        }
+    }
+    let payer_creds = match prism_lium_payer::creds_from_headers(&headers) {
+        Ok(c) => c,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, e.code(), e.message()),
+    };
     let mut req = match parse_submission_body(&headers, body.as_ref()) {
         Ok(r) => r,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
@@ -272,21 +276,20 @@ async fn post_submission(
         Ok(b) => b,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "tree", &e),
     };
-    // Live Lium: miners fund their own pod via X-Lium-Api-Key (not persisted).
-    if prism_lium_payer::require_miner_lium(st.backend_mode) && miner_lium_key.is_none() && !exists
-    {
+    // Live: miners fund Lium or Verda (not persisted in Postgres).
+    if prism_lium_payer::require_miner_lium(st.backend_mode) && payer_creds.is_none() && !exists {
         return json_err(
             StatusCode::BAD_REQUEST,
             "missing_lium_api_key",
-            "live Prism eval requires header X-Lium-Api-Key (miner-funded Lium account)",
+            "live Prism eval requires X-Lium-Api-Key or Verda BYOK headers",
         );
     }
     let row = queued_row(&st, &req, id.clone(), tree_blob);
     // Idempotent no-op duplicate accepted (same id → 200 OK {status:"already-queued"}).
     match st.store.insert_queued(&row).await {
         Ok(()) => {
-            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key.as_ref()) {
-                vault.insert(id.clone(), key.clone());
+            if let (Some(vault), Some(creds)) = (&st.payer_vault, payer_creds.as_ref()) {
+                vault.insert_creds(id.clone(), creds);
             }
             // Registration finalizes only after the row is queued so intake
             // failures never consume the miner's single slot.
@@ -307,8 +310,8 @@ async fn post_submission(
             (StatusCode::ACCEPTED, Json(json!({"submission_id": id, "status": "accepted", "note": lium_rent_pool::CAPACITY_POLICY}))).into_response()
         }
         Err(StoreError::Backend(e)) if e.contains("duplicate") || e.contains("unique") => {
-            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key.as_ref()) {
-                vault.insert(id.clone(), key.clone());
+            if let (Some(vault), Some(creds)) = (&st.payer_vault, payer_creds.as_ref()) {
+                vault.insert_creds(id.clone(), creds);
             }
             (
                 StatusCode::OK,
@@ -445,23 +448,20 @@ async fn post_retry(
     }
     // Prefer the request header, else reuse the sealed BYOK vault entry for
     // this submission_id (auto-/admin-retry must not drop miner Lium keys).
-    let header_lium_key = headers
-        .get(prism_lium_payer::LIUM_API_KEY_HEADER)
-        .or_else(|| headers.get("X-Lium-Api-Key"))
-        .and_then(|v| v.to_str().ok())
-        .and_then(prism_lium_payer::normalize_lium_api_key);
-    let miner_lium_key = header_lium_key
-        .clone()
-        .or_else(|| st.payer_vault.as_ref().and_then(|v| v.get(&id)));
+    let header_creds = prism_lium_payer::creds_from_headers(&headers)
+        .ok()
+        .flatten();
+    let miner_creds =
+        header_creds.or_else(|| st.payer_vault.as_ref().and_then(|v| v.get_creds(&id)));
     if infra
         && row.metrics_json.is_none()
         && prism_lium_payer::require_miner_lium(st.backend_mode)
-        && miner_lium_key.is_none()
+        && miner_creds.is_none()
     {
         return json_err(
             StatusCode::BAD_REQUEST,
             "missing_lium_api_key",
-            "live Prism retry requires X-Lium-Api-Key (or a sealed payer vault entry) when another GPU run is needed",
+            "live Prism retry requires X-Lium-Api-Key or Verda BYOK (or a sealed payer vault entry)",
         );
     }
     if row.retry_count >= st.retry_max && !infra {
@@ -479,10 +479,8 @@ async fn post_retry(
     }
     match st.store.reset_for_retry(&id, true).await {
         Ok(_) => {
-            if let (Some(vault), Some(key)) = (&st.payer_vault, miner_lium_key) {
-                // Re-seal so TTL covers the new attempt even when the header
-                // was omitted and we reused the vault entry.
-                vault.insert(id.clone(), key);
+            if let (Some(vault), Some(creds)) = (&st.payer_vault, miner_creds.as_ref()) {
+                vault.insert_creds(id.clone(), creds);
             }
             (
                 StatusCode::ACCEPTED,
@@ -523,6 +521,7 @@ async fn get_status(State(st): State<Arc<AppState>>) -> Response {
         "recent_terminal": done_24h,
         "recipe_pin": prism_recipe::recipe_pin_hex(),
         "lium_capacity_note": lium_rent_pool::CAPACITY_POLICY,
+        "verda_capacity_note": prism_verda::CAPACITY_POLICY,
     }))
     .into_response()
 }
@@ -1069,6 +1068,7 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["backend"], "sim");
         assert_eq!(v["lium_capacity_note"], lium_rent_pool::CAPACITY_POLICY);
+        assert_eq!(v["verda_capacity_note"], prism_verda::CAPACITY_POLICY);
         let (s, v) = call(
             app.clone(),
             Request::get("/v1/recipe").body(Body::empty()).unwrap(),

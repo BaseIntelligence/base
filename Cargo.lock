@@ -3838,6 +3838,7 @@ dependencies = [
  "prism-review",
  "prism-store",
  "prism-tree",
+ "prism-verda",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4007,9 +4008,12 @@ name = "prism-lium-payer"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
+ "http",
  "prism-lium",
  "prism-recipe",
+ "prism-verda",
  "rand 0.8.7",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "tracing",
@@ -4172,6 +4176,28 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "prism-verda"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "lium-rent-pool",
+ "prism-lium",
+ "prism-lium-harness",
+ "prism-lium-types",
+ "prism-pipeline",
+ "prism-recipe",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "wiremock",
+ "zip",
 ]
 
 [[package]]

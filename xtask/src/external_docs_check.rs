@@ -31,6 +31,7 @@ const PRISM_AUTOMODEL_PINS: &[(&str, &str)] = &[
     ("recipe_json_pin_id", "automodel_pin_id"),
     ("diff_route", "/v1/submissions/{id}/diff"),
     ("lium_byok", "X-Lium-Api-Key"),
+    ("verda_byok", "X-Verda-Client-Id"),
     ("competition_id", "prism-v2.1"),
     ("scoring_generation_21", "scoring_generation"),
     ("new_competition", "new competition"),

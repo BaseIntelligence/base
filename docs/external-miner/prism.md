@@ -33,7 +33,9 @@ prism.toml              # optional — entry / model-config knobs
 4. Produce a unified diff against the pin commit, e.g.
    `git diff <automodel_git_commit> > automodel.patch`.
 5. Write `automodel.base` as a single line equal to `automodel_pin_id`, pack
-   the ZIP, and `POST /v1/submissions` with your hotkey + **`X-Lium-Api-Key`**.
+   the ZIP, and `POST /v1/submissions` with your hotkey + **`X-Lium-Api-Key`**
+   **or** Verda BYOK (`X-Verda-Client-Id`, `X-Verda-Client-Secret`,
+   `X-Verda-Inference-Key`).
 
 Models must stay in **850M–1B parameters** (total unique; tied embeddings
 once). A 215M pack is **invalid** for recipe 2.1. Miner **model code** (build/train/
@@ -119,18 +121,28 @@ an example, not a scored baseline.
 **Diff visibility.** After intake, inspect your applied delta at
 `GET /v1/submissions/{id}/diff` (full unified diff + diffstat / classification).
 
-Evaluation runs on **miner-funded** Lium GPU pods (you pay the rent). Master
-still operates the pod over SSH; you do **not** deploy a miner CVM. CI uses
-`SimLiumBackend` and does not need a key.
+Evaluation runs on **miner-funded** GPUs (Lium SSH pods or Verda serverless
+jobs). You pay the rent. Master still operates the job; you do **not**
+deploy a miner CVM. CI uses `SimLiumBackend` and does not need a key.
 
 ## Pay for your own GPU (required on live)
 
-Create a [Lium](https://lium.io) account, fund it, and pass your API key on
-every live submit:
+Create a [Lium](https://lium.io) **or** [Verda](https://verda.com) account,
+fund it, and pass **one** provider on every live submit:
 
 ```http
 X-Lium-Api-Key: <your Lium API key>
 ```
+
+```http
+X-Verda-Client-Id: <oauth client id>
+X-Verda-Client-Secret: <oauth client secret>
+X-Verda-Inference-Key: <inference token>
+```
+
+`X-Verda-Api-Key` aliases the inference token. If both providers are
+complete, set `X-Compute-Provider: lium` or `verda`. You cannot set
+`image` / `cmd` / `template` — operator pin only.
 
 The key is held in master memory for that submission and may also land in a
 **TTL-bounded encrypted seal file** on the master host (default ≥36h; never in

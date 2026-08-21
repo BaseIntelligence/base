@@ -30,6 +30,7 @@ prism-final = { path = "../prism-final" }
 prism-intake = { path = "../prism-intake" }
 prism-lium = { path = "../prism-lium" }
 prism-lium-payer = { path = "../prism-lium-payer" }
+prism-verda = { path = "../prism-verda" }
 prism-orphan = { path = "../prism-orphan" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-playground = { path = "../prism-playground" }
