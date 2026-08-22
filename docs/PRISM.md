@@ -954,16 +954,21 @@ overridable Docker `CMD` so the provider bootstrap can run.
 **GPU profiles + netns contract.** Lium profiles, never mixed in one job:
 
 1. **Default / 1B dense:** `PRISM_POD_GPU_COUNT=1` + name match **NVIDIA B200**
-   (needles `B200`, `NVIDIA B200`). Exact 1× only — **do not** fall through to
-   8× B200, 5090, or RTX PRO 6000. ~180–192 GB → dense-1b uses mb≥8,
+   (needles `B200`, `NVIDIA B200`). Rent **one** GPU: a native 1× offer, or an
+   8× B200 host that advertises Lium GPU splitting (`min_gpu_count_for_rental`
+   ≤ 1 ≤ `available_gpu_count`, or omitted `min` with `available ≥ 1` on idle
+   hosts). Do **not** buy the whole 8-pack, and do **not** fall through to
+   5090 or RTX PRO 6000. ~180–192 GB → dense-1b uses mb≥8,
    `DENSE1B_TE=1` default, checkpoint off, DDP world=1.
 2. **Explicit env fallbacks:** `PRISM_POD_GPU_COUNT=4` + **RTX 5090** (exact
    4×; **do not** fall through to 8×5090). `PRISM_POD_GPU_COUNT=2` or `8` +
    **RTX PRO 6000 Blackwell** (Server Edition). ~96 GB/card → mb≥4, TE on,
    checkpoint off.
 
-Lium inventory snapshot (2026-08-19): **1× NVIDIA B200** listed at
-**$5.50/gpu-hr** (two offers). 8× B200 @ $5.60/gpu-hr is **not** the pin.
+Lium inventory snapshot (2026-08-22): marketplace lists **8× NVIDIA B200**
+hosts at **$5.60–$6.53/gpu-hr**. Native 1× B200 is often empty; the pin
+rents `gpu_count=1` on those 8× rows. A non-split 8× pack (no
+`available_gpu_count`) is **not** the pin.
 RTX PRO 6000 Server Edition remains an env fallback (1× @ $1.29; 8× @
 $1.01–$1.85). Ada “RTX 6000” is **not** the 6000 pin. Do **not** treat a
 5090 as a B200.

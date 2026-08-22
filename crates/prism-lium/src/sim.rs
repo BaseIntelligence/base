@@ -52,6 +52,7 @@ impl EvalJobBackend for SimLiumBackend {
             gpu_count: 1,
             price_per_hour: price,
             provider: "sim".into(),
+            ..Offer::default()
         };
         let mut offers = vec![
             mk("sim-blackwell", "NVIDIA RTX BLACKWELL B200", 1.2),
