@@ -487,6 +487,7 @@ impl EvalJobBackend for VerdaClient {
                     gpu_count: 1,
                     price_per_hour: 0.0,
                     provider: "verda".into(),
+                    ..Offer::default()
                 })
             })
             .collect())

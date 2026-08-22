@@ -789,12 +789,9 @@ impl EvalJobBackend for LiumClient {
             }
             let effective =
                 prism_lium_types::effective_gpu_count(selected.gpu_count, &selected.gpu_type);
-            // 1-GPU rents 1; else whole host (no split). Never 8×5090 fallback.
-            let rent_gpu_count = if spec.gpu_count <= 1 {
-                1
-            } else {
-                effective.max(spec.gpu_count)
-            };
+            // Split hosts: requested width (1× B200 on an 8× node).
+            // Non-split: 1-GPU stays 1; else whole host. Never 8×5090 fallback.
+            let rent_gpu_count = selected.rent_count(spec.gpu_count);
             if pref.matches_pin("RTX 5090") && rent_gpu_count >= 8 && spec.gpu_count < 8 {
                 return Err(LiumError::Api(format!(
                     "abort: refusing {rent_gpu_count}× 5090 rent (no 8×5090 fallback)"
@@ -1294,6 +1291,28 @@ mod tests {
         let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
         let inst = c.provision(&provision_spec()).await.unwrap();
         assert_eq!(inst.id, "pod-1x");
+    }
+
+    #[tokio::test]
+    async fn provision_rents_one_gpu_on_idle_8x_b200() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {
+                    "id": "eight-b200-idle",
+                    "machine_name": "NVIDIA B200",
+                    "gpu_count": 8,
+                    "available_gpu_count": 8,
+                    "price_per_gpu": 5.85
+                }
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "eight-b200-idle", "pod-split-1").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let inst = c.provision(&provision_spec()).await.unwrap();
+        assert_eq!(inst.id, "pod-split-1");
     }
 
     #[tokio::test]

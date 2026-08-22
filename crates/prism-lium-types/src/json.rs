@@ -50,7 +50,23 @@ pub fn parse_one_offer(item: &Value) -> Option<Offer> {
         gpu_count,
         price_per_hour: price,
         provider: "lium".into(),
+        min_gpu_count_for_rental: item.get("min_gpu_count_for_rental").and_then(as_u32),
+        available_gpu_count: item.get("available_gpu_count").and_then(as_u32),
     })
+}
+
+fn as_u32(v: &Value) -> Option<u32> {
+    v.as_u64()
+        .map(|n| n as u32)
+        .or_else(|| v.as_f64().and_then(finite_u32))
+}
+
+fn finite_u32(f: f64) -> Option<u32> {
+    if f.is_finite() && f >= 0.0 && f <= f64::from(u32::MAX) {
+        Some(f as u32)
+    } else {
+        None
+    }
 }
 
 /// Parse a `/pods/{id}` object.

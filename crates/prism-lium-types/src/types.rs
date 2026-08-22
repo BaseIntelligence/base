@@ -17,6 +17,26 @@ pub struct Offer {
     pub price_per_hour: f64,
     /// Provider label.
     pub provider: String,
+    /// Lium GPU-split floor (`min_gpu_count_for_rental`). `None` = omitted.
+    #[serde(default)]
+    pub min_gpu_count_for_rental: Option<u32>,
+    /// Free GPUs on the host (`available_gpu_count`).
+    #[serde(default)]
+    pub available_gpu_count: Option<u32>,
+}
+
+impl Default for Offer {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            gpu_type: String::new(),
+            gpu_count: 1,
+            price_per_hour: f64::MAX,
+            provider: "lium".into(),
+            min_gpu_count_for_rental: None,
+            available_gpu_count: None,
+        }
+    }
 }
 
 /// Plausible discrete GPU counts on marketplace offers (not SKU numbers).
@@ -122,15 +142,50 @@ impl Offer {
         effective_gpu_count(self.gpu_count, &self.gpu_type) > 1
     }
 
+    /// Lium split: `min ≤ wanted ≤ available`.
+    ///
+    /// Idle 8× B200 rows often omit `min_gpu_count_for_rental` while still
+    /// listing `available_gpu_count` and `price_per_gpu`. Treat that as
+    /// min=1 so a 1× pin can rent one card — never the whole 8-pack.
+    /// Missing `available_gpu_count` means "do not infer split".
+    #[must_use]
+    pub fn allows_split_for(&self, wanted: u32) -> bool {
+        if wanted == 0 {
+            return false;
+        }
+        let Some(avail) = self.available_gpu_count else {
+            return false;
+        };
+        if avail < wanted {
+            return false;
+        }
+        self.min_gpu_count_for_rental.unwrap_or(1) <= wanted
+    }
+
+    /// GPUs to send on `POST /executors/{id}/rent`.
+    #[must_use]
+    pub fn rent_count(&self, requested: u32) -> u32 {
+        if self.allows_split_for(requested) {
+            return requested.max(1);
+        }
+        let effective = effective_gpu_count(self.gpu_count, &self.gpu_type);
+        if requested <= 1 {
+            1
+        } else {
+            effective.max(requested)
+        }
+    }
+
     /// Whether this offer may be rented for `requested` GPUs.
     ///
-    /// A 1-GPU request still hard-rejects multi-GPU hosts (live SKU pin).
-    /// A multi-GPU request accepts a larger host (`effective >= requested`)
-    /// when no exact-width offer is listed. Lium rejects GPU splitting, so the
-    /// client rents `gpu_count = effective` (the whole host); the miner caps
-    /// DDP at the requested width. 8×5090 is never a silent fallback.
+    /// Accepts an exact-width host, a larger host when `requested > 1`, or a
+    /// multi-GPU host that advertises (or omits-min) GPU splitting. A 1-GPU
+    /// pin never takes a non-split 8× pack. 8×5090 is never a silent fallback.
     #[must_use]
     pub fn matches_gpu_count(&self, requested: u32) -> bool {
+        if self.allows_split_for(requested) {
+            return true;
+        }
         let effective = effective_gpu_count(self.gpu_count, &self.gpu_type);
         if requested <= 1 {
             return effective == 1;
@@ -547,6 +602,7 @@ mod tests {
             gpu_count,
             price_per_hour: price,
             provider: "lium".into(),
+            ..Offer::default()
         };
         let pin = mk("1xb200", "NVIDIA B200", 1, 5.5);
         let eight = mk("8xb200", "NVIDIA B200", 8, 5.6);
@@ -561,11 +617,76 @@ mod tests {
         let mut offers = vec![eight.clone(), rtx.clone(), pro.clone(), pin.clone()];
         pref.filter_sort_offers(&mut offers, 1);
         let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
-        assert_eq!(ids, ["1xb200"], "exact 1× B200 only; never 5090 or 8× B200");
+        assert_eq!(
+            ids,
+            ["1xb200"],
+            "exact 1× B200 only; never 5090 or unlabeled 8× B200"
+        );
         assert!(pin.matches_gpu_count(1));
         assert!(!eight.matches_gpu_count(1));
         assert!(!pref.matches_pin(&rtx.gpu_type));
         assert!(!pref.matches_pin(&pro.gpu_type));
+    }
+
+    #[test]
+    fn one_gpu_b200_accepts_lium_split_and_idle_8x() {
+        let native = Offer {
+            id: "1xb200".into(),
+            gpu_type: "NVIDIA B200".into(),
+            gpu_count: 1,
+            price_per_hour: 5.5,
+            ..Offer::default()
+        };
+        let split8 = Offer {
+            id: "8xb200-split".into(),
+            gpu_type: "NVIDIA B200".into(),
+            gpu_count: 8,
+            price_per_hour: 5.6,
+            min_gpu_count_for_rental: Some(1),
+            available_gpu_count: Some(4),
+            ..Offer::default()
+        };
+        let idle8 = Offer {
+            id: "8xb200-idle".into(),
+            gpu_type: "NVIDIA B200".into(),
+            gpu_count: 8,
+            price_per_hour: 5.85,
+            available_gpu_count: Some(8),
+            ..Offer::default()
+        };
+        let whole8 = Offer {
+            id: "8xb200-whole".into(),
+            gpu_type: "NVIDIA B200".into(),
+            gpu_count: 8,
+            price_per_hour: 5.0,
+            ..Offer::default()
+        };
+        let min4 = Offer {
+            id: "8xb200-min4".into(),
+            gpu_type: "NVIDIA B200".into(),
+            gpu_count: 8,
+            price_per_hour: 5.1,
+            min_gpu_count_for_rental: Some(4),
+            available_gpu_count: Some(8),
+            ..Offer::default()
+        };
+        assert!(split8.allows_split_for(1));
+        assert!(idle8.allows_split_for(1));
+        assert_eq!(split8.rent_count(1), 1);
+        assert_eq!(idle8.rent_count(1), 1);
+        assert!(split8.matches_gpu_count(1));
+        assert!(idle8.matches_gpu_count(1));
+        assert!(!whole8.matches_gpu_count(1));
+        assert!(!min4.matches_gpu_count(1));
+        let pref = GpuPreference::profile_b200();
+        let mut offers = vec![whole8, min4, idle8.clone(), split8.clone(), native.clone()];
+        pref.filter_sort_offers(&mut offers, 1);
+        let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["1xb200", "8xb200-split", "8xb200-idle"],
+            "native 1× first, then split/idle 8× rented as 1"
+        );
     }
 
     #[test]
@@ -576,6 +697,7 @@ mod tests {
             gpu_count,
             price_per_hour: price,
             provider: "lium".into(),
+            ..Offer::default()
         };
         let one = mk("1x", "NVIDIA GeForce RTX 5090", 1, 2.0);
         let four = mk("4x", "NVIDIA GeForce RTX 5090", 4, 1.0);
@@ -618,6 +740,7 @@ mod tests {
             gpu_count,
             price_per_hour: price,
             provider: "lium".into(),
+            ..Offer::default()
         };
         let two_6000 = mk(
             "2x6000",
@@ -655,6 +778,7 @@ mod tests {
             gpu_count: 1,
             price_per_hour: 2.0,
             provider: "lium".into(),
+            ..Offer::default()
         };
         let eight = Offer {
             id: "8x".into(),
@@ -662,6 +786,7 @@ mod tests {
             gpu_count: 8,
             price_per_hour: 0.48,
             provider: "lium".into(),
+            ..Offer::default()
         };
         let eight_label = Offer {
             id: "8x-label".into(),
@@ -669,6 +794,7 @@ mod tests {
             gpu_count: 1, // lying field; label wins
             price_per_hour: 0.48,
             provider: "lium".into(),
+            ..Offer::default()
         };
         assert!(single.matches_gpu_count(1));
         assert!(!eight.matches_gpu_count(1));
@@ -739,6 +865,23 @@ mod tests {
         assert!(v.bpb.is_finite() && v.bpb > 0.0);
         assert_eq!(v.tokens_seen, 1_048_576);
         assert!(v.telemetry.is_some());
+    }
+
+    #[test]
+    fn parse_live_idle_8x_b200_is_one_gpu_rent() {
+        let v = serde_json::json!({
+            "id": "cb5e952f-bcb4-46ff-b7ae-16fc0118b30a",
+            "machine_name": "NVIDIA B200",
+            "gpu_count": 8,
+            "available_gpu_count": 8,
+            "min_gpu_count_for_rental": null,
+            "price_per_gpu": 5.85
+        });
+        let o = crate::parse_one_offer(&v).expect("offer");
+        assert_eq!(o.gpu_type, "NVIDIA B200");
+        assert!((o.price_per_hour - 5.85).abs() < 1e-9);
+        assert!(o.matches_gpu_count(1));
+        assert_eq!(o.rent_count(1), 1);
     }
 
     #[test]
